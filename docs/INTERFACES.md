@@ -3,7 +3,7 @@
 Dieses Dokument beschreibt, **wo** sich Komponenten und Arbeitspakete
 gegenseitig berühren. Jeder Task trägt seine Deltas hier nach.
 
-Stand: AP2.T2.4.
+Stand: AP2.T2.5.
 
 ---
 
@@ -797,3 +797,140 @@ gesperrt.
 | `registry.renderRequest(…)`   | fertiger `LlmRequest`                                    |
 | `TemplateError`               | Fehler beim Laden oder Rendern                           |
 | `PROMPTS_DIR`                 | Verzeichnis; im Container über die gleichnamige Variable |
+
+---
+
+## 10. Job-Queue — so registriert ein Folge-AP einen Job-Typ (AP2.T2.5)
+
+Alles, was länger als ein HTTP-Request dauert, läuft als Job. **AP3, AP4, AP8
+und AP9 hängen ihre Job-Typen hier ein**; der Worker selbst kennt keine
+Fachlichkeit.
+
+### Schritt 1 — Job-Typ schreiben
+
+Ein Job-Typ besteht aus Kennung, Payload-Prüfung und Verarbeitung:
+
+```ts
+import { JobPayloadError } from '../jobs/index.js';
+import type { JobType } from '../jobs/index.js';
+
+interface ChartPayload {
+  readonly chartId: string;
+  readonly imageBase64: string;
+}
+
+export function createChartDigitizeJob(deps: { … }): JobType<ChartPayload> {
+  return {
+    type: 'chart.digitize',
+
+    // Wirft bei unbrauchbarer Nutzlast. Das gilt als NICHT wiederholbar:
+    // der Job geht sofort in den Dead-Letter, ohne dass ein Aufruf laeuft.
+    parsePayload(raw): ChartPayload {
+      const value = raw as Partial<ChartPayload>;
+      if (typeof value.chartId !== 'string') {
+        throw new JobPayloadError('Feld "chartId" fehlt.');
+      }
+      …
+      return { chartId: value.chartId, imageBase64: value.imageBase64 };
+    },
+
+    async run(payload, context): Promise<void> {
+      // context: { db, job, signal, log }
+      const provider = await deps.providers.getActive();
+      const request = deps.templates.renderRequest('task/…', { … }, { … });
+      const response = await provider.complete(request);
+      // Ergebnis selbst wegschreiben - der Worker speichert nichts.
+    },
+  };
+}
+```
+
+Registrieren in `apps/backend/src/jobs/runtime.ts`:
+
+```ts
+const handlers = new JobHandlerRegistry()
+  .register(createLlmCompleteJob({ … }))
+  .register(createChartDigitizeJob({ … }));   // ← neu
+```
+
+Eine doppelte Kennung ist ein Fehler beim Start, kein stilles Überschreiben.
+
+### Schritt 2 — Jobs einplanen
+
+```ts
+import { enqueueJob } from '../jobs/index.js';
+
+await enqueueJob(db, {
+  jobType: 'chart.digitize',
+  payload: { chartId, imageBase64 },
+  maxAttempts: 3, // Default 3
+  availableAt: new Date(Date.now() + 60_000), // optional: verzoegern
+});
+```
+
+Für Betrieb und Diagnose gibt es `pnpm jobs:enqueue` (siehe RUNBOOK 10.2).
+
+### Payload-Vertrag
+
+| Regel                                                              | Konsequenz bei Verstoß                |
+| ------------------------------------------------------------------ | ------------------------------------- |
+| `payload` ist JSON-serialisierbar (landet in einer `jsonb`-Spalte) | Einplanen scheitert                   |
+| `parsePayload` wirft `JobPayloadError` bei Unbrauchbarem           | sofort Dead-Letter, **kein** Aufruf   |
+| Unbekannter `jobType`                                              | sofort Dead-Letter                    |
+| Große Binärdaten gehören **nicht** in `payload`                    | Tabelle läuft voll; Verweis speichern |
+
+### Retry-Verhalten — der Worker entscheidet, nicht der Handler
+
+| Fehler aus `run()`                                                         | Folge                                                                                |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `LlmError` mit retrybarer Kategorie (`timeout`, `rate_limit`, `transient`) | erneut eingeplant: `attempts + 1`, `available_at` rückt mit Backoff und Streuung vor |
+| `LlmError` mit `auth`, `invalid`, `parse`                                  | sofort Dead-Letter                                                                   |
+| jeder andere Fehler (Programmfehler, `TemplateError`)                      | sofort Dead-Letter — bei unklarer Ursache wird nicht wiederholt                      |
+| `attempts >= max_attempts`                                                 | Dead-Letter mit gespeichertem `last_error`                                           |
+
+Ein Handler baut **keinen** eigenen Retry. Die Semaphore der Adapter (T2.2)
+begrenzt weiterhin die Parallelität gegenüber dem Modell — der Worker holt
+einen Job je Durchlauf und umgeht sie nicht.
+
+`attempts` steigt **beim Holen**: Ein Absturz zählt mit, sodass ein Job, der
+den Worker reproduzierbar umbringt, im Dead-Letter landet statt in einer
+Schleife. Ein Job, der länger als `WORKER_STALE_AFTER_MS` (Default 5 min) in
+`running` hängt, wird automatisch wieder aufgenommen.
+
+### SSE-Statuskanal
+
+`GET /api/jobs/events` — auth-geschützt, `text/event-stream`.
+
+| Feld                                  | Bedeutung                                         |
+| ------------------------------------- | ------------------------------------------------- |
+| Ereignisname                          | immer `job`                                       |
+| `jobId`, `jobType`                    | Kennung und Typ                                   |
+| `status`                              | `running` \| `done` \| `queued` (Retry) \| `dead` |
+| `attempts`, `maxAttempts`             | Zählerstand                                       |
+| `at`                                  | ISO-8601                                          |
+| `errorKind`, `error`, `nextAttemptAt` | nur bei Fehlschlag                                |
+
+Im Frontend führt der Weg über `apiClient.subscribeToJobEvents(fn)`; die
+Rückgabe ist die Abmeldung und **muss** beim Verlassen der Seite aufgerufen
+werden. Der Server schließt beim Herunterfahren alle Streams; der Ereignisbus
+lehnt mehr als 50 gleichzeitige Zuhörer ab, statt unbegrenzt zu wachsen.
+
+`POST /api/jobs/:id/retry` plant einen Dead-Letter-Job erneut ein
+(`attempts` zurück auf 0). Ein Job, der nicht `dead` ist, ergibt 409.
+
+### Aufruf-Protokoll
+
+| Endpunkt                                                    | Zweck                               |
+| ----------------------------------------------------------- | ----------------------------------- |
+| `GET /api/llm/calls?status=success\|error\|pending&limit=n` | Liste ohne Prompt und Antwort       |
+| `GET /api/llm/calls/:id`                                    | Einzelner Eintrag mit vollem Inhalt |
+
+Geschrieben wird **nicht** von Aufrufern, sondern zentral vom Dekorator in der
+Provider-Registry. Kürzungsregel ([ADR-0028](./DECISIONS.md)):
+
+- **Bilder** stehen nie im Klartext, sondern als
+  `[bild image/png, N Zeichen base64 - nicht protokolliert]`.
+- **Prompt und Antwort** werden bei `LLM_LOG_MAX_CHARS` (Default 20 000)
+  abgeschnitten, mit sichtbarer Markierung
+  `… [gekuerzt]: N von M Zeichen entfernt`.
+- Ein Fehler beim Protokollieren lässt den Aufruf **nie** scheitern.

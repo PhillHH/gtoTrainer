@@ -6,6 +6,8 @@ import type { LlmConfig } from '../config/env.js';
 import { config as configTable } from '../db/schema.js';
 import type { Database } from '../db/client.js';
 import { createAnthropicApiProvider } from './api-provider.js';
+import { withCallLog } from './call-log.js';
+import type { CallLogOptions } from './call-log.js';
 import { createClaudeCliProvider } from './cli-provider.js';
 import { LlmError } from './errors.js';
 
@@ -70,12 +72,18 @@ export interface RegistryOptions {
   readonly config?: LlmConfig;
   readonly source?: ProviderConfigSource;
   readonly factory?: ProviderFactory;
+  /**
+   * Ist das gesetzt, legt die Registry das Aufruf-Protokoll um **jeden**
+   * Adapter (AP2.T2.5). Zentral hier, damit kein Aufrufer es vergessen kann.
+   */
+  readonly callLog?: CallLogOptions;
 }
 
 export class LlmProviderRegistry {
   readonly #config: LlmConfig;
   readonly #source: ProviderConfigSource | undefined;
   readonly #factory: ProviderFactory;
+  readonly #callLog: CallLogOptions | undefined;
   /** Adapter werden einmal gebaut und wiederverwendet - die Semaphore je
    *  Adapter soll ueber Aufrufe hinweg gelten. */
   readonly #cache = new Map<LlmProviderId, LLMProvider>();
@@ -84,6 +92,7 @@ export class LlmProviderRegistry {
     this.#config = options.config ?? loadLlmConfig();
     this.#source = options.source;
     this.#factory = options.factory ?? defaultFactory;
+    this.#callLog = options.callLog;
   }
 
   /** Kennung des gerade aktiven Providers. */
@@ -113,7 +122,10 @@ export class LlmProviderRegistry {
   get(id: LlmProviderId): LLMProvider {
     const cached = this.#cache.get(id);
     if (cached !== undefined) return cached;
-    const created = this.#factory(id, this.#config);
+    const built = this.#factory(id, this.#config);
+    // Das Protokoll liegt aussen um den Adapter: Wer die Registry benutzt,
+    // protokolliert automatisch mit.
+    const created = this.#callLog === undefined ? built : withCallLog(built, this.#callLog);
     this.#cache.set(id, created);
     return created;
   }

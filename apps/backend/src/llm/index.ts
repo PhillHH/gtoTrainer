@@ -11,6 +11,16 @@ export { LlmProviderRegistry, createDbConfigSource, LLM_PROVIDER_CONFIG_KEY } fr
 export type { ProviderConfigSource, ProviderFactory, RegistryOptions } from './registry.js';
 
 export { LlmError, isLlmError } from './errors.js';
+export {
+  withCallLog,
+  createDbCallLogSink,
+  LLM_LOG_MAX_CHARS,
+  formatPrompt,
+  truncate,
+} from './call-log.js';
+export type { CallLogOptions, CallLogSink } from './call-log.js';
+export { registerLlmLogRoutes } from './log-routes.js';
+export type { LlmLogRoutesOptions } from './log-routes.js';
 export { GuardedProvider } from './base-provider.js';
 export type { ProviderLimits } from './base-provider.js';
 

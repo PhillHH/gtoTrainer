@@ -871,8 +871,155 @@ import("/app/dist/prompts/index.js").then(({ TemplateRegistry }) =>
   console.log(TemplateRegistry.load().ids()));'
 ```
 
-## 10. Noch nicht abgedeckt
+## 10. Job-Worker und Aufruf-Protokoll (AP2.T2.5)
+
+### 10.1 Worker starten, stoppen, beobachten
+
+Der Worker läuft **im Backend-Prozess** ([ADR-0026](./DECISIONS.md)) — es gibt
+keinen eigenen Dienst zu starten.
+
+```bash
+# Start/Stopp = Start/Stopp des Backends
+docker compose up -d backend
+docker compose stop backend
+
+# Läuft er?
+docker logs gto-backend 2>&1 | grep "Job-Worker"
+# → {"msg":"Job-Worker gestartet."}
+
+# Was tut er gerade?
+docker logs -f gto-backend 2>&1 | grep -i "job "
+```
+
+Abschalten ohne das Backend zu stoppen: `WORKER_ENABLED=false` in der `.env`,
+dann `docker compose up -d backend`. Im Log steht dann
+`Job-Worker ist per WORKER_ENABLED=false abgeschaltet.`
+
+Queue-Überblick:
+
+```bash
+docker exec gto-postgres psql -U gto -d gto -c \
+  "select status, count(*) from job_queue group by status;"
+
+docker exec gto-postgres psql -U gto -d gto -c \
+  "select left(id::text,8) as id, job_type, status, attempts||'/'||max_attempts as versuche,
+          available_at, left(coalesce(last_error,'-'),60) as fehler
+     from job_queue order by created_at desc limit 10;"
+```
+
+### 10.2 Einen Job von Hand einplanen
+
+```bash
+cd /home/phillip/gto
+
+# Referenz-Job: Template plus Platzhalterwerte
+pnpm jobs:enqueue task/concept-explanation \
+  '{"level":"Einsteiger","concept":"Position am Tisch","context":"…"}'
+
+# Mit vollem Payload (Modell, Token- und Zeitgrenze steuerbar)
+pnpm jobs:enqueue --type llm.complete \
+  '{"templateId":"task/concept-explanation",
+    "values":{"level":"…","concept":"…","context":"…"},
+    "model":"claude-haiku-4-5","maxTokens":4096,"timeoutMs":110000}'
+```
+
+Der Worker im Container zieht den Job innerhalb von `WORKER_POLL_INTERVAL_MS`
+(Default 2 s). Voraussetzung bei aktivem CLI-Provider: Der Host-Runner läuft
+(Abschnitt 9.2).
+
+### 10.3 Dead-Letter-Jobs erneut einplanen
+
+```bash
+# Welche liegen tot?
+docker exec gto-postgres psql -U gto -d gto -c \
+  "select left(id::text,8) as id, job_type, attempts, left(last_error,100) as fehler
+     from job_queue where status = 'dead' order by finished_at desc;"
+```
+
+Erst die Ursache beheben (Meldung in `last_error`), dann erneut einplanen —
+über den Endpunkt, angemeldet:
+
+```bash
+curl -sS -X POST "https://gto.growento.com/api/jobs/<job-id>/retry" \
+  -H "x-csrf-token: $CSRF" -b "gto_session=$SESSION; gto_csrf=$CSRF"
+# → {"jobId":"…","status":"queued","attempts":0}
+```
+
+Ohne laufenden vhost geht es direkt per SQL:
+
+```bash
+docker exec gto-postgres psql -U gto -d gto -c \
+  "update job_queue set status='queued', attempts=0, available_at=now(),
+          claimed_at=null, finished_at=null
+     where id='<job-id>' and status='dead';"
+```
+
+`attempts` wird dabei zurückgesetzt — sonst wäre der Job nach einem Versuch
+sofort wieder tot.
+
+### 10.4 SSE hinter dem Host-Nginx
+
+Der Statuskanal `GET /api/jobs/events` ist ein offen bleibender Strom. Der
+vhost im Repo hat dafür eine eigene `location` mit `proxy_buffering off`
+(`deploy/nginx/gto.growento.com.conf`).
+
+> **Root-Schritt für den Nutzer:** Der vhost ist seit AP1 ohnehin nicht
+> eingespielt. Wer ihn einspielt (Abschnitt 8.4), bekommt die SSE-Sektion
+> automatisch mit. Ist er bereits installiert, muss die **aktualisierte** Datei
+> neu kopiert und Nginx neu geladen werden — sonst puffert Nginx den Strom und
+> im Browser kommt nichts an, bis der Server die Verbindung schließt.
+
+| Fehlerbild                                                 | Ursache                              | Abhilfe                                                   |
+| ---------------------------------------------------------- | ------------------------------------ | --------------------------------------------------------- |
+| Statuszeile aktualisiert sich nie, Verbindung bleibt offen | Nginx puffert                        | SSE-`location` aus dem Repo einspielen, `nginx -s reload` |
+| Verbindung bricht nach ~60 s ab                            | `proxy_read_timeout` zu kurz         | Wert der SSE-`location` (3600s) übernehmen                |
+| 401 beim Verbinden                                         | keine Session                        | neu anmelden — die Route ist auth-geschützt               |
+| „Es sind bereits 50 Statuskanaele offen"                   | Verbindungen wurden nicht abgemeldet | Backend neu starten; im Frontend die Abmeldung prüfen     |
+
+Ohne Nginx direkt gegen den Container testen:
+
+```bash
+curl -N -H "Cookie: gto_session=$SESSION" http://127.0.0.1:3010/api/jobs/events
+# → ": verbunden" und danach "event: job" je Statusaenderung
+```
+
+### 10.5 Aufruf-Protokoll ansehen und aufräumen
+
+In der Oberfläche: **Einstellungen → Letzte KI-Aufrufe**, mit Statusfilter und
+Detailansicht für Prompt und Antwort.
+
+Auf der Kommandozeile:
+
+```bash
+docker exec gto-postgres psql -U gto -d gto -c \
+  "select left(id::text,8) as id, provider, model, status, duration_ms, total_tokens, created_at
+     from llm_call_log order by created_at desc limit 10;"
+
+# Wie groß ist die Tabelle inzwischen?
+docker exec gto-postgres psql -U gto -d gto -c \
+  "select count(*) as eintraege, pg_size_pretty(pg_total_relation_size('llm_call_log')) as groesse
+     from llm_call_log;"
+```
+
+Prompt und Antwort sind auf `LLM_LOG_MAX_CHARS` (Default 20 000 Zeichen)
+gekürzt, Bilder stehen nie im Klartext darin ([ADR-0028](./DECISIONS.md)). Bei
+Bedarf aufräumen — **vorher sichern**, das Protokoll ist die Grundlage jeder
+Fehlersuche:
+
+```bash
+# Alles aelter als 30 Tage entfernen
+docker exec gto-postgres psql -U gto -d gto -c \
+  "delete from llm_call_log where created_at < now() - interval '30 days';"
+
+# Erledigte Jobs aufraeumen (Dead-Letter bewusst NICHT)
+docker exec gto-postgres psql -U gto -d gto -c \
+  "delete from job_queue where status = 'done' and finished_at < now() - interval '30 days';"
+```
+
+## 11. Noch nicht abgedeckt
 
 - Der Host-Nginx-vhost und das TLS-Zertifikat sind vorbereitet, aber noch nicht
   eingespielt: Beides erfordert Root auf dem Host (Abschnitte 8.4 und 8.5).
 - Der Host-Runner startet nach einem Reboot nicht automatisch (Abschnitt 9.2).
+- Die SSE-`location` im vhost ist vorbereitet, aber wie der ganze vhost noch
+  nicht eingespielt (Abschnitt 10.4, Root nötig).

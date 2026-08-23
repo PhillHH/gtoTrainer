@@ -1452,3 +1452,174 @@ könnte ein Testlauf die Absicherung stillschweigend selbst erneuern.
 Ein Abdeckungstest stellt sicher, dass **jede** Template-Kennung in mindestens
 einem Golden-Fall vorkommt: Ein neues Template ohne Golden-Datei macht die
 Suite rot.
+
+---
+
+## ADR-0026 — Job-Worker als Schleife im Backend-Prozess, nicht als eigener Container
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** AP2.T2.5 verlangt einen Worker für LLM-Jobs. Zur Wahl standen
+  ein eigener Prozess bzw. Container und eine Schleife im vorhandenen
+  Backend-Prozess.
+
+### Entscheidung
+
+Der Worker läuft **im Backend-Prozess**, gestartet in `server.ts`, abschaltbar
+über `WORKER_ENABLED=false`. Kein zusätzlicher Compose-Service.
+
+### Begründung entlang der geforderten Kriterien
+
+- **Ressourcenkonkurrenz mit HTTP:** Ein LLM-Job wartet fast ausschließlich auf
+  I/O — beim CLI-Adapter sogar in einem Prozess **auf dem Host** (ADR-0022), bei
+  der API auf HTTPS. Er belegt also kaum CPU im Backend. Die eigentliche
+  Begrenzung ist ohnehin die Semaphore aus T2.2 (`LLM_MAX_CONCURRENCY`, Default 2),
+  die der Worker mitbenutzt statt sie zu umgehen. Der Worker holt bewusst
+  **einen** Job je Durchlauf.
+- **SSE ohne Umweg:** Der Statuskanal braucht die Ereignisse des Workers im
+  HTTP-Prozess. Im selben Prozess genügt eine Menge von Zuhörern. Ein eigener
+  Container bräuchte dafür `LISTEN/NOTIFY` oder Polling — spürbar mehr Technik
+  für denselben Zweck.
+- **Deploy-Aufwand:** Kein zweites Image, kein zweiter Service, kein zweiter
+  Healthcheck. Der Deploy aus AP1 bleibt unverändert; `./deploy/deploy.sh`
+  bringt den Worker mit.
+- **Betrieb durch einen Einzelnutzer:** Ein Prozess, ein Log, ein Neustart.
+  Ein separater Worker wäre ein zweiter Ort, an dem etwas stillstehen kann,
+  ohne dass es auffällt.
+- **Ausfallverhalten:** Der schwächere Punkt dieser Wahl — stürzt das Backend
+  ab, steht auch der Worker. Abgefangen ist das durch zwei Dinge:
+  `restart: unless-stopped` in Compose und die Wiederaufnahme verwaister Jobs
+  (ADR-0027). Ein Absturz mitten im Job blockiert die Queue also nicht.
+- **Kein Root nötig**, keine Änderung an der laufenden Server-Umgebung.
+
+### Wo die Grenze liegt
+
+Die Wahl setzt **eine** Backend-Instanz voraus — nicht wegen der Queue (das
+Claiming ist über `FOR UPDATE SKIP LOCKED` mehrinstanzfähig, siehe ADR-0027),
+sondern wegen SSE: Der Ereignisbus ist prozessintern, eine zweite Instanz sähe
+nur ihre eigenen Jobs. Für den geplanten Einzelnutzer-Betrieb ist das kein
+Thema; würde jemals horizontal skaliert, träte an die Stelle des Busses
+`LISTEN/NOTIFY` — die Schnittstelle `JobEventBus` bliebe dieselbe.
+
+### Alternativen (verworfen)
+
+- **Eigener Worker-Container** — sauberere Trennung, aber zweites Image,
+  zweiter Service und ein Zusatzmechanismus für SSE. Der Gewinn (Isolation der
+  CPU-Last) fällt weg, weil die eigentliche Arbeit ohnehin außerhalb des
+  Containers passiert.
+- **Worker als `pnpm`-Skript neben dem Backend** (wie der CLI-Runner) — würde
+  einen weiteren Prozess einführen, der nach einem Reboot von Hand zu starten
+  ist. Genau dieses offene Problem hat der Runner schon; ein zweites davon
+  wollten wir nicht.
+- **Kein Worker, Jobs synchron im Request** — scheidet aus: AP3 setzt hunderte
+  Aufrufe ab, ein HTTP-Request kann nicht minutenlang offen bleiben.
+
+---
+
+## ADR-0027 — Job-Claiming: `FOR UPDATE SKIP LOCKED`, Zählung beim Holen, Frist für verwaiste Jobs
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** Die Queue liegt in Postgres (`job_queue` aus AP1). Zu klären
+  waren die Sperrstrategie, der Zeitpunkt der Versuchszählung und die Frist,
+  nach der ein hängengebliebener Job wieder aufgenommen wird.
+
+### Entscheidung 1 — atomares Holen mit `FOR UPDATE SKIP LOCKED`
+
+Ein einziges `UPDATE … WHERE id = (SELECT … FOR UPDATE SKIP LOCKED LIMIT 1)`
+setzt Status, Zeitstempel und Zähler in einem Schritt. Ein zweiter Worker
+überspringt die gesperrte Zeile, statt zu warten oder sie ebenfalls zu ziehen.
+
+Damit gibt es kein Read-then-Update-Rennen, und zwar unabhängig von der Zahl
+der Instanzen — belegt durch einen Test mit zehn gleichzeitigen Versuchen auf
+einen Job, von denen genau einer gewinnt. Reihenfolge: `available_at`
+aufsteigend, bei Gleichstand `created_at` — älteste zuerst, nachvollziehbar.
+
+**Keine externe Queue-Infrastruktur.** Redis oder ein Broker wären ein
+weiterer Dienst mit eigenem Betrieb, eigener Sicherung und eigenem
+Ausfallmodus — für einen Einzelnutzer ohne Gegenwert. Postgres kann das, und
+Jobs sind so mit denselben Mitteln inspizierbar wie alle anderen Daten.
+
+### Entscheidung 2 — `attempts` wird **beim Holen** erhöht, nicht beim Fehlschlag
+
+Damit zählt auch ein Absturz als Versuch. Ein Job, der den Worker
+reproduzierbar umbringt, landet nach `max_attempts` im Dead-Letter statt in
+einer Endlosschleife aus Absturz und Wiederaufnahme. Der Preis: Ein Job, dessen
+Worker durch einen Neustart des Servers unterbrochen wurde, verliert einen
+Versuch, obwohl er nichts falsch gemacht hat. Das ist der bessere Tausch — eine
+Schleife bemerkt niemand, ein verlorener Versuch steht in `last_error`.
+
+### Entscheidung 3 — verwaiste Jobs nach 5 Minuten
+
+`WORKER_STALE_AFTER_MS`, Default **300 000 ms**. Ein Job im Zustand `running`,
+dessen `claimed_at` länger zurückliegt, wird von derselben Claim-Abfrage
+wieder aufgenommen — es braucht keinen zweiten Mechanismus.
+
+Die Zahl folgt aus dem Timeout eines Aufrufs: `LLM_TIMEOUT_MS` ist 120 000 ms,
+plus Retry-Backoff und Prozessstart. Fünf Minuten liegen klar darüber, sodass
+ein langsamer Job **nicht** doppelt verarbeitet wird, und klar darunter, wo ein
+Absturz spürbar wehtäte. **Wer `LLM_TIMEOUT_MS` erhöht, muss diesen Wert
+mitziehen** — sonst holt sich der Worker einen Job zurück, der noch läuft.
+
+### Terminalzustände
+
+Der Worker nutzt `done` und `dead`. `failed` aus dem AP1-Skelett bleibt
+ungenutzt: Ein Job ist entweder wieder eingeplant (`queued`) oder endgültig
+`dead`. Ein dritter Fehlzustand hätte keine eigene Bedeutung. Die CHECK-Regel
+der Tabelle bleibt unverändert — keine Migration nötig.
+
+Wiederholt wird ausschließlich, was die Taxonomie aus T2.1 als retrybar
+ausweist. Alles andere — Programmfehler, unbekannter Job-Typ, unbrauchbare
+Nutzlast — geht **sofort** in den Dead-Letter, ohne dass ein Aufruf abgesetzt
+wird. `POST /api/jobs/:id/retry` plant einen toten Job erneut ein und setzt
+`attempts` zurück; behobene Ursachen bedeuten damit keine verlorene Arbeit.
+
+---
+
+## ADR-0028 — Aufruf-Protokoll zentral an der Registry, mit sichtbarer Kürzung
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** Jeder KI-Aufruf soll in `llm_call_log` landen. Die Frage war, wo
+  das Protokollieren ansetzt und wie große Inhalte behandelt werden — AP3 setzt
+  rund 336 Aufrufe mit Base64-Bildern ab.
+
+### Entscheidung 1 — Dekorator um jeden Adapter, in der Provider-Registry
+
+`withCallLog()` legt sich um den Adapter, und die `LlmProviderRegistry` wendet
+ihn auf **jeden** Provider an, den sie herausgibt. Wer die Registry benutzt —
+und das ist laut INTERFACES.md der einzige erlaubte Weg — protokolliert
+automatisch mit.
+
+Der Gegenentwurf, in jedem Aufrufer zu protokollieren, scheitert absehbar:
+Ab AP3 kommen fünf Arbeitspakete mit eigenen Aufrufstellen dazu, und die erste
+vergessene Zeile fällt erst auf, wenn man einen Fehler sucht und nichts findet.
+
+Zwei Schreibvorgänge je Aufruf: erst `status: 'pending'`, dann das Ergebnis. So
+ist ein laufender Aufruf in der Oberfläche sichtbar, und ein Absturz mitten im
+Aufruf hinterlässt eine Spur statt gar nichts. **Fehlgeschlagene Aufrufe werden
+genauso protokolliert** — gerade sie braucht man.
+
+**Ein Fehler beim Protokollieren lässt den Aufruf nie scheitern.** Er wird
+gemeldet und sonst verschluckt: Eine volle Platte darf nicht dazu führen, dass
+das Produkt keine Antworten mehr gibt.
+
+### Entscheidung 2 — Bilder nie im Klartext, Rest bei 20 000 Zeichen gekürzt
+
+- **Bildblöcke** erscheinen im Protokoll als
+  `[bild image/png, N Zeichen base64 - nicht protokolliert]`. Ein einzelnes
+  Chart-Rendering wären sonst mehrere hundert Kilobyte Base64 je Zeile; bei 336
+  Aufrufen ist das der Unterschied zwischen einer lesbaren Tabelle und einer
+  unbenutzbaren.
+- **Prompt und Antwort** werden bei `LLM_LOG_MAX_CHARS` Zeichen abgeschnitten,
+  Default **20 000**. Das reicht für jeden Prompt aus T2.4 samt Kontext und
+  bleibt weit unter dem, was eine Zeile unhandlich macht.
+- Gekürzt wird **sichtbar**: Es folgt die Markierung
+  `… [gekuerzt]: N von M Zeichen entfernt`. Wer sie sieht, weiß, dass etwas
+  fehlt und wie viel — eine stille Kürzung wäre schlimmer als gar keine, weil
+  man einem abgeschnittenen Prompt sonst nicht ansieht, dass er unvollständig
+  ist.
+
+Der Vollständigkeit halber: Prompts und Antworten werden bewusst protokolliert
+(sie sind der Gegenstand der Fehlersuche), Zugangsdaten niemals — der
+API-Schlüssel läuft vor jeder Ausgabe durch die Ausschwärzung aus ADR-0024.

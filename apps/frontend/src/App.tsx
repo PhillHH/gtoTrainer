@@ -7,6 +7,7 @@ import { DashboardPage } from './pages/DashboardPage.js';
 import { LoginPage } from './pages/LoginPage.js';
 import { NotFoundPage } from './pages/NotFoundPage.js';
 import { PlaceholderPage } from './pages/PlaceholderPage.js';
+import { SettingsPage } from './pages/SettingsPage.js';
 
 /**
  * Routenbaum.
@@ -65,16 +66,8 @@ export function AppRoutes(): JSX.Element {
               />
             }
           />
-          <Route
-            path="/einstellungen"
-            element={
-              <PlaceholderPage
-                title="Einstellungen"
-                plannedIn="AP9"
-                description="Persönliche Einstellungen. Die Modell- und Provider-Wahl kommt aus AP2."
-              />
-            }
-          />
+          {/* Seit AP2.T2.5 echte Inhalte: die Ansicht "letzte KI-Aufrufe". */}
+          <Route path="/einstellungen" element={<SettingsPage />} />
         </Route>
       </Route>
 

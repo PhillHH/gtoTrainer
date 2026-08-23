@@ -21,7 +21,8 @@
     "db:reset": "tsx src/db/cli-reset.ts",
     "auth:set-password": "tsx src/auth/cli-set-password.ts",
     "llm:runner": "tsx src/llm/runner-main.ts",
-    "prompts:golden": "UPDATE_GOLDEN=1 vitest run test/prompts/golden.test.ts"
+    "prompts:golden": "UPDATE_GOLDEN=1 vitest run test/prompts/golden.test.ts",
+    "jobs:enqueue": "tsx src/jobs/cli-enqueue.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",

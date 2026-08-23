@@ -7,6 +7,9 @@ import { registerAuthRoutes } from './auth/routes.js';
 import type { LoginRateLimiter } from './auth/rate-limit.js';
 import type { AuthConfig } from './config/env.js';
 import type { Database } from './db/client.js';
+import type { JobEventBus } from './jobs/events.js';
+import { registerJobRoutes } from './jobs/routes.js';
+import { registerLlmLogRoutes } from './llm/log-routes.js';
 
 export interface BuildAppOptions {
   readonly logger?: boolean;
@@ -18,6 +21,13 @@ export interface BuildAppOptions {
   readonly authConfig?: AuthConfig;
   /** Nur fuer Tests: eigener Rate-Limiter, damit Zaehler isoliert bleiben. */
   readonly rateLimiter?: LoginRateLimiter;
+  /**
+   * Ereignisbus des Job-Workers (AP2.T2.5). Ist er gesetzt, entstehen der
+   * SSE-Statuskanal und die Routen der Ansicht "letzte KI-Aufrufe".
+   */
+  readonly jobEvents?: JobEventBus;
+  /** Nur fuer Tests: kuerzerer Keepalive-Takt im SSE-Kanal. */
+  readonly sseKeepAliveMs?: number;
 }
 
 /**
@@ -42,6 +52,16 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       config: options.authConfig,
       ...(options.rateLimiter ? { rateLimiter: options.rateLimiter } : {}),
     });
+
+    registerLlmLogRoutes(app, { db: options.db });
+
+    if (options.jobEvents) {
+      registerJobRoutes(app, {
+        db: options.db,
+        events: options.jobEvents,
+        ...(options.sseKeepAliveMs === undefined ? {} : { keepAliveMs: options.sseKeepAliveMs }),
+      });
+    }
   }
 
   return app;

@@ -433,6 +433,8 @@ steht in [ADR-0021](./DECISIONS.md).
 | `base-provider` | `GuardedProvider`: Semaphore, Retry, Vorprüfung — für **beide** Adapter |
 | `api-provider`  | Adapter B gegen die Anthropic Messages API (T2.3)                       |
 | `registry`      | Provider-Auswahl aus der Konfiguration — der einzige Zugang             |
+| `call-log`      | Protokoll-Dekorator um jeden Adapter, Kürzung und Bild-Vermerk          |
+| `log-routes`    | Lesezugriff auf `llm_call_log` für die Oberfläche                       |
 
 Der Aufrufweg ist **einer**, nur der Transport unterscheidet sich — und der
 kommt aus der Konfiguration, nicht aus einer Code-Verzweigung:
@@ -457,6 +459,19 @@ Variable **nicht** gesetzt und das Profil-B-Verzeichnis **nicht** gemountet.
 stream-json --verbose [--json-schema …]`, Prompt über stdin. Der Kindprozess
 erhält ein Environment aus genau vier Variablen — `ANTHROPIC_API_KEY` ist
 bewusst nicht darunter.
+
+`apps/backend/src/jobs/` ergänzt das um Queue und Worker:
+
+| Modul                   | Aufgabe                                                         |
+| ----------------------- | --------------------------------------------------------------- |
+| `queue`                 | Einplanen, atomares Holen, Retry, Dead-Letter, erneut einplanen |
+| `worker`                | die Schleife; entscheidet über Retry anhand der Taxonomie       |
+| `types`                 | `JobType`, `JobHandlerRegistry`, Payload-Fehler                 |
+| `events`                | prozessinterner Ereignisbus für SSE                             |
+| `routes`                | `GET /api/jobs/events`, `POST /api/jobs/:id/retry`              |
+| `runtime`               | verdrahtet Templates, Provider, Protokoll, Handler und Worker   |
+| `handlers/llm-complete` | Referenz-Job-Typ: ein Aufruf über die Provider-Registry         |
+| `cli-enqueue`           | `pnpm jobs:enqueue` — Betriebswerkzeug                          |
 
 ### API-Adapter und Registry (neu in T2.3)
 
@@ -515,10 +530,52 @@ Der Aufrufer baut keine Strings mehr zusammen. Golden-Tests unter
 `apps/backend/test/prompts/golden/` halten jeden gerenderten Prompt fest;
 Details und Begründung in [ADR-0025](./DECISIONS.md).
 
-**Stand nach T2.4:** Beide Adapter, die Provider-Registry und die
-Template-Registry stehen und greifen ineinander — aber noch **nicht** an
-Job-Verarbeitung, `llm_call_log` oder UI angebunden. Das folgt in T2.5/T2.6.
-Die fachlichen Lern-Templates entstehen ab AP5.
+### Job-Worker, Protokoll und Statuskanal (neu in T2.5)
+
+Lange KI-Aufgaben laufen asynchron. Der Worker ist eine Schleife **im
+Backend-Prozess** ([ADR-0026](./DECISIONS.md)) — kein zweiter Container:
+
+```
+  HTTP-Request                    pnpm jobs:enqueue
+        │                                │
+        └──────────► job_queue ◄─────────┘        (Postgres, kein Broker)
+                        │
+                        │  UPDATE … FOR UPDATE SKIP LOCKED   ← atomar, mehrinstanzfaehig
+                        ▼
+                   JobWorker  (im Backend-Prozess)
+                        │  kennt nur die JobHandlerRegistry
+                        ▼
+                   Job-Typ "llm.complete"       ← Referenz; AP3/AP4/AP8/AP9 haengen hier an
+                        │
+        TemplateRegistry ──► LlmProviderRegistry ──► Adapter (cli|api)
+                                    │
+                                    └─ withCallLog ──► llm_call_log
+                        │
+                        ▼
+                   JobEventBus ──► GET /api/jobs/events (SSE) ──► Einstellungen
+```
+
+**Zustände.** `queued → running → done`, bei wiederholbarem Fehler zurück nach
+`queued` mit Backoff über `available_at`, sonst `dead` (Dead-Letter mit
+gespeichertem `last_error`). `attempts` steigt **beim Holen**, damit ein
+Absturz mitzählt; ein Job, der länger als `WORKER_STALE_AFTER_MS` in `running`
+hängt, wird wieder aufgenommen ([ADR-0027](./DECISIONS.md)).
+
+**Protokoll.** `withCallLog` sitzt in der Provider-Registry und umfasst jeden
+Adapter — kein Aufrufer kann es vergessen. Bilder erscheinen als Kurzvermerk,
+lange Inhalte werden sichtbar gekürzt ([ADR-0028](./DECISIONS.md)).
+
+**Statuskanal.** Prozessinterner Ereignisbus → SSE unter
+`GET /api/jobs/events`, auth-geschützt wie jede andere Route. Der
+Host-Nginx-vhost hat dafür eine eigene `location` ohne Pufferung (siehe
+`deploy/nginx/gto.growento.com.conf`); das Einspielen bleibt ein Root-Schritt
+des Nutzers.
+
+**Stand nach T2.5:** Beide Adapter, Provider-Registry, Template-Registry,
+Worker, Protokoll und die Ansicht „letzte KI-Aufrufe" greifen ineinander und
+sind an einem echten Durchlauf belegt. Offen bleibt die Settings-UI für
+Provider und Modell (T2.6). Die fachlichen Lern-Templates und Job-Typen
+entstehen ab AP3/AP5.
 
 ## 4. Querschnitts-Entscheidungen
 

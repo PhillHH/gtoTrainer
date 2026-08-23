@@ -43,8 +43,6 @@ services:
       # Im Compose-Netz wird der Service-Name aufgeloest - nicht der Host-Port.
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       MIGRATIONS_DIR: /app/drizzle
-      # Prompt-Templates im Image (AP2.T2.4) - im Repo waere es apps/backend/prompts.
-      PROMPTS_DIR: /app/prompts
       # Hinter TLS muss das Session-Cookie das Secure-Flag tragen (ADR-0008).
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       COOKIE_SAMESITE: ${COOKIE_SAMESITE:-lax}
@@ -67,6 +65,12 @@ services:
       LLM_RETRY_BASE_DELAY_MS: ${LLM_RETRY_BASE_DELAY_MS:-1000}
       LLM_RETRY_MAX_DELAY_MS: ${LLM_RETRY_MAX_DELAY_MS:-30000}
       LLM_RETRY_TOTAL_BUDGET_MS: ${LLM_RETRY_TOTAL_BUDGET_MS:-300000}
+      # Job-Worker im selben Prozess (ADR-0026) und Aufruf-Protokoll.
+      PROMPTS_DIR: /app/prompts
+      WORKER_ENABLED: ${WORKER_ENABLED:-true}
+      WORKER_POLL_INTERVAL_MS: ${WORKER_POLL_INTERVAL_MS:-2000}
+      WORKER_STALE_AFTER_MS: ${WORKER_STALE_AFTER_MS:-300000}
+      LLM_LOG_MAX_CHARS: ${LLM_LOG_MAX_CHARS:-20000}
     ports:
       - '127.0.0.1:${BACKEND_HOST_PORT:?BACKEND_HOST_PORT fehlt - .env aus .env.example anlegen}:3000'
     volumes:

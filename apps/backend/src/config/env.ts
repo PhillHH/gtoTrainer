@@ -398,6 +398,43 @@ function resolveSocketPath(): string | undefined {
   return resolve(dir, LLM_RUNNER_SOCKET_NAME);
 }
 
+/* -------------------------------------------------------------------------
+ * Job-Worker (AP2.T2.5)
+ * ---------------------------------------------------------------------- */
+
+/** Konfiguration des Job-Workers. */
+export interface WorkerConfig {
+  /**
+   * Laeuft der Worker in diesem Prozess? Default **an**: Der Worker ist Teil
+   * des Backend-Prozesses (ADR-0026). Zum Abschalten `WORKER_ENABLED=false` -
+   * z. B. wenn man den Stack nur fuer HTTP hochfahren will.
+   */
+  readonly enabled: boolean;
+  /** Wartezeit zwischen zwei Durchlaeufen, wenn nichts zu tun war. */
+  readonly pollIntervalMs: number;
+  /**
+   * Ab wann ein Job im Zustand `running` als verwaist gilt und erneut geholt
+   * werden darf. Muss deutlich ueber dem laengsten Aufruf liegen, sonst wird
+   * ein langsamer Job doppelt verarbeitet.
+   */
+  readonly staleAfterMs: number;
+  /** Obergrenze fuer Prompt und Antwort im Aufruf-Protokoll. */
+  readonly logMaxChars: number;
+}
+
+/** Liest die Worker-Konfiguration. Alle Werte haben brauchbare Defaults. */
+export function loadWorkerConfig(): WorkerConfig {
+  loadEnvFile();
+  return {
+    enabled: booleanEnv('WORKER_ENABLED', true),
+    pollIntervalMs: numberEnv('WORKER_POLL_INTERVAL_MS', 2_000),
+    // Fuenf Minuten: klar ueber dem Standard-Timeout eines Aufrufs (2 min),
+    // aber kurz genug, dass ein Absturz die Queue nicht lange blockiert.
+    staleAfterMs: numberEnv('WORKER_STALE_AFTER_MS', 300_000),
+    logMaxChars: numberEnv('LLM_LOG_MAX_CHARS', 20_000),
+  };
+}
+
 /**
  * Verbindungs-URL fuer die Integrationstests. Faellt nicht stillschweigend auf
  * die Entwicklungsdatenbank zurueck - sonst wuerden Tests echte Daten loeschen.

@@ -1,9 +1,16 @@
 import {
   CSRF_COOKIE_NAME,
   CSRF_HEADER_NAME,
+  JOB_EVENT_NAME,
   isAuthErrorResponse,
+  isJobEvent,
   type AuthErrorCode,
   type CsrfTokenResponse,
+  type JobEvent,
+  type JobRetryResponse,
+  type LlmCallDetailResponse,
+  type LlmCallListResponse,
+  type LlmCallStatus,
   type LoginRequest,
   type LoginResponse,
   type LogoutResponse,
@@ -171,4 +178,67 @@ export function fetchMe(): Promise<MeResponse> {
   return request<MeResponse>('/api/auth/me');
 }
 
-export const apiClient = { fetchCsrfToken, login, logout, fetchMe } as const;
+/* -------------------------------------------------------------------------
+ * LLM-Gateway: Aufruf-Protokoll und Job-Status (AP2.T2.5)
+ * ---------------------------------------------------------------------- */
+
+/** Liest die letzten Protokolleintraege, optional nach Status gefiltert. */
+export function fetchLlmCalls(
+  options: { status?: LlmCallStatus; limit?: number } = {},
+): Promise<LlmCallListResponse> {
+  const query = new URLSearchParams();
+  if (options.status !== undefined) query.set('status', options.status);
+  if (options.limit !== undefined) query.set('limit', String(options.limit));
+  const suffix = query.size > 0 ? `?${query.toString()}` : '';
+  return request<LlmCallListResponse>(`/api/llm/calls${suffix}`);
+}
+
+/** Liest einen Protokolleintrag samt Prompt und Antwort. */
+export function fetchLlmCall(id: string): Promise<LlmCallDetailResponse> {
+  return request<LlmCallDetailResponse>(`/api/llm/calls/${encodeURIComponent(id)}`);
+}
+
+/** Plant einen Dead-Letter-Job erneut ein. */
+export function retryJob(id: string): Promise<JobRetryResponse> {
+  return request<JobRetryResponse>(`/api/jobs/${encodeURIComponent(id)}/retry`, {
+    method: 'POST',
+  });
+}
+
+/**
+ * Abonniert den Statuskanal der Job-Queue.
+ *
+ * `EventSource` schickt Cookies bei `withCredentials` mit - denselben Weg
+ * nutzt der Rest des Clients. Gibt es `EventSource` nicht (Testumgebung),
+ * passiert nichts und der Aufrufer bekommt eine leere Abmeldung zurueck.
+ */
+export function subscribeToJobEvents(onEvent: (event: JobEvent) => void): () => void {
+  if (typeof EventSource === 'undefined') return () => undefined;
+
+  const source = new EventSource(`${API_BASE_URL}/api/jobs/events`, { withCredentials: true });
+  const handler = (message: MessageEvent<string>): void => {
+    try {
+      const parsed: unknown = JSON.parse(message.data);
+      if (isJobEvent(parsed)) onEvent(parsed);
+    } catch {
+      // Eine unlesbare Zeile darf die Oberflaeche nicht stoeren.
+    }
+  };
+
+  source.addEventListener(JOB_EVENT_NAME, handler as EventListener);
+  return () => {
+    source.removeEventListener(JOB_EVENT_NAME, handler as EventListener);
+    source.close();
+  };
+}
+
+export const apiClient = {
+  fetchCsrfToken,
+  login,
+  logout,
+  fetchMe,
+  fetchLlmCalls,
+  fetchLlmCall,
+  retryJob,
+  subscribeToJobEvents,
+} as const;

@@ -45,3 +45,23 @@ export type {
   LlmRole,
   LlmTextContent,
 } from './llm.js';
+
+export {
+  JOB_EVENT_NAME,
+  JOB_STATUSES,
+  LLM_CALL_STATUSES,
+  LLM_LOG_TRUNCATION_MARKER,
+  isJobEvent,
+  isJobStatus,
+  isLlmCallStatus,
+} from './observability.js';
+export type {
+  JobEvent,
+  JobRetryResponse,
+  JobStatus,
+  LlmCallDetail,
+  LlmCallDetailResponse,
+  LlmCallListResponse,
+  LlmCallStatus,
+  LlmCallSummary,
+} from './observability.js';
