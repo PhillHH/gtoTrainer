@@ -3,7 +3,7 @@
 Dieses Dokument beschreibt, **wo** sich Komponenten und Arbeitspakete
 gegenseitig berühren. Jeder Task trägt seine Deltas hier nach.
 
-Stand: AP2.T2.2.
+Stand: AP2.T2.3.
 
 ---
 
@@ -546,12 +546,14 @@ Zeitpunkt, sofern der Provider ihn nennt.
 Die Tabelle ist als `Record<LlmErrorKind, boolean>` typisiert: Eine neue
 Kategorie ohne Retry-Aussage übersetzt nicht.
 
-### Adapter „cli" — vorhanden seit T2.2
+### Die Registry ist der einzige Zugang (seit T2.3)
 
 ```ts
-import { createClaudeCliProvider } from '../llm/index.js';
+import { LlmProviderRegistry, createDbConfigSource } from '../llm/index.js';
 
-const provider = createClaudeCliProvider(); // liest die Konfiguration selbst
+const registry = new LlmProviderRegistry({ source: createDbConfigSource(db) });
+
+const provider = await registry.getActive(); // 'cli' oder 'api', je nach Konfiguration
 const response = await provider.complete({
   system: 'Du digitalisierst GTO-Charts.',
   messages: [{ role: 'user', content: [{ type: 'text', text: 'Los geht es.' }] }],
@@ -560,23 +562,44 @@ const response = await provider.complete({
 });
 ```
 
-- Einstieg ist **ausschließlich** `apps/backend/src/llm/index.ts`. Die Module
-  darunter (`spawn`, `invocation`, `runner`, …) sind nicht für Aufrufer
-  gedacht.
+- Einstieg ist **ausschließlich** `apps/backend/src/llm/index.ts`, und dort
+  **ausschließlich** die Registry. Die Adapterklassen sind zwar exportiert —
+  für die Registry selbst, die Paritätstests und den Ping-Test aus T2.6 —,
+  aber ein fachliches Modul instanziiert sie **nicht** direkt.
+- Welcher Adapter aktiv ist, entscheidet die Konfiguration:
+  `config`-Tabelle (`llm.provider`) → `LLM_PROVIDER` → `cli`. Die Tabelle wird
+  bei jedem Aufruf gelesen; eine Umschaltung greift ab dem nächsten Aufruf,
+  ohne Neustart und ohne Codeänderung.
+- Ein unbekannter Wert ergibt einen `LlmError` der Kategorie `invalid` mit
+  Nennung der erlaubten Werte — **kein** stiller Default.
 - `createClaudeCliProvider()` wirft `ConfigError`, wenn `CLAUDE_CONFIG_DIR`
-  fehlt und dieser Prozess die CLI selbst startet. Es gibt **keinen** Rückfall
-  auf ein Default-Profil.
-- Fehler kommen als `LlmError` (`kind`, `provider`, `message`, `retryAfterMs?`,
-  `retryable`). `kind` ist immer eine Kategorie der Taxonomie oben.
-- Der Adapter begrenzt die Parallelität selbst und wiederholt retrybare Fehler
-  selbst. Aufrufer bauen **keinen** eigenen Retry darum.
+  fehlt und dieser Prozess die CLI selbst startet; `createAnthropicApiProvider()`
+  wirft `LlmError` der Kategorie `auth`, wenn `ANTHROPIC_API_KEY` fehlt. Es
+  gibt **keinen** Rückfall auf ein Default-Profil und keinen stillen Wechsel
+  des Providers.
+- Fehler kommen immer als `LlmError` (`kind`, `provider`, `message`,
+  `retryAfterMs?`, `retryable`). `kind` ist immer eine Kategorie der Taxonomie
+  oben — bei **beiden** Adaptern dieselbe, mit derselben Retry-Einstufung.
+- Parallelität und Retry liegen in `GuardedProvider` und gelten für jeden
+  Adapter. Aufrufer bauen **keinen** eigenen Retry darum.
 - Anbindung an Job-Queue, `llm_call_log` und UI gibt es noch nicht — die folgt
   in T2.5/T2.6.
 
-**Nicht erlaubt** ist jeder Weg an diesem Einstieg vorbei: kein `spawn('claude')`
-in einem Feature-Modul, kein `fetch` gegen `api.anthropic.com`, kein eigener
-Prompt-Prozess in einem Skript. Wer einen zweiten Zugang braucht, baut einen
-Adapter (siehe unten).
+**Nicht erlaubt** ist jeder Weg an diesem Einstieg vorbei: kein
+`spawn('claude')` in einem Feature-Modul, kein `fetch` oder SDK-Client gegen
+`api.anthropic.com`, kein `new ClaudeCliProvider(...)` in einem Feature-Modul,
+kein eigener Prompt-Prozess in einem Skript.
+
+### Konfigurationsquelle der Laufzeitwahl
+
+| Ebene     | Ort                                        | Wer setzt sie           |
+| --------- | ------------------------------------------ | ----------------------- |
+| Laufzeit  | `config`-Tabelle, Schlüssel `llm.provider` | ab T2.6 die Settings-UI |
+| Startwert | `LLM_PROVIDER` in der `.env`               | Betrieb                 |
+| Rückfall  | `cli`                                      | fest                    |
+
+`createDbConfigSource(db)` liest die Tabelle. Ohne Quelle — etwa in einem
+Skript — gilt allein der Startwert.
 
 ### Der Host-Runner (Container-Betrieb)
 
@@ -599,12 +622,25 @@ Arbeitsverzeichnis, Profil und die Timeout-Obergrenze legt der Runner fest.
 1. `LlmProviderId` in `packages/shared/src/llm.ts` um die Kennung erweitern —
    der Type-Guard und alle `switch`-Zweige über die Taxonomie ziehen nach,
    sonst bricht `tsc`.
-2. Klasse in `apps/backend/src/llm/` anlegen, die `LLMProvider` implementiert.
-   `meta.provider` ist immer die eigene `id`.
+2. Klasse in `apps/backend/src/llm/` anlegen, die **`GuardedProvider` erweitert**
+   und nur `attempt()` implementiert — einen einzelnen Versuch. Semaphore,
+   Retry und die Vorprüfung der Anfrage kommen aus der Basis und werden nicht
+   nachgebaut. `meta.provider` ist immer die eigene `id`.
 3. Jede Störung auf **genau eine** `LlmErrorKind` abbilden; keine Restklasse,
-   keine rohen Provider-Fehler nach außen.
+   keine rohen Provider-Fehler nach außen. Unbekanntes gilt als **nicht**
+   wiederholbar.
 4. Auswahl geschieht rein über Konfiguration (`config`-Schlüssel
-   `llm.provider`), nie über einen Import an der Aufrufstelle.
+   `llm.provider`), nie über einen Import an der Aufrufstelle. Die Fabrik in
+   `registry.ts` bricht die Übersetzung, bis sie den neuen Fall kennt.
+
+**Paritätspflicht.** Ein neuer Adapter ist erst fertig, wenn er die gemeinsame
+Suite besteht: `apps/backend/test/llm/parity.test.ts` läuft über eine Tabelle
+`ADAPTERS` — ein weiterer Eintrag genügt, die Testfälle bleiben unverändert.
+Geprüft werden Erfolgsfall Text, Erfolgsfall mit `jsonSchema` (inklusive
+Code-Fence und Wrapper-Text), Bild-Input, jede Fehlerkategorie mit gleicher
+Retry-Einstufung, Timeout und das Nebenläufigkeitslimit. Beide Inszenierungen
+werden über dieselbe Direktive im Prompt gesteuert (`FAKE:<modus>`), damit
+derselbe Request an jeden Adapter gehen kann.
 
 ### Konfiguration
 
@@ -617,14 +653,16 @@ Gelesen wird die Konfiguration bei der **Adapter-Initialisierung**, nicht beim
 Serverstart: Das Backend muss auch ohne CLI starten können (CI, und ab T2.3 der
 reine API-Adapter).
 
-| Variable                          | Bedeutung                                                              |
-| --------------------------------- | ---------------------------------------------------------------------- |
-| `CLAUDE_CONFIG_DIR`               | Profil B — Pflicht bei `LLM_TRANSPORT=direct`                          |
-| `LLM_TRANSPORT`                   | `direct` (Prozess startet die CLI) oder `socket`                       |
-| `LLM_RUNNER_SOCKET_DIR/_PATH`     | Socket des Host-Runners — Pflicht bei `socket`                         |
-| `LLM_CLI_PATH`, `LLM_CLI_CWD`     | Programm und Arbeitsverzeichnis der CLI                                |
-| `LLM_MODEL`, `LLM_TIMEOUT_MS`     | Vorgaben, wenn der Request nichts angibt                               |
-| `LLM_MAX_CONCURRENCY`             | Obergrenze gleichzeitiger CLI-Prozesse                                 |
-| `LLM_MAX_ATTEMPTS`, `LLM_RETRY_*` | Versuche und Backoff (ADR-0023)                                        |
-| `LLM_LIVE_SMOKE`                  | gibt den Live-Test frei; in der CI nicht gesetzt                       |
-| `ANTHROPIC_API_KEY`               | nur für Adapter B (T2.3); wird dem CLI-Prozess **nicht** durchgereicht |
+| Variable                          | Bedeutung                                                                           |
+| --------------------------------- | ----------------------------------------------------------------------------------- |
+| `CLAUDE_CONFIG_DIR`               | Profil B — Pflicht bei `LLM_TRANSPORT=direct`                                       |
+| `LLM_TRANSPORT`                   | `direct` (Prozess startet die CLI) oder `socket`                                    |
+| `LLM_RUNNER_SOCKET_DIR/_PATH`     | Socket des Host-Runners — Pflicht bei `socket`                                      |
+| `LLM_CLI_PATH`, `LLM_CLI_CWD`     | Programm und Arbeitsverzeichnis der CLI                                             |
+| `LLM_MODEL`, `LLM_TIMEOUT_MS`     | Vorgaben, wenn der Request nichts angibt                                            |
+| `LLM_MAX_CONCURRENCY`             | Obergrenze gleichzeitiger CLI-Prozesse                                              |
+| `LLM_MAX_ATTEMPTS`, `LLM_RETRY_*` | Versuche und Backoff (ADR-0023)                                                     |
+| `LLM_LIVE_SMOKE`                  | gibt die Live-Tests frei; in der CI nicht gesetzt                                   |
+| `LLM_PROVIDER`                    | Startwert des aktiven Providers (`cli`/`api`)                                       |
+| `ANTHROPIC_API_KEY`               | Pflicht **nur** bei aktivem Adapter B; wird dem CLI-Prozess **nicht** durchgereicht |
+| `ANTHROPIC_BASE_URL`              | abweichende Basis-URL der API (Testserver, Gateway)                                 |

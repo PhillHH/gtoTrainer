@@ -1,5 +1,7 @@
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { isLlmProviderId } from '@gto/shared';
+import type { LlmProviderId } from '@gto/shared';
 import { dirname, resolve } from 'node:path';
 
 /**
@@ -263,6 +265,24 @@ export interface LlmConfig {
   readonly retryMaxDelayMs: number;
   /** Harte Obergrenze fuer alle Versuche zusammen. */
   readonly retryTotalBudgetMs: number;
+
+  /* --- Adapter B: Anthropic Messages API (T2.3) -------------------------- */
+
+  /**
+   * Startwert fuer den aktiven Provider. Die Laufzeitwahl kommt aus der
+   * `config`-Tabelle (`llm.provider`); dieser Wert greift, solange dort nichts
+   * hinterlegt ist. Im Typ optional, damit Tests eine Teilkonfiguration bauen
+   * koennen - `loadLlmConfig()` setzt ihn immer.
+   */
+  readonly provider?: LlmProviderId;
+  /**
+   * Anthropic-API-Schluessel. **Nur** noetig, wenn der API-Adapter aktiv ist -
+   * das Backend startet ohne Schluessel, solange die CLI der aktive Provider
+   * ist. Wird nirgends geloggt oder in Fehlermeldungen ausgegeben.
+   */
+  readonly apiKey?: string;
+  /** Abweichende Basis-URL, z. B. fuer einen Testserver. */
+  readonly apiBaseUrl?: string;
 }
 
 /** Default-Socketname innerhalb von `LLM_RUNNER_SOCKET_DIR`. */
@@ -293,8 +313,13 @@ export function loadLlmConfig(): LlmConfig {
   const runnerSocketPath = transport === 'socket' ? requireRunnerSocketPath() : resolveSocketPath();
 
   const maxAttempts = numberEnv('LLM_MAX_ATTEMPTS', 3);
+  const apiKey = readApiKey();
+  const apiBaseUrl = optionalEnv('ANTHROPIC_BASE_URL');
 
   return {
+    provider: readProviderId(),
+    ...(apiKey === undefined ? {} : { apiKey }),
+    ...(apiBaseUrl === undefined ? {} : { apiBaseUrl }),
     transport,
     claudeConfigDir,
     cliPath: optionalEnv('LLM_CLI_PATH') ?? 'claude',
@@ -308,6 +333,30 @@ export function loadLlmConfig(): LlmConfig {
     retryMaxDelayMs: numberEnv('LLM_RETRY_MAX_DELAY_MS', 30_000),
     retryTotalBudgetMs: numberEnv('LLM_RETRY_TOTAL_BUDGET_MS', 300_000),
   };
+}
+
+/**
+ * Liest den Startwert des aktiven Providers. Ein unbekannter Wert ist ein
+ * Konfigurationsfehler - kein stiller Rueckfall auf einen Default.
+ */
+function readProviderId(): LlmProviderId {
+  const raw = optionalEnv('LLM_PROVIDER');
+  if (raw === undefined) return 'cli';
+  if (!isLlmProviderId(raw)) {
+    throw new ConfigError(`LLM_PROVIDER muss "cli" oder "api" sein, ist: "${raw}".`);
+  }
+  return raw;
+}
+
+/**
+ * Liest den API-Schluessel. Der Platzhalter aus `.env.example` gilt als
+ * "nicht gesetzt", damit eine unveraenderte Vorlage nicht in einen
+ * 401-Fehler laeuft, sondern in die verstaendliche Meldung des Adapters.
+ */
+function readApiKey(): string | undefined {
+  const raw = optionalEnv('ANTHROPIC_API_KEY');
+  if (raw === undefined || raw.startsWith('__SET_')) return undefined;
+  return raw;
 }
 
 /**

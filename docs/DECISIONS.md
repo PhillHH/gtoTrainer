@@ -1232,3 +1232,110 @@ durchgewunken.
   einen Sonderfall, den die CLI bereits abdeckt.
 - **Unbekannte Fehler als `transient`** — bequem, aber genau das „blinde
   Wiederholen bei unklarer Ursache", das der Task ausschließt.
+
+---
+
+## ADR-0024 — API-Fallback-Adapter: offizielles SDK, `output_config.format`, geteilte Retry-/Semaphore-Logik
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** AP2.T2.3 verlangt einen zweiten, gleichwertigen Adapter gegen
+  die Anthropic Messages API (Risiko R1: Unabhängigkeit von der Subscription)
+  sowie eine Provider-Auswahl rein über Konfiguration. Drei Punkte waren dabei
+  offen: die Zugriffsart auf die API, die Umsetzung strukturierter Ausgaben und
+  der Ort der geteilten Ablauflogik.
+
+### Entscheidung 1 — offizielles SDK statt eigener HTTP-Aufrufe
+
+**Neue Laufzeit-Abhängigkeit:**
+
+| Paket               | Version    | Workspace      | Zweck                         |
+| ------------------- | ---------- | -------------- | ----------------------------- |
+| `@anthropic-ai/sdk` | `^0.120.0` | `apps/backend` | Zugriff auf die Anthropic-API |
+
+Bewertet nach den Kriterien des Tasks:
+
+- **Kontrolle über die Fehlerbehandlung** — das SDK wirft je Status eine eigene
+  Klasse (`RateLimitError`, `AuthenticationError`, `BadRequestError`,
+  `InternalServerError`, `APIConnectionTimeoutError`, …). Die Zuordnung auf
+  unsere Taxonomie wird dadurch eine `instanceof`-Kette statt einer
+  Status-Code-Tabelle mit selbstgebautem Body-Parsing. Genau diese Zuordnung
+  ist der Kern der geforderten Parität.
+- **Bild-Unterstützung** — Base64-Bildblöcke sind Teil der SDK-Typen; ein
+  Tippfehler im Blockaufbau fällt bei `tsc` auf, nicht erst im Betrieb.
+- **Gewicht** — das SDK bringt keine schweren Transitiven mit und landet über
+  `pnpm deploy --prod` ohnehin nur im Backend-Bundle. Der Gegenwert (Typen für
+  Request, Antwort und Fehler) überwiegt die ~20 Zeilen, die ein `fetch`-Aufruf
+  gespart hätte.
+- Die **Retry-Automatik des SDK ist abgeschaltet** (`maxRetries: 0`). Sie liefe
+  sonst neben unserem Backoff, umginge die Taxonomie und vervielfachte das
+  Zeitbudget unbemerkt. Wiederholt wird ausschließlich in `GuardedProvider`.
+
+### Entscheidung 2 — strukturierte Ausgabe über `output_config.format`
+
+Bei gesetztem `jsonSchema` schickt der Adapter
+`output_config: { format: { type: 'json_schema', schema } }`. Das ist die
+dokumentierte Form für serverseitig erzwungene Schemakonformität
+(<https://platform.claude.com/docs/en/build-with-claude/structured-outputs>);
+ein Beta-Header ist nicht nötig.
+
+Zwei Zusätze, damit sich beide Adapter gleich verhalten:
+
+1. **Schema-Angleichung.** Strukturierte Ausgaben verlangen
+   `additionalProperties: false` an _jedem_ Objekt. Der `LLMProvider`-Vertrag
+   verlangt das nicht — ohne Angleichung liefe derselbe Request beim
+   CLI-Adapter durch und scheiterte beim API-Adapter mit 400. `forceClosedObjects()`
+   ergänzt die Angabe rekursiv dort, wo `properties` steht und nichts
+   angegeben ist; vorhandene Werte bleiben unangetastet.
+2. **Dieselbe Auswertung.** Die Antwort wird mit denselben Funktionen
+   ausgewertet wie beim CLI-Adapter (`extractJson` inklusive Fence-Stripping
+   und Wrapper-Text, dann `validateAgainstSchema`). Damit ergibt dieselbe
+   fehlerhafte Antwort bei beiden Adaptern denselben `parse`-Fehler.
+
+Verworfen: **erzwungener Werkzeugaufruf** (`tools` + `tool_choice`) und
+**Schema im Prompt beschreiben**. Ersteres erreicht dasselbe über einen Umweg
+und macht die Antwortauswertung komplizierter; letzteres gibt keine Garantie
+und würde die Parität von der Modellwahl abhängig machen.
+
+**Bekannte Grenze:** Die API lehnt Schemata mit `minimum`/`maxLength`,
+Rekursion oder `$ref` ab (400 → Kategorie `invalid`). Der CLI-Adapter ist hier
+toleranter. Für die Schemata aus AP3–AP9 ist das ohne Belang; es steht im
+RUNBOOK unter den Fehlerbildern.
+
+### Entscheidung 3 — geteilte Ablauflogik in `GuardedProvider`
+
+Nebenläufigkeitslimit, Retry mit Backoff und die Vorprüfung der Anfrage liegen
+in `apps/backend/src/llm/base-provider.ts`. Beide Adapter erben davon und
+implementieren nur `attempt()` — einen einzelnen Versuch.
+
+Begründung: Die Retry-Einstufung ist der Kern der geforderten Parität. Läge sie
+je Adapter vor, könnte ein neuer Adapter still davon abweichen. So ist die
+Taxonomie aus T2.1 die einzige Quelle der Wahrheit, und ein dritter Adapter
+erbt das Verhalten, statt es nachzubauen. Die T2.2-Tests belegen die
+Umstrukturierung: sie liefen unverändert weiter grün.
+
+### Entscheidung 4 — Provider-Auswahl über eine Registry
+
+`LlmProviderRegistry` ist ab sofort der **einzige** Weg zu einem Provider.
+Reihenfolge: `config`-Tabelle (`llm.provider`) → `LLM_PROVIDER` → `cli`. Die
+Tabelle wird bei jedem Aufruf gelesen, damit eine Umschaltung ab dem nächsten
+Aufruf greift — ohne Neustart. Ein unbekannter Wert ergibt einen `invalid`-Fehler
+mit Nennung der erlaubten Werte, keinen stillen Default.
+
+Ein Datenbanktreffer je LLM-Aufruf ist vertretbar: Der Aufruf selbst dauert
+Sekunden, die Abfrage Mikrosekunden. Ein Cache mit Ablaufzeit würde die Zusage
+„der nächste Aufruf nutzt den neuen Provider" aufweichen.
+
+### Entscheidung 5 — Umgang mit dem API-Schlüssel
+
+`ANTHROPIC_API_KEY` ist **nur Pflicht, wenn der API-Adapter aktiv ist**. Das
+Backend startet ohne Schlüssel normal, solange `cli` aktiv ist. Fehlt der
+Schlüssel bei aktivem API-Provider, bricht bereits der Bau des Adapters mit
+Kategorie `auth` und einer handlungsanweisenden Meldung ab.
+
+Der Schlüssel wird nirgends ausgegeben — auch nicht gekürzt. Fehlermeldungen
+der Auth-Kategorie nennen nur die Variable; jede weitergereichte
+Servermeldung läuft vorher durch eine Ausschwärzung, die den Schlüsselwert
+durch `***` ersetzt. Der unveränderte Platzhalter aus `.env.example`
+(`__SET_…`) gilt als „nicht gesetzt", damit eine kopierte Vorlage in die
+verständliche Meldung läuft statt in einen 401.

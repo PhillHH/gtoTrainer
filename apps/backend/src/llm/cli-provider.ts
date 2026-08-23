@@ -1,8 +1,7 @@
-import type { LLMProvider, LlmRequest, LlmResponse } from '@gto/shared';
+import type { LlmRequest, LlmResponse } from '@gto/shared';
 import { ConfigError, loadLlmConfig } from '../config/env.js';
 import type { LlmConfig } from '../config/env.js';
-import { Semaphore, withRetry } from './concurrency.js';
-import { LlmError, isLlmError } from './errors.js';
+import { GuardedProvider } from './base-provider.js';
 import { interpretCliResult } from './interpret.js';
 import { buildInvocation } from './invocation.js';
 import { callRunner } from './runner.js';
@@ -13,55 +12,27 @@ import type { CliResult } from './spawn.js';
  * Adapter A: Claude Code CLI gegen **Profil B**.
  *
  * Implementiert `LLMProvider` aus `@gto/shared` - den einzigen erlaubten
- * KI-Zugang. Der Adapter kennt zwei Transportwege, die sich ausschliesslich
- * ueber die Konfiguration unterscheiden (ADR-0022):
+ * KI-Zugang. Nebenlaeufigkeit, Retry und die Vorpruefung der Anfrage kommen
+ * aus {@link GuardedProvider} und sind mit dem API-Adapter identisch.
+ *
+ * Der Adapter kennt zwei Transportwege, die sich ausschliesslich ueber die
+ * Konfiguration unterscheiden (ADR-0022):
  *
  * - `direct` - dieser Prozess startet die CLI selbst (lokal, und im Runner),
  * - `socket` - dieser Prozess reicht die Anfrage an den Host-Runner weiter
  *   (Container).
- *
- * Nebenlaeufigkeit und Retry liegen in beiden Faellen hier, damit der Host
- * nicht ueber den Umweg vieler Verbindungen doch ueberlastet wird.
  */
-export class ClaudeCliProvider implements LLMProvider {
+export class ClaudeCliProvider extends GuardedProvider {
   readonly id = 'cli' as const;
   readonly #config: LlmConfig;
-  readonly #semaphore: Semaphore;
 
   constructor(config: LlmConfig) {
+    super(config);
     this.#config = config;
-    this.#semaphore = new Semaphore(config.maxConcurrency);
-  }
-
-  /** Nur fuer Diagnose und Tests: aktuelle Auslastung der Semaphore. */
-  get inFlight(): number {
-    return this.#semaphore.inFlight;
-  }
-
-  async complete<TJson = unknown>(request: LlmRequest): Promise<LlmResponse<TJson>> {
-    assertRequest(request);
-    const timeoutMs = request.timeoutMs ?? this.#config.timeoutMs;
-
-    const response = await withRetry(
-      () => this.#semaphore.run(() => this.#attempt(request, timeoutMs)),
-      {
-        maxAttempts: this.#config.maxAttempts,
-        baseDelayMs: this.#config.retryBaseDelayMs,
-        maxDelayMs: this.#config.retryMaxDelayMs,
-        totalBudgetMs: this.#config.retryTotalBudgetMs,
-      },
-      {
-        // Einzige Quelle der Wahrheit ist die Taxonomie aus T2.1.
-        isRetryable: (error) => isLlmError(error) && error.retryable,
-        retryAfterMs: (error) => (isLlmError(error) ? error.retryAfterMs : undefined),
-      },
-    );
-
-    return response as LlmResponse<TJson>;
   }
 
   /** Ein einzelner Versuch: aufrufen, auswerten, Dauer messen. */
-  async #attempt(request: LlmRequest, timeoutMs: number): Promise<LlmResponse> {
+  protected async attempt(request: LlmRequest, timeoutMs: number): Promise<LlmResponse> {
     const startedAt = Date.now();
     const result = await this.#invoke(request, timeoutMs);
     return interpretCliResult(request, result, {
@@ -101,22 +72,4 @@ export function createClaudeCliProvider(config: LlmConfig = loadLlmConfig()): Cl
     );
   }
   return new ClaudeCliProvider(config);
-}
-
-/** Frueher Abbruch bei offensichtlich unbrauchbaren Anfragen. */
-function assertRequest(request: LlmRequest): void {
-  if (request.messages.length === 0) {
-    throw new LlmError({
-      kind: 'invalid',
-      provider: 'cli',
-      message: 'Die Anfrage enthaelt keine Nachricht.',
-    });
-  }
-  if (!Number.isInteger(request.maxTokens) || request.maxTokens < 1) {
-    throw new LlmError({
-      kind: 'invalid',
-      provider: 'cli',
-      message: `maxTokens muss eine positive Ganzzahl sein, ist: ${String(request.maxTokens)}.`,
-    });
-  }
 }

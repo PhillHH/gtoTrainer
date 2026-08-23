@@ -387,13 +387,19 @@ aus `packages/shared`.
 AP3 Vision · AP4 Reports · AP5 Didaktik · AP8 Analyse · AP9 Material
         │  (nur dieser Weg ist erlaubt)
         ▼
-   LLMProvider           packages/shared/src/llm.ts  ← Vertrag, AP2.T2.1
+LlmProviderRegistry        apps/backend/src/llm/registry.ts  ← einziger Zugang
+        │   liest llm.provider aus der config-Tabelle,
+        │   Startwert LLM_PROVIDER, sonst "cli"
+        ▼
+   LLMProvider             packages/shared/src/llm.ts  ← Vertrag, AP2.T2.1
+        │
+   GuardedProvider         Semaphore · Retry · Vorpruefung (fuer beide gleich)
         │
    ┌────┴─────────────────────────┐
    ▼                              ▼
 Adapter "cli"  (T2.2)      Adapter "api"  (T2.3)
    │                              │
-   │ Unix-Domain-Socket           │ HTTPS
+   │ Unix-Domain-Socket           │ HTTPS, @anthropic-ai/sdk
    │ (Bind-Mount, ADR-0022)       ▼
    ▼                        api.anthropic.com
 ── Containergrenze ──────────────────────────────
@@ -414,16 +420,19 @@ steht in [ADR-0021](./DECISIONS.md).
 
 `apps/backend/src/llm/` implementiert Adapter „cli". Aufbau:
 
-| Modul          | Aufgabe                                                            |
-| -------------- | ------------------------------------------------------------------ |
-| `cli-provider` | `LLMProvider`-Implementierung: Semaphore, Retry, Transportwahl     |
-| `invocation`   | `LlmRequest` → Argumentliste, stdin-Nachricht, Prozess-Environment |
-| `spawn`        | Prozessstart ohne Shell, Timeout, SIGTERM → SIGKILL                |
-| `interpret`    | CLI-Ausgabe → `LlmResponse` oder `LlmError` der Taxonomie          |
-| `parse`        | Fence-Stripping, Wrapper-Text, schlanke Schemaprüfung              |
-| `concurrency`  | Semaphore und Backoff mit Streuung                                 |
-| `runner`       | Host-Runner (Server) und sein Gegenstück im Container (Client)     |
-| `runner-main`  | Einstiegspunkt des Host-Prozesses (`pnpm llm:runner`)              |
+| Modul           | Aufgabe                                                                 |
+| --------------- | ----------------------------------------------------------------------- |
+| `cli-provider`  | `LLMProvider`-Implementierung: Semaphore, Retry, Transportwahl          |
+| `invocation`    | `LlmRequest` → Argumentliste, stdin-Nachricht, Prozess-Environment      |
+| `spawn`         | Prozessstart ohne Shell, Timeout, SIGTERM → SIGKILL                     |
+| `interpret`     | CLI-Ausgabe → `LlmResponse` oder `LlmError` der Taxonomie               |
+| `parse`         | Fence-Stripping, Wrapper-Text, schlanke Schemaprüfung                   |
+| `concurrency`   | Semaphore und Backoff mit Streuung                                      |
+| `runner`        | Host-Runner (Server) und sein Gegenstück im Container (Client)          |
+| `runner-main`   | Einstiegspunkt des Host-Prozesses (`pnpm llm:runner`)                   |
+| `base-provider` | `GuardedProvider`: Semaphore, Retry, Vorprüfung — für **beide** Adapter |
+| `api-provider`  | Adapter B gegen die Anthropic Messages API (T2.3)                       |
+| `registry`      | Provider-Auswahl aus der Konfiguration — der einzige Zugang             |
 
 Der Aufrufweg ist **einer**, nur der Transport unterscheidet sich — und der
 kommt aus der Konfiguration, nicht aus einer Code-Verzweigung:
@@ -449,9 +458,33 @@ stream-json --verbose [--json-schema …]`, Prompt über stdin. Der Kindprozess
 erhält ein Environment aus genau vier Variablen — `ANTHROPIC_API_KEY` ist
 bewusst nicht darunter.
 
-**Stand nach T2.2:** Der Adapter ist gebaut und getestet, aber noch **nicht**
-an Job-Verarbeitung, `llm_call_log` oder UI angebunden. Das folgt in T2.5/T2.6;
-der API-Adapter kommt in T2.3.
+### API-Adapter und Registry (neu in T2.3)
+
+Adapter B spricht die Anthropic Messages API über das offizielle SDK
+([ADR-0024](./DECISIONS.md)); der SDK-eigene Retry ist abgeschaltet, damit
+`GuardedProvider` die einzige Wiederholungslogik bleibt. Strukturierte
+Ausgaben laufen über `output_config.format`, ausgewertet mit denselben
+Funktionen wie beim CLI-Adapter — deshalb ergibt dieselbe Eingabe bei beiden
+Adaptern dieselbe Antwortform und dieselbe Fehlerkategorie.
+
+Die Umschaltung ist reine Konfiguration:
+
+```
+config-Tabelle  llm.provider = 'api'   ← Laufzeit (T2.6: Settings-UI)
+        ↓ (fehlt / null)
+Umgebung        LLM_PROVIDER=cli       ← Startwert
+        ↓ (fehlt)
+Default         'cli'
+```
+
+Die Tabelle wird bei jedem Aufruf gelesen: Eine Umschaltung wirkt ab dem
+nächsten Aufruf, ohne Neustart. Ein unbekannter Wert ist ein Fehler mit klarer
+Meldung, kein stiller Default.
+
+**Stand nach T2.3:** Beide Adapter sind gebaut, durch eine gemeinsame
+Paritätssuite abgesichert und über die Registry umschaltbar — aber noch
+**nicht** an Job-Verarbeitung, `llm_call_log` oder UI angebunden. Das folgt in
+T2.5/T2.6.
 
 ## 4. Querschnitts-Entscheidungen
 

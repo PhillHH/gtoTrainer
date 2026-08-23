@@ -736,7 +736,65 @@ import("/app/dist/llm/index.js").then(async ({ createClaudeCliProvider }) => {
 }).catch((e) => { console.error("FEHLER:", e.kind, e.message); process.exit(1); });'
 ```
 
-### 9.4 Typische Fehlerbilder
+### 9.4 Provider umschalten (CLI ↔ API)
+
+Welcher Adapter arbeitet, steht in der `config`-Tabelle unter `llm.provider`.
+Die Umschaltung wirkt **ab dem nächsten Aufruf** — kein Neustart, keine
+Codeänderung. Die Oberfläche dazu kommt in T2.6; bis dahin per SQL:
+
+```bash
+# aktuellen Wert ansehen
+docker exec gto-postgres psql -U gto -d gto -c \
+  "select key, value from config where key = 'llm.provider';"
+
+# auf den API-Fallback umschalten
+docker exec gto-postgres psql -U gto -d gto -c \
+  "insert into config (key, value) values ('llm.provider', '\"api\"'::jsonb)
+   on conflict (key) do update set value = excluded.value, updated_at = now();"
+
+# zurück auf die Subscription
+docker exec gto-postgres psql -U gto -d gto -c \
+  "update config set value = '\"cli\"'::jsonb, updated_at = now() where key = 'llm.provider';"
+```
+
+Steht dort `null` oder gar nichts, gilt `LLM_PROVIDER` aus der `.env`, sonst
+`cli`. Ein anderer Wert als `cli`/`api` führt zu einer klaren Fehlermeldung —
+nicht zu einem stillen Rückfall.
+
+### 9.5 API-Schlüssel eintragen
+
+Der Schlüssel wird **nur** gebraucht, wenn `api` der aktive Provider ist. Ohne
+ihn läuft das Backend mit `cli` ganz normal weiter.
+
+```bash
+# in der git-ignorierten .env (NIE im Repository):
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Danach den Backend-Container neu starten, damit er die Variable sieht:
+
+```bash
+docker compose up -d backend
+```
+
+Der Schlüssel wird nirgends ausgegeben — weder in Logs noch in
+Fehlermeldungen, auch nicht gekürzt.
+
+### 9.6 Live-Smoke ausführen
+
+```bash
+cd /home/phillip/gto
+LLM_LIVE_SMOKE=true pnpm --filter @gto/backend exec vitest run test/llm/live-smoke.test.ts
+```
+
+Ohne `LLM_LIVE_SMOKE=true` werden beide Blöcke übersprungen (so auch in der
+CI). Ist kein `ANTHROPIC_API_KEY` gesetzt, wird der API-Teil **übersprungen,
+nicht bestanden**, mit der Meldung
+`[live-smoke api] UEBERSPRUNGEN: kein ANTHROPIC_API_KEY gesetzt.` samt
+Nachhol-Kommando. Jeder Lauf verbraucht Kontingent bzw. Guthaben — deshalb
+sparsam und mit `LLM_SMOKE_MODEL=claude-haiku-4-5`.
+
+### 9.7 Typische Fehlerbilder
 
 | Meldung / Symptom                                                      | Ursache                                         | Abhilfe                                                                    |
 | ---------------------------------------------------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------- |
@@ -748,6 +806,17 @@ import("/app/dist/llm/index.js").then(async ({ createClaudeCliProvider }) => {
 | `hat nicht innerhalb des Zeitlimits geantwortet` (Kategorie `timeout`) | Aufruf zu langsam                               | `LLM_TIMEOUT_MS` erhöhen; Vision-Aufrufe brauchen länger als Textaufrufe   |
 | `exceeded the N output token maximum` (Kategorie `invalid`)            | `maxTokens` zu klein — die CLI kürzt nicht      | `maxTokens` im Request erhöhen                                             |
 | `Die Antwort verletzt das angeforderte Schema` (Kategorie `parse`)     | Antwort passt nicht zum `jsonSchema`            | Schema oder Prompt schärfen; wird bewusst **nicht** wiederholt             |
+
+Fehlerbilder des API-Adapters (Adapter B):
+
+| Meldung / Symptom                                                          | Ursache                                                                                 | Abhilfe                                                                             |
+| -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `ANTHROPIC_API_KEY fehlt oder ist leer` (Kategorie `auth`)                 | API-Provider aktiv, kein Schlüssel                                                      | Abschnitt 9.5 — oder `llm.provider` auf `cli` zurückstellen (9.4)                   |
+| `Anthropic-API hat die Anmeldung abgelehnt (401)` (Kategorie `auth`)       | Schlüssel ungültig oder widerrufen                                                      | neuen Schlüssel in der Console erzeugen                                             |
+| `Kontingent erschoepft (429)` (Kategorie `rate_limit`)                     | Rate-Limit oder Guthaben erschöpft                                                      | Der Adapter übernimmt den `retry-after`-Hinweis; sonst `LLM_MAX_CONCURRENCY` senken |
+| `Endpunkt oder Modell unbekannt (404)` (Kategorie `invalid`)               | falsche Modell-ID in `LLM_MODEL`                                                        | gültige ID eintragen, z. B. `claude-sonnet-5`                                       |
+| `hat die Anfrage abgelehnt (400)` mit Schema-Hinweis (Kategorie `invalid`) | Das JSON-Schema nutzt nicht unterstützte Schlüsselwörter (`minimum`, `$ref`, Rekursion) | Schema vereinfachen (siehe ADR-0024, „Bekannte Grenze")                             |
+| `voruebergehend gestoert (5xx)` (Kategorie `transient`)                    | Anthropic-seitige Störung                                                               | wird automatisch wiederholt; hält es an, auf `cli` umschalten (9.4)                 |
 
 Laufendes Protokoll des Runners: `tail -f /home/phillip/gto-llm-runner/runner.log`.
 
