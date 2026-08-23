@@ -2,7 +2,13 @@ import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LlmCallDetail, LlmCallSummary } from '@gto/shared';
-import { AUTHENTICATED_ME, jsonResponse, mockFetch, renderApp } from './helpers.js';
+import {
+  AUTHENTICATED_ME,
+  DEFAULT_LLM_SETTINGS,
+  jsonResponse,
+  mockFetch,
+  renderApp,
+} from './helpers.js';
 
 /**
  * Ansicht "letzte KI-Aufrufe" unter Einstellungen (AP2.T2.5).
@@ -57,6 +63,9 @@ function mockCalls(options: { calls?: readonly LlmCallSummary[] } = {}): { urls:
     const url = typeof input === 'string' ? input : input.toString();
     urls.push(url);
 
+    if (url.includes('/api/llm/settings')) {
+      return jsonResponse(200, DEFAULT_LLM_SETTINGS);
+    }
     if (url.includes('/api/llm/calls/')) {
       return jsonResponse(200, { call: DETAIL });
     }
@@ -140,6 +149,7 @@ describe('Einstellungen: letzte KI-Aufrufe', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('/api/llm/settings')) return jsonResponse(200, DEFAULT_LLM_SETTINGS);
         if (url.includes('/api/llm/calls')) return jsonResponse(500, {});
         return base(input, init) as Promise<Response>;
       }),

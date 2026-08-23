@@ -65,3 +65,25 @@ export type {
   LlmCallStatus,
   LlmCallSummary,
 } from './observability.js';
+
+export {
+  LLM_MODEL_CHOICES,
+  LLM_MODEL_IDS,
+  LLM_PING_PROMPT,
+  LLM_SETTINGS_RANGES,
+  isLlmModelId,
+  isLlmSettingsErrorResponse,
+} from './settings.js';
+export type {
+  LlmModelId,
+  LlmPingFailure,
+  LlmPingRequest,
+  LlmPingResponse,
+  LlmPingSuccess,
+  LlmSettings,
+  LlmSettingsErrorResponse,
+  LlmSettingsResponse,
+  LlmSettingsUpdate,
+  SettingsFieldError,
+  SettingsOrigin,
+} from './settings.js';

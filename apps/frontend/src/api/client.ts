@@ -4,6 +4,7 @@ import {
   JOB_EVENT_NAME,
   isAuthErrorResponse,
   isJobEvent,
+  isLlmSettingsErrorResponse,
   type AuthErrorCode,
   type CsrfTokenResponse,
   type JobEvent,
@@ -11,10 +12,15 @@ import {
   type LlmCallDetailResponse,
   type LlmCallListResponse,
   type LlmCallStatus,
+  type LlmPingRequest,
+  type LlmPingResponse,
+  type LlmSettingsResponse,
+  type LlmSettingsUpdate,
   type LoginRequest,
   type LoginResponse,
   type LogoutResponse,
   type MeResponse,
+  type SettingsFieldError,
 } from '@gto/shared';
 
 /**
@@ -50,13 +56,25 @@ export class ApiError extends Error {
   readonly status: number;
   /** Fehlercode des Backends, falls die Antwort dem Auth-Vertrag entsprach. */
   readonly code: AuthErrorCode | undefined;
+  /**
+   * Feldweise Ablehnungen der Einstellungen (AP2.T2.6). Leer bei allen
+   * anderen Fehlern - die Oberflaeche zeigt sie am jeweiligen Feld an.
+   */
+  readonly fields: readonly SettingsFieldError[];
 
-  constructor(kind: ApiErrorKind, status: number, message: string, code?: AuthErrorCode) {
+  constructor(
+    kind: ApiErrorKind,
+    status: number,
+    message: string,
+    code?: AuthErrorCode,
+    fields: readonly SettingsFieldError[] = [],
+  ) {
     super(message);
     this.name = 'ApiError';
     this.kind = kind;
     this.status = status;
     this.code = code;
+    this.fields = fields;
   }
 }
 
@@ -149,6 +167,9 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
   if (!response.ok) {
     const kind = kindForStatus(response.status);
+    if (isLlmSettingsErrorResponse(payload)) {
+      throw new ApiError(kind, response.status, payload.message, undefined, payload.fields);
+    }
     if (isAuthErrorResponse(payload)) {
       throw new ApiError(kind, response.status, payload.message, payload.error);
     }
@@ -232,6 +253,31 @@ export function subscribeToJobEvents(onEvent: (event: JobEvent) => void): () => 
   };
 }
 
+/* -------------------------------------------------------------------------
+ * Provider- und Modell-Einstellungen (AP2.T2.6)
+ * ---------------------------------------------------------------------- */
+
+/** Liest die geltenden Einstellungen samt Herkunft, Auswahl und Grenzen. */
+export function fetchLlmSettings(): Promise<LlmSettingsResponse> {
+  return request<LlmSettingsResponse>('/api/llm/settings');
+}
+
+/**
+ * Speichert Einstellungen. Bei serverseitiger Ablehnung wirft der Aufruf
+ * einen `ApiError` mit `kind: 'client'`; die Feldfehler stehen in `fields`.
+ */
+export function saveLlmSettings(patch: LlmSettingsUpdate): Promise<LlmSettingsResponse> {
+  return request<LlmSettingsResponse>('/api/llm/settings', { method: 'PUT', body: patch });
+}
+
+/**
+ * Setzt einen echten Testaufruf ab. Das kostet Kontingent bzw. Guthaben -
+ * deshalb nur auf ausdrueckliche Aktion, nie beim Laden der Seite.
+ */
+export function pingLlm(body: LlmPingRequest = {}): Promise<LlmPingResponse> {
+  return request<LlmPingResponse>('/api/llm/settings/ping', { method: 'POST', body });
+}
+
 export const apiClient = {
   fetchCsrfToken,
   login,
@@ -241,4 +287,7 @@ export const apiClient = {
   fetchLlmCall,
   retryJob,
   subscribeToJobEvents,
+  fetchLlmSettings,
+  saveLlmSettings,
+  pingLlm,
 } as const;

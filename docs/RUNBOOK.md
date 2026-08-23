@@ -736,11 +736,13 @@ import("/app/dist/llm/index.js").then(async ({ createClaudeCliProvider }) => {
 }).catch((e) => { console.error("FEHLER:", e.kind, e.message); process.exit(1); });'
 ```
 
-### 9.4 Provider umschalten (CLI ↔ API)
+### 9.4 Provider umschalten per SQL (Notweg)
 
 Welcher Adapter arbeitet, steht in der `config`-Tabelle unter `llm.provider`.
 Die Umschaltung wirkt **ab dem nächsten Aufruf** — kein Neustart, keine
-Codeänderung. Die Oberfläche dazu kommt in T2.6; bis dahin per SQL:
+Codeänderung. Der vorgesehene Weg ist seit T2.6 die Oberfläche
+(Abschnitt 10.5); der folgende SQL-Weg ist der Notweg, wenn sie nicht
+erreichbar ist:
 
 ```bash
 # aktuellen Wert ansehen
@@ -871,7 +873,7 @@ import("/app/dist/prompts/index.js").then(({ TemplateRegistry }) =>
   console.log(TemplateRegistry.load().ids()));'
 ```
 
-## 10. Job-Worker und Aufruf-Protokoll (AP2.T2.5)
+## 10. Job-Worker, Einstellungen und Aufruf-Protokoll (AP2.T2.5/T2.6)
 
 ### 10.1 Worker starten, stoppen, beobachten
 
@@ -983,7 +985,31 @@ curl -N -H "Cookie: gto_session=$SESSION" http://127.0.0.1:3010/api/jobs/events
 # → ": verbunden" und danach "event: job" je Statusaenderung
 ```
 
-### 10.5 Aufruf-Protokoll ansehen und aufräumen
+### 10.5 Provider und Modell umschalten (Oberfläche)
+
+Seit T2.6 ist das der vorgesehene Weg — **Einstellungen → Provider und Modell**:
+
+- Provider (CLI/API), Modell, Timeout, gleichzeitige Aufrufe, Versuche.
+- **Speichern** wirkt ab dem nächsten Aufruf, ohne Neustart.
+- Ungültige Werte lehnt der Server ab und markiert das betroffene Feld.
+- **Testaufruf ausführen** setzt einen echten, minimalen Aufruf ab und zeigt
+  Provider, Modell, Dauer und die Antwort — im Fehlerfall die Kategorie und
+  einen Hinweis, was zu tun ist. Der Aufruf kostet echtes Kontingent; zwischen
+  zwei Tests liegen mindestens zehn Sekunden.
+
+Der SQL-Weg aus Abschnitt 9.4 bleibt gültig, ist aber nur noch nötig, wenn die
+Oberfläche nicht erreichbar ist. Was tatsächlich gilt, zeigt:
+
+```bash
+docker exec gto-postgres psql -U gto -d gto -c \
+  "select key, value from config where key like 'llm.%' order by key;"
+```
+
+Steht dort nichts, gilt die `.env` (`LLM_PROVIDER`, `LLM_MODEL`, …). Ein
+unbrauchbarer Wert in der Tabelle wird ignoriert und die Oberfläche weist das
+Feld als „Default" aus.
+
+### 10.6 Aufruf-Protokoll ansehen und aufräumen
 
 In der Oberfläche: **Einstellungen → Letzte KI-Aufrufe**, mit Statusfilter und
 Detailansicht für Prompt und Antwort.

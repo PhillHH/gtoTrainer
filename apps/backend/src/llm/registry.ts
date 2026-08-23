@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { isLlmProviderId } from '@gto/shared';
-import type { LLMProvider, LlmProviderId } from '@gto/shared';
+import type { LLMProvider, LlmProviderId, LlmSettings } from '@gto/shared';
 import { loadLlmConfig } from '../config/env.js';
 import type { LlmConfig } from '../config/env.js';
 import { config as configTable } from '../db/schema.js';
@@ -10,6 +10,7 @@ import { withCallLog } from './call-log.js';
 import type { CallLogOptions } from './call-log.js';
 import { createClaudeCliProvider } from './cli-provider.js';
 import { LlmError } from './errors.js';
+import type { LlmSettingsReader } from './settings.js';
 
 /**
  * Provider-Registry - **der einzige Weg**, an einen `LLMProvider` zu kommen.
@@ -77,6 +78,14 @@ export interface RegistryOptions {
    * Adapter (AP2.T2.5). Zentral hier, damit kein Aufrufer es vergessen kann.
    */
   readonly callLog?: CallLogOptions;
+  /**
+   * Laufzeit-Einstellungen aus der `config`-Tabelle (AP2.T2.6). Ist das
+   * gesetzt, bestimmen sie Provider, Modell und die Aufrufparameter; ohne das
+   * gilt allein `config`. Aendert sich ein Wert, der beim Bau des Adapters
+   * einfliesst (Nebenlaeufigkeit, Versuche, Timeout), wird der Adapter beim
+   * naechsten Aufruf neu gebaut - deshalb wirkt eine Umschaltung ohne Neustart.
+   */
+  readonly settings?: LlmSettingsReader;
 }
 
 export class LlmProviderRegistry {
@@ -84,6 +93,9 @@ export class LlmProviderRegistry {
   readonly #source: ProviderConfigSource | undefined;
   readonly #factory: ProviderFactory;
   readonly #callLog: CallLogOptions | undefined;
+  readonly #settings: LlmSettingsReader | undefined;
+  /** Fingerabdruck der Werte, die in den Bau eines Adapters einfliessen. */
+  #limitsFingerprint: string | undefined;
   /** Adapter werden einmal gebaut und wiederverwendet - die Semaphore je
    *  Adapter soll ueber Aufrufe hinweg gelten. */
   readonly #cache = new Map<LlmProviderId, LLMProvider>();
@@ -93,10 +105,13 @@ export class LlmProviderRegistry {
     this.#source = options.source;
     this.#factory = options.factory ?? defaultFactory;
     this.#callLog = options.callLog;
+    this.#settings = options.settings;
   }
 
   /** Kennung des gerade aktiven Providers. */
   async activeProviderId(): Promise<LlmProviderId> {
+    if (this.#settings !== undefined) return (await this.#settings.read()).provider;
+
     const raw = await this.#source?.readActiveProviderId();
     if (raw === undefined || raw === null || raw === '') {
       return this.#config.provider ?? 'cli';
@@ -113,16 +128,40 @@ export class LlmProviderRegistry {
     return raw;
   }
 
-  /** Der aktive Provider. Wird je Aufruf neu ermittelt. */
+  /** Die geltenden Einstellungen, sofern eine Quelle gesetzt ist. */
+  async currentSettings(): Promise<LlmSettings | undefined> {
+    return this.#settings?.read();
+  }
+
+  /**
+   * Der aktive Provider. Wird je Aufruf neu ermittelt - eine Umschaltung
+   * wirkt damit ab dem naechsten Aufruf, ohne Neustart.
+   */
   async getActive(): Promise<LLMProvider> {
-    return this.get(await this.activeProviderId());
+    if (this.#settings === undefined) return this.get(await this.activeProviderId());
+
+    const settings = await this.#settings.read();
+    const fingerprint = `${settings.timeoutMs}|${settings.maxConcurrency}|${settings.maxAttempts}`;
+    if (this.#limitsFingerprint !== undefined && this.#limitsFingerprint !== fingerprint) {
+      // Nebenlaeufigkeit, Versuche und Timeout fliessen beim Bau in den
+      // Adapter ein - geaendert heisst also: neu bauen.
+      this.#cache.clear();
+    }
+    this.#limitsFingerprint = fingerprint;
+
+    return this.get(settings.provider, {
+      model: settings.model,
+      timeoutMs: settings.timeoutMs,
+      maxConcurrency: settings.maxConcurrency,
+      maxAttempts: settings.maxAttempts,
+    });
   }
 
   /** Ein bestimmter Adapter - fuer Paritaetstests und den Ping-Test aus T2.6. */
-  get(id: LlmProviderId): LLMProvider {
+  get(id: LlmProviderId, overrides: Partial<LlmConfig> = {}): LLMProvider {
     const cached = this.#cache.get(id);
     if (cached !== undefined) return cached;
-    const built = this.#factory(id, this.#config);
+    const built = this.#factory(id, { ...this.#config, ...overrides });
     // Das Protokoll liegt aussen um den Adapter: Wer die Registry benutzt,
     // protokolliert automatisch mit.
     const created = this.#callLog === undefined ? built : withCallLog(built, this.#callLog);

@@ -1,5 +1,6 @@
 import type { LlmProviderRegistry } from '../../llm/registry.js';
 import type { TemplateRegistry } from '../../prompts/registry.js';
+import type { LlmSettingsReader } from '../../llm/settings.js';
 import { JobPayloadError } from '../types.js';
 import type { JobType } from '../types.js';
 
@@ -33,6 +34,11 @@ export interface LlmCompleteOptions {
   /** Vorgaben, wenn die Nutzlast nichts sagt. */
   readonly defaultModel: string;
   readonly defaultMaxTokens: number;
+  /**
+   * Laufzeit-Einstellungen (T2.6). Sind sie gesetzt, liefern sie Modell und
+   * Timeout - die Nutzlast hat weiterhin Vorrang.
+   */
+  readonly settings?: LlmSettingsReader;
 }
 
 /**
@@ -91,10 +97,13 @@ export function createLlmCompleteJob(options: LlmCompleteOptions): JobType<LlmCo
     },
 
     async run(payload, context): Promise<void> {
+      const settings = await options.settings?.read();
+      const timeoutMs = payload.timeoutMs ?? settings?.timeoutMs;
+
       const request = options.templates.renderRequest(payload.templateId, payload.values, {
-        model: payload.model ?? options.defaultModel,
+        model: payload.model ?? settings?.model ?? options.defaultModel,
         maxTokens: payload.maxTokens ?? options.defaultMaxTokens,
-        ...(payload.timeoutMs === undefined ? {} : { timeoutMs: payload.timeoutMs }),
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
       });
 
       const provider = await options.providers.getActive();

@@ -420,21 +420,23 @@ steht in [ADR-0021](./DECISIONS.md).
 
 `apps/backend/src/llm/` implementiert Adapter „cli". Aufbau:
 
-| Modul           | Aufgabe                                                                 |
-| --------------- | ----------------------------------------------------------------------- |
-| `cli-provider`  | `LLMProvider`-Implementierung: Semaphore, Retry, Transportwahl          |
-| `invocation`    | `LlmRequest` → Argumentliste, stdin-Nachricht, Prozess-Environment      |
-| `spawn`         | Prozessstart ohne Shell, Timeout, SIGTERM → SIGKILL                     |
-| `interpret`     | CLI-Ausgabe → `LlmResponse` oder `LlmError` der Taxonomie               |
-| `parse`         | Fence-Stripping, Wrapper-Text, schlanke Schemaprüfung                   |
-| `concurrency`   | Semaphore und Backoff mit Streuung                                      |
-| `runner`        | Host-Runner (Server) und sein Gegenstück im Container (Client)          |
-| `runner-main`   | Einstiegspunkt des Host-Prozesses (`pnpm llm:runner`)                   |
-| `base-provider` | `GuardedProvider`: Semaphore, Retry, Vorprüfung — für **beide** Adapter |
-| `api-provider`  | Adapter B gegen die Anthropic Messages API (T2.3)                       |
-| `registry`      | Provider-Auswahl aus der Konfiguration — der einzige Zugang             |
-| `call-log`      | Protokoll-Dekorator um jeden Adapter, Kürzung und Bild-Vermerk          |
-| `log-routes`    | Lesezugriff auf `llm_call_log` für die Oberfläche                       |
+| Modul             | Aufgabe                                                                 |
+| ----------------- | ----------------------------------------------------------------------- |
+| `cli-provider`    | `LLMProvider`-Implementierung: Semaphore, Retry, Transportwahl          |
+| `invocation`      | `LlmRequest` → Argumentliste, stdin-Nachricht, Prozess-Environment      |
+| `spawn`           | Prozessstart ohne Shell, Timeout, SIGTERM → SIGKILL                     |
+| `interpret`       | CLI-Ausgabe → `LlmResponse` oder `LlmError` der Taxonomie               |
+| `parse`           | Fence-Stripping, Wrapper-Text, schlanke Schemaprüfung                   |
+| `concurrency`     | Semaphore und Backoff mit Streuung                                      |
+| `runner`          | Host-Runner (Server) und sein Gegenstück im Container (Client)          |
+| `runner-main`     | Einstiegspunkt des Host-Prozesses (`pnpm llm:runner`)                   |
+| `base-provider`   | `GuardedProvider`: Semaphore, Retry, Vorprüfung — für **beide** Adapter |
+| `api-provider`    | Adapter B gegen die Anthropic Messages API (T2.3)                       |
+| `registry`        | Provider-Auswahl aus der Konfiguration — der einzige Zugang             |
+| `call-log`        | Protokoll-Dekorator um jeden Adapter, Kürzung und Bild-Vermerk          |
+| `log-routes`      | Lesezugriff auf `llm_call_log` für die Oberfläche                       |
+| `settings`        | Laufzeit-Einstellungen lesen, prüfen, schreiben                         |
+| `settings-routes` | `GET/PUT /api/llm/settings`, `POST /api/llm/settings/ping`              |
 
 Der Aufrufweg ist **einer**, nur der Transport unterscheidet sich — und der
 kommt aus der Konfiguration, nicht aus einer Code-Verzweigung:
@@ -571,11 +573,35 @@ Host-Nginx-vhost hat dafür eine eigene `location` ohne Pufferung (siehe
 `deploy/nginx/gto.growento.com.conf`); das Einspielen bleibt ein Root-Schritt
 des Nutzers.
 
-**Stand nach T2.5:** Beide Adapter, Provider-Registry, Template-Registry,
-Worker, Protokoll und die Ansicht „letzte KI-Aufrufe" greifen ineinander und
-sind an einem echten Durchlauf belegt. Offen bleibt die Settings-UI für
-Provider und Modell (T2.6). Die fachlichen Lern-Templates und Job-Typen
-entstehen ab AP3/AP5.
+### Laufzeit-Einstellungen (neu in T2.6)
+
+Provider, Modell, Timeout, Nebenläufigkeit und Versuche liegen in der
+`config`-Tabelle und werden über **Einstellungen** gesetzt:
+
+```
+Einstellungen-Seite
+   │  GET/PUT /api/llm/settings        (auth + CSRF, serverseitig geprüft)
+   ▼
+config-Tabelle   llm.provider · llm.model · llm.timeout_ms
+   │             llm.max_concurrency · llm.max_attempts
+   │  je Feld: Tabelle → .env → fester Default
+   ▼
+LlmProviderRegistry  liest bei JEDEM getActive()
+   │  ändert sich ein Wert, der in den Bau des Adapters einfließt,
+   │  wird der Adapter verworfen und neu gebaut
+   ▼
+Adapter (cli|api) → withCallLog → llm_call_log
+```
+
+Der **Ping-Test** (`POST /api/llm/settings/ping`) nimmt denselben Weg wie jeder
+andere Aufruf; Protokoll und Fehler-Taxonomie greifen dadurch automatisch.
+Begründungen in [ADR-0029](./DECISIONS.md).
+
+**Stand nach AP2:** Das LLM-Gateway ist vollständig — zwei Adapter mit
+Paritätstests, Registry mit Laufzeitwahl, Template-Registry mit Golden-Tests,
+Job-Worker mit Retry und Dead-Letter, zentrales Aufruf-Protokoll, SSE-Statuskanal
+und die Einstellungen-Seite mit Testaufruf. Die fachlichen Job-Typen und
+Lern-Templates entstehen ab AP3/AP5.
 
 ## 4. Querschnitts-Entscheidungen
 
@@ -596,3 +622,8 @@ Begründungen siehe [DECISIONS.md](./DECISIONS.md).
 - Der Host-seitige CLI-Runner aus [ADR-0022](./DECISIONS.md) läuft außerhalb
   von Compose. Sein Neustart nach einem Reboot ist noch nicht abgesichert
   (siehe `docs/RUNBOOK.md` 9.2).
+- Die SSE-`location` im vhost ist vorbereitet, aber wie der ganze vhost noch
+  nicht eingespielt (`docs/RUNBOOK.md` 10.4).
+- Der SSE-Ereignisbus ist prozessintern; das Gateway setzt damit **eine**
+  Backend-Instanz voraus ([ADR-0026](./DECISIONS.md)). Das Job-Claiming selbst
+  ist mehrinstanzfähig.

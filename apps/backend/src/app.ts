@@ -10,6 +10,9 @@ import type { Database } from './db/client.js';
 import type { JobEventBus } from './jobs/events.js';
 import { registerJobRoutes } from './jobs/routes.js';
 import { registerLlmLogRoutes } from './llm/log-routes.js';
+import { registerLlmSettingsRoutes } from './llm/settings-routes.js';
+import type { LlmProviderRegistry } from './llm/registry.js';
+import type { LlmConfig } from './config/env.js';
 
 export interface BuildAppOptions {
   readonly logger?: boolean;
@@ -28,6 +31,14 @@ export interface BuildAppOptions {
   readonly jobEvents?: JobEventBus;
   /** Nur fuer Tests: kuerzerer Keepalive-Takt im SSE-Kanal. */
   readonly sseKeepAliveMs?: number;
+  /**
+   * Provider-Registry und Umgebungs-Defaults (AP2.T2.6). Sind sie gesetzt,
+   * entstehen die Einstellungs-Routen samt Ping-Test.
+   */
+  readonly providers?: LlmProviderRegistry;
+  readonly llmConfig?: LlmConfig;
+  /** Nur fuer Tests: kuerzere Sperrzeit zwischen zwei Ping-Tests. */
+  readonly pingCooldownMs?: number;
 }
 
 /**
@@ -54,6 +65,15 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     });
 
     registerLlmLogRoutes(app, { db: options.db });
+
+    if (options.providers && options.llmConfig) {
+      registerLlmSettingsRoutes(app, {
+        db: options.db,
+        providers: options.providers,
+        fallback: options.llmConfig,
+        ...(options.pingCooldownMs === undefined ? {} : { pingCooldownMs: options.pingCooldownMs }),
+      });
+    }
 
     if (options.jobEvents) {
       registerJobRoutes(app, {

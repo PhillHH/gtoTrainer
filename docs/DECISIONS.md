@@ -1623,3 +1623,93 @@ das Produkt keine Antworten mehr gibt.
 Der Vollständigkeit halber: Prompts und Antworten werden bewusst protokolliert
 (sie sind der Gegenstand der Fehlersuche), Zugangsdaten niemals — der
 API-Schlüssel läuft vor jeder Ausgabe durch die Ausschwärzung aus ADR-0024.
+
+---
+
+## ADR-0029 — Laufzeit-Einstellungen: Vertrag in `packages/shared`, Prüfung serverseitig, Ping mit Sperre
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** AP2.T2.6 macht Provider, Modell und die Aufrufparameter zur
+  Laufzeit umschaltbar. Zu entscheiden waren: wo der Vertrag lebt, wie geprüft
+  wird, wie eine Änderung ohne Neustart wirkt und wie der Ping-Test gegen
+  Missbrauch abgesichert ist.
+
+### Entscheidung 1 — Vertrag in `packages/shared`, Werte in der `config`-Tabelle
+
+`packages/shared/src/settings.ts` definiert Felder, erlaubte Modelle und die
+zulässigen Spannen; gespeichert wird in der `config`-Tabelle aus AP1 unter
+`llm.provider`, `llm.model`, `llm.timeout_ms`, `llm.max_concurrency`,
+`llm.max_attempts`.
+
+Damit kennt die Oberfläche die Grenzen aus **derselben** Quelle wie der Server
+und muss nichts hartkodieren: `GET /api/llm/settings` liefert Werte, Herkunft
+(`config` oder `default`), Modellauswahl und Spannen mit.
+
+**Defaults kommen aus der Umgebungskonfiguration** (`LLM_MODEL`,
+`LLM_TIMEOUT_MS`, …), nicht aus einem zweiten Satz Zahlen im Code. Ein nicht
+gesetzter Wert ist damit exakt das, was ohne Tabelle gälte.
+
+### Entscheidung 2 — Prüfung ausschließlich serverseitig, feldweise
+
+Die Oberfläche schränkt ein (Auswahllisten, `min`/`max`), aber **entschieden
+wird auf dem Server**. Abgelehnt wird mit HTTP 400 und einer Liste
+`{ field, message }` — die UI hängt die Meldung ans jeweilige Feld statt an die
+Seite.
+
+Zwei Punkte, die bewusst streng sind:
+
+- **Kein stiller Rückfall auf Defaults.** Ein ungültiger Wert wird abgelehnt,
+  nicht ersetzt. Sonst zeigte die Oberfläche eine Einstellung an, die niemand
+  benutzt.
+- **Unbekannte Felder werden abgelehnt**, nicht ignoriert. Ein Tippfehler oder
+  eine fachliche Einstellung aus einem späteren AP (`mastery_threshold`) fällt
+  damit sofort auf, statt wirkungslos in der Tabelle zu liegen.
+
+Steht in der Tabelle trotzdem ein unbrauchbarer Wert — etwa nach einem
+manuellen SQL-Eingriff —, gilt der Default und die Herkunft wird als `default`
+ausgewiesen. Auch das ist sichtbar, nicht still.
+
+### Entscheidung 3 — Umschaltung ohne Neustart über die Registry
+
+Die `LlmProviderRegistry` liest die Einstellungen bei **jedem** `getActive()`.
+Provider und Modell wirken damit ab dem nächsten Aufruf. Nebenläufigkeit,
+Versuche und Timeout fließen beim **Bau** eines Adapters ein — ändert sich
+einer dieser Werte, verwirft die Registry ihren Zwischenspeicher und baut den
+Adapter neu. Ohne das wäre „gilt ab dem nächsten Aufruf" für drei der fünf
+Felder unwahr gewesen.
+
+Der Preis ist eine Datenbankabfrage je Aufruf. Vertretbar: Der Aufruf selbst
+dauert Sekunden, die Abfrage Mikrosekunden — dieselbe Abwägung wie in ADR-0024.
+
+### Entscheidung 4 — Ping-Test geht durch die Registry, mit Sperrzeit
+
+Der Testaufruf nimmt **denselben** Weg wie jeder andere Aufruf. Dadurch greifen
+Aufruf-Protokoll (ADR-0028) und Fehler-Taxonomie automatisch; es gibt keinen
+zweiten Pfad, der anders protokolliert oder anders scheitert.
+
+- **Sparsam:** Prompt „Antworte nur mit OK", `maxTokens` 1024. Nicht kleiner —
+  die Claude CLI kürzt nicht, sondern bricht ab, wenn die Antwort das Limit
+  sprengt (T2.2). Mit 64 Tokens scheiterte der Ping in der laufenden Instanz
+  reproduzierbar.
+- **Sperrzeit 10 Sekunden** zwischen zwei Pings (`pingCooldownMs`). Ein
+  hängender Button oder ein Doppelklick kostet damit höchstens einen Aufruf.
+  Über 429 mit Klartext, nicht stillschweigend.
+- **Nie automatisch:** Der Ping läuft nur auf ausdrückliche Aktion, nie beim
+  Laden der Seite. Die Oberfläche sagt vorher, dass er echtes Kontingent kostet.
+- **Fehlschlag ist kein HTTP-Fehler.** Ein nicht erreichbarer Provider ergibt
+  200 mit `{ ok: false, kind, message, hint }` — der Testaufruf hat ja
+  funktioniert, sein Ergebnis lautet nur „geht nicht". Je Kategorie gibt es
+  einen Klartext-Hinweis, was zu tun ist.
+- Optional lässt sich ein **anderer** Provider testen (`{ provider: 'api' }`),
+  ohne die gespeicherte Wahl zu ändern — ausdrücklicher Parameter, kein
+  versteckter Nebeneffekt.
+
+### Entscheidung 5 — Der API-Schlüssel bleibt auf dem Server
+
+`GET /api/llm/settings` liefert `apiKeyConfigured: true|false` — mehr nicht.
+Kein maskierter Wert, keine Länge, kein Präfix. Wer den Schlüssel ändern will,
+tut das in der `.env` (RUNBOOK 9.5); die Oberfläche ist bewusst kein
+Secret-Manager.
+
+**Keine neuen Dependencies in T2.6.**

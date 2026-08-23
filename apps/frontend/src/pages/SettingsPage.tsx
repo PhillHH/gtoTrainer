@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JobEvent, LlmCallDetail, LlmCallStatus, LlmCallSummary } from '@gto/shared';
 import { apiClient } from '../api/client.js';
+import { LlmSettingsForm } from './LlmSettingsForm.js';
 import './SettingsPage.css';
 
 /**
- * Einstellungen mit der Ansicht "letzte KI-Aufrufe" (AP2.T2.5).
+ * Einstellungen: Provider- und Modellwahl mit Testaufruf (T2.6) sowie die
+ * Ansicht "letzte KI-Aufrufe" (T2.5).
  *
- * Bewusst einfach: Liste, Statusfilter, Detailansicht. Sie zeigt, was das
- * LLM-Gateway tatsaechlich getan hat - inklusive der Fehlschlaege, denn genau
- * die braucht man bei der Fehlersuche.
- *
- * Die Wahl von Provider und Modell kommt in T2.6 auf dieselbe Seite.
+ * Bewusst einfach: Formular oben, darunter Liste mit Statusfilter und
+ * Detailansicht. Die Liste zeigt, was das LLM-Gateway tatsaechlich getan hat -
+ * inklusive der Fehlschlaege, denn genau die braucht man bei der Fehlersuche.
  */
 
 type Filter = 'alle' | LlmCallStatus;
@@ -81,6 +81,8 @@ export function SettingsPage(): JSX.Element {
   return (
     <section>
       <h1>Einstellungen</h1>
+
+      <LlmSettingsForm />
 
       <div className="card">
         <div className="calls__header">

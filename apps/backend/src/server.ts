@@ -18,6 +18,8 @@ const app = await buildApp({
   db: handle.db,
   authConfig: config.auth,
   jobEvents: runtime.events,
+  providers: runtime.providers,
+  llmConfig: runtime.llmConfig,
 });
 
 // Der Worker laeuft im selben Prozess wie der HTTP-Server (ADR-0026).

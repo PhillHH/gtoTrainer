@@ -3,7 +3,7 @@
 Dieses Dokument beschreibt, **wo** sich Komponenten und Arbeitspakete
 gegenseitig berühren. Jeder Task trägt seine Deltas hier nach.
 
-Stand: AP2.T2.5.
+Stand: AP2.T2.6 — AP2 abgeschlossen.
 
 ---
 
@@ -592,14 +592,22 @@ kein eigener Prompt-Prozess in einem Skript.
 
 ### Konfigurationsquelle der Laufzeitwahl
 
-| Ebene     | Ort                                        | Wer setzt sie           |
-| --------- | ------------------------------------------ | ----------------------- |
-| Laufzeit  | `config`-Tabelle, Schlüssel `llm.provider` | ab T2.6 die Settings-UI |
-| Startwert | `LLM_PROVIDER` in der `.env`               | Betrieb                 |
-| Rückfall  | `cli`                                      | fest                    |
+Seit T2.6 liest die Registry **alle** Aufrufparameter aus der `config`-Tabelle,
+nicht nur den Provider:
 
-`createDbConfigSource(db)` liest die Tabelle. Ohne Quelle — etwa in einem
-Skript — gilt allein der Startwert.
+| Feld            | Schlüssel in `config` | Startwert aus der `.env` |
+| --------------- | --------------------- | ------------------------ |
+| Provider        | `llm.provider`        | `LLM_PROVIDER`           |
+| Modell          | `llm.model`           | `LLM_MODEL`              |
+| Timeout         | `llm.timeout_ms`      | `LLM_TIMEOUT_MS`         |
+| Nebenläufigkeit | `llm.max_concurrency` | `LLM_MAX_CONCURRENCY`    |
+| Versuche        | `llm.max_attempts`    | `LLM_MAX_ATTEMPTS`       |
+
+Rangfolge je Feld: Tabelle → `.env` → fester Default. Gesetzt werden die Werte
+über die Einstellungen-Seite (siehe Abschnitt 11); `createSettingsReader(db, config)`
+liefert sie an die Registry. `createDbConfigSource(db)` liest weiterhin nur
+`llm.provider` und bleibt für Skripte erhalten, die keine vollen Einstellungen
+brauchen.
 
 ### Der Host-Runner (Container-Betrieb)
 
@@ -934,3 +942,101 @@ Provider-Registry. Kürzungsregel ([ADR-0028](./DECISIONS.md)):
   abgeschnitten, mit sichtbarer Markierung
   `… [gekuerzt]: N von M Zeichen entfernt`.
 - Ein Fehler beim Protokollieren lässt den Aufruf **nie** scheitern.
+
+---
+
+## 11. Provider- und Modell-Einstellungen (AP2.T2.6)
+
+Der Schreibweg zu den Werten aus Abschnitt 8. Alle drei Routen hängen an
+`app.requireSession`; die beiden schreibenden sind CSRF-pflichtig nach dem
+Vertrag aus Abschnitt 2a.
+
+| Endpunkt                      | Zweck                                                    |
+| ----------------------------- | -------------------------------------------------------- |
+| `GET /api/llm/settings`       | geltende Werte, Herkunft je Feld, Modellauswahl, Spannen |
+| `PUT /api/llm/settings`       | schreibt nach serverseitiger Prüfung                     |
+| `POST /api/llm/settings/ping` | ein minimaler echter Testaufruf                          |
+
+### Lesen
+
+```jsonc
+{
+  "settings": { "provider": "cli", "model": "claude-sonnet-5",
+                "timeoutMs": 120000, "maxConcurrency": 2, "maxAttempts": 3 },
+  "origin":   { "provider": "config", "model": "config", "timeoutMs": "config",
+                "maxConcurrency": "default", "maxAttempts": "default" },
+  "modelChoices": [ { "id": "claude-opus-5", "label": "Opus 5 – …" }, … ],
+  "ranges": { "timeoutMs": { "min": 5000, "max": 600000 }, … },
+  "apiKeyConfigured": false
+}
+```
+
+`origin` sagt je Feld, ob der Wert aus der Tabelle oder aus dem Default kommt —
+die Oberfläche muss nichts raten. `modelChoices` und `ranges` kommen ebenfalls
+vom Server, damit im Frontend nichts hartkodiert ist.
+
+**Der API-Schlüssel wird nie ausgeliefert**, auch nicht maskiert. `apiKeyConfigured`
+sagt nur, ob einer hinterlegt ist.
+
+### Schreiben
+
+Alle Felder sind einzeln setzbar; was fehlt, bleibt unverändert. Bei
+ungültigen Werten antwortet der Server mit **400** und nennt die Felder
+einzeln:
+
+```jsonc
+{
+  "error": "invalid_settings",
+  "message": "Die Einstellungen wurden abgelehnt: timeoutMs.",
+  "fields": [
+    {
+      "field": "timeoutMs",
+      "message": "Timeout je Aufruf muss zwischen 5000 und 600000 liegen, ist: 100.",
+    },
+  ],
+}
+```
+
+Es wird **nichts** geschrieben und **nie** still auf einen Default
+zurückgefallen. Unbekannte Felder werden ebenfalls abgelehnt — eine fachliche
+Einstellung aus einem späteren AP gehört nicht hierher.
+
+Im Frontend liefert `ApiError.fields` genau diese Liste; die Oberfläche hängt
+die Meldung ans jeweilige Feld.
+
+### Ping-Test
+
+```jsonc
+// Erfolg
+{ "ok": true, "provider": "cli", "model": "claude-haiku-4-5",
+  "durationMs": 4262, "text": "OK", "callId": "5bbc5a01-…" }
+
+// Fehlschlag - HTTP 200, denn der Test selbst hat funktioniert
+{ "ok": false, "provider": "api", "kind": "auth",
+  "message": "ANTHROPIC_API_KEY fehlt oder ist leer.",
+  "hint": "Es ist kein gueltiger ANTHROPIC_API_KEY hinterlegt. Siehe RUNBOOK 9.5.",
+  "durationMs": 3 }
+```
+
+- Der Aufruf geht über die **Provider-Registry** — Protokoll und Taxonomie
+  greifen automatisch, es gibt keinen zweiten Pfad.
+- `kind` ist immer eine Kategorie der Taxonomie aus Abschnitt 8, `hint` sagt
+  in Klartext, was zu tun ist.
+- Optional gegen einen anderen Provider testen: `{ "provider": "api" }`. Das
+  ändert die gespeicherte Wahl **nicht**.
+- Sperrzeit 10 Sekunden zwischen zwei Pings (429 mit Klartext). Der Aufruf
+  kostet echtes Kontingent und läuft nie automatisch.
+
+### Wie ein Folge-AP eine Einstellung hinzufügt
+
+Nur für Werte, die das **Gateway** betreffen. Fachliche Einstellungen
+(Lernschwellen, Timer) bekommen ihren eigenen Namensraum in der `config`-Tabelle
+und ihre eigenen Routen.
+
+1. Feld in `packages/shared/src/settings.ts` ergänzen (`LlmSettings`, Spanne
+   oder Auswahl).
+2. Schlüssel in `SETTINGS_KEYS` (`apps/backend/src/llm/settings.ts`) eintragen —
+   der `satisfies`-Ausdruck erzwingt Vollständigkeit, ein fehlender Schlüssel
+   bricht die Übersetzung.
+3. Prüfung in `validate()` ergänzen, Default in `defaultsFrom()`.
+4. Feld im Formular ergänzen und einen Frontend-Test dafür schreiben.

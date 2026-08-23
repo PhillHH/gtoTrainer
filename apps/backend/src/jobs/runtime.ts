@@ -2,7 +2,8 @@ import { loadLlmConfig, loadWorkerConfig } from '../config/env.js';
 import type { LlmConfig, WorkerConfig } from '../config/env.js';
 import type { Database } from '../db/client.js';
 import { createDbCallLogSink } from '../llm/call-log.js';
-import { LlmProviderRegistry, createDbConfigSource } from '../llm/registry.js';
+import { LlmProviderRegistry } from '../llm/registry.js';
+import { createSettingsReader } from '../llm/settings.js';
 import { TemplateRegistry } from '../prompts/registry.js';
 import { JobEventBus } from './events.js';
 import { createLlmCompleteJob } from './handlers/llm-complete.js';
@@ -21,6 +22,7 @@ import { JobWorker } from './worker.js';
 
 export interface LlmRuntime {
   readonly templates: TemplateRegistry;
+  readonly llmConfig: LlmConfig;
   readonly providers: LlmProviderRegistry;
   readonly handlers: JobHandlerRegistry;
   readonly events: JobEventBus;
@@ -45,9 +47,14 @@ export function createLlmRuntime(options: CreateRuntimeOptions): LlmRuntime {
 
   // Das Aufruf-Protokoll haengt an der Registry, nicht am Aufrufer: Damit wird
   // **jeder** Provider-Aufruf protokolliert, auch der aus einem kuenftigen AP.
+  // Die Laufzeit-Einstellungen aus der `config`-Tabelle bestimmen Provider,
+  // Modell und Aufrufparameter (T2.6). Sie werden bei jedem Aufruf gelesen -
+  // eine Umschaltung wirkt damit ohne Neustart.
+  const settings = createSettingsReader(options.db, llmConfig);
+
   const providers = new LlmProviderRegistry({
     config: llmConfig,
-    source: createDbConfigSource(options.db),
+    settings,
     callLog: {
       sink: createDbCallLogSink(options.db),
       maxChars: workerConfig.logMaxChars,
@@ -68,6 +75,8 @@ export function createLlmRuntime(options: CreateRuntimeOptions): LlmRuntime {
       defaultModel: llmConfig.model,
       // Grosszuegig: Ein abgeschnittener Prompt kostet mehr als ein paar Tokens.
       defaultMaxTokens: 4096,
+      // Modell und Timeout kommen bevorzugt aus den Einstellungen.
+      settings,
     }),
   );
 
@@ -82,5 +91,5 @@ export function createLlmRuntime(options: CreateRuntimeOptions): LlmRuntime {
     log,
   });
 
-  return { templates, providers, handlers, events, worker, workerConfig };
+  return { templates, providers, handlers, events, worker, workerConfig, llmConfig };
 }

@@ -38,7 +38,38 @@ export interface MockFetchOptions {
   readonly logout?: () => Response;
   /** Setzt beim CSRF-Aufruf ein Cookie, wie es das Backend tut. */
   readonly csrfToken?: string;
+  /** Antwort auf `GET/PUT /api/llm/settings` und den Ping. */
+  readonly llmSettings?: () => Response;
 }
+
+/** Antwort, die das Backend fuer nicht gesetzte Einstellungen liefert. */
+export const DEFAULT_LLM_SETTINGS = {
+  settings: {
+    provider: 'cli',
+    model: 'claude-sonnet-5',
+    timeoutMs: 120000,
+    maxConcurrency: 2,
+    maxAttempts: 3,
+  },
+  origin: {
+    provider: 'default',
+    model: 'default',
+    timeoutMs: 'default',
+    maxConcurrency: 'default',
+    maxAttempts: 'default',
+  },
+  modelChoices: [
+    { id: 'claude-opus-5', label: 'Opus 5' },
+    { id: 'claude-sonnet-5', label: 'Sonnet 5' },
+    { id: 'claude-haiku-4-5', label: 'Haiku 4.5' },
+  ],
+  ranges: {
+    timeoutMs: { min: 5000, max: 600000 },
+    maxConcurrency: { min: 1, max: 8 },
+    maxAttempts: { min: 1, max: 10 },
+  },
+  apiKeyConfigured: false,
+} as const;
 
 /**
  * Ersetzt `globalThis.fetch` durch eine Attrappe, die das dokumentierte
@@ -88,6 +119,12 @@ export function mockFetch(options: MockFetchOptions = {}): MockFetch {
 
     if (url.endsWith('/api/auth/logout')) {
       return options.logout?.() ?? jsonResponse(200, { loggedOut: true });
+    }
+
+    // Einstellungen des LLM-Gateways (AP2.T2.6). Die Seite laedt sie beim
+    // Oeffnen; ohne Antwort wuerde jede Seitenpruefung eine Fehlermeldung sehen.
+    if (url.includes('/api/llm/settings')) {
+      return options.llmSettings?.() ?? jsonResponse(200, DEFAULT_LLM_SETTINGS);
     }
 
     return jsonResponse(404, { error: 'invalid_request', message: 'Unbekannt.' });
