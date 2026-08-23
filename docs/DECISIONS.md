@@ -922,3 +922,194 @@ Neue Dev-Dependency:
 - **Kein E2E, nur die Komponententests aus T1.4** — die laufen gegen ein
   gemocktes Netzwerk und würden einen echten Bruch zwischen Frontend, Proxy und
   Backend nicht bemerken. Genau diesen Durchstich verlangt der Kanon.
+
+---
+
+## ADR-0021 — Aufrufform der Claude Code CLI: `-p` mit `--output-format json`, Profil B über `CLAUDE_CONFIG_DIR`
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** AP2.T2.1 verlangt eine dokumentiert verifizierte Entscheidung,
+  wie die CLI headless und gegen **Profil B** angesprochen wird. Grundlage
+  sind die offizielle Dokumentation (Stand 2026-08-23, `docs.claude.com`
+  leitet dauerhaft auf `code.claude.com/docs` um) und eigene Messungen mit
+  CLI-Version **2.1.240** auf dem Zielhost.
+
+### Entscheidung
+
+Zwei Aufrufformen, beide zustandslos, beide mit explizit gesetztem
+`CLAUDE_CONFIG_DIR=/home/phillip/.claude-b`:
+
+**A — Text- und JSON-Aufrufe ohne Bild (Regelfall, AP4/AP5/AP8/AP9):**
+
+```bash
+CLAUDE_CONFIG_DIR=/home/phillip/.claude-b claude -p "<prompt>" \
+  --model <alias|modell-id> \
+  --output-format json \
+  [--json-schema '<JSON-Schema>']
+```
+
+**B — Aufrufe mit Bild-Input (AP3, Chart-Digitalisierung):**
+
+```bash
+CLAUDE_CONFIG_DIR=/home/phillip/.claude-b claude -p \
+  --model <alias|modell-id> \
+  --input-format stream-json --output-format stream-json --verbose \
+  [--json-schema '<JSON-Schema>'] < nachrichten.jsonl
+```
+
+Der Prompt geht in Form A als Argument mit, in Form B als eine Zeile
+`{"type":"user","message":{"role":"user","content":[…]},"parent_tool_use_id":null}`
+über stdin; Bilder sind darin Blöcke
+`{"type":"image","source":{"type":"base64","media_type":"image/png","data":"…"}}`.
+
+### Belegte Doku-Aussagen
+
+| Frage                 | Befund                                                                                                                                                                                                                              | Beleg                                                                                       |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Headless-Aufruf       | `--print`, `-p` — „Print response without interactive mode"; Prompt als Argument oder über stdin                                                                                                                                    | <https://code.claude.com/docs/en/cli-reference>, <https://code.claude.com/docs/en/headless> |
+| Modellwahl            | `--model` — Alias (`sonnet`, `opus`, `haiku`, `fable`) oder vollständige Modell-ID; überschreibt `ANTHROPIC_MODEL`                                                                                                                  | <https://code.claude.com/docs/en/cli-reference>                                             |
+| Strukturierte Ausgabe | `--output-format` mit `text` \| `json` \| `stream-json`; `--json-schema` erzwingt ein Schema, Ergebnis steht im Feld `structured_output`                                                                                            | <https://code.claude.com/docs/en/headless>                                                  |
+| Auth / Config-Dir     | `CLAUDE_CONFIG_DIR` — „Override the configuration directory (default: `~/.claude`). All settings, session history, and plugins are stored under this path, as are credentials on Linux and Windows"                                 | <https://code.claude.com/docs/en/env-vars>                                                  |
+| Fehlende Auth         | `Not logged in · Please run /login`                                                                                                                                                                                                 | <https://code.claude.com/docs/en/errors>                                                    |
+| Session-Verhalten     | Jeder `-p`-Aufruf ist eine **neue** Sitzung; Fortsetzen nur ausdrücklich mit `--continue`/`--resume`. `--continue` überspringt sogar `-p`-Sitzungen, sofern `-p` nicht selbst mitgegeben wird                                       | <https://code.claude.com/docs/en/cli-reference>, <https://code.claude.com/docs/en/headless> |
+| Bild-Input            | **Unterstützt, aber nur über Streaming-Input.** Der Streaming-Modus kann „attach images directly to messages"; für Single-Message-Input ist ausdrücklich dokumentiert: „does **not** support: Direct image attachments in messages" | <https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode>                        |
+| Exit-Codes            | „Claude Code exits with code 0 on success and a non-zero code when the run fails"; SIGTERM ⇒ 143                                                                                                                                    | <https://code.claude.com/docs/en/headless>                                                  |
+| Kontingent            | „You've hit your session limit · resets 3:45pm" / weekly / Opus-Limit; „Claude Code blocks further requests until the reset time shown in the message"                                                                              | <https://code.claude.com/docs/en/errors>                                                    |
+
+### Eigene Messungen (CLI 2.1.240, alle mit `CLAUDE_CONFIG_DIR=/home/phillip/.claude-b`)
+
+| Aufruf                                                  | Exit | Beobachtung                                                                                                                                                     |
+| ------------------------------------------------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `claude -p "Antworte nur mit OK" --output-format text`  | 0    | stdout genau `OK\n`, stderr leer                                                                                                                                |
+| `claude -p … --output-format json --json-schema '…'`    | 0    | **eine** Zeile reines JSON auf stdout, **kein** Wrapper-Text, **keine** Code-Fences; `result` ist ein JSON-_String_, `structured_output` das geparste Objekt    |
+| dasselbe mit `--input-format stream-json` + Base64-PNG  | 0    | Bild korrekt erkannt (`result: "Rot"`); Kombination mit `--json-schema` liefert zusätzlich `structured_output`                                                  |
+| `--input-format stream-json` mit `--output-format json` | 1    | stderr: `Error: --input-format=stream-json requires output-format=stream-json.`                                                                                 |
+| leeres, nicht eingeloggtes Config-Verzeichnis           | 1    | stdout-JSON mit `is_error: true`, `result: "Not logged in · Please run /login"`, `terminal_reason: "api_error"` — **kein** Rückfall auf `/home/phillip/.claude` |
+
+**Für das Parsing in T2.2 maßgeblich:** Der Erfolg eines Aufrufs wird an
+`is_error` **und** dem Exit-Code festgemacht, **nicht** an `subtype` — im
+Auth-Fehlerfall stand `subtype: "success"` neben `is_error: true`. Ein
+Fence-Stripping ist bei `--output-format json` nicht nötig, muss in T2.2 aber
+trotzdem defensiv vorhanden sein.
+
+### Begründung
+
+- `--output-format json` liefert in einem Zug Antworttext **und** die
+  Begleitdaten, die `llm_call_log` braucht (`duration_ms`, `usage`, Modell).
+  `text` liefert nichts davon, `stream-json` erzwingt einen Zeilenparser.
+- `--json-schema` verlagert die Schemaeinhaltung in die CLI; die Alternative
+  „Schema im Prompt beschreiben und hinterher parsen" ist nachweislich
+  fehleranfälliger und braucht Fence-Stripping.
+- Für Bilder gibt es **keine** Alternative zu `--input-format stream-json`:
+  Single-Message-Input unterstützt keine Bildanhänge. Der Umweg „Bild auf
+  Platte legen und die CLI per Read-Tool lesen lassen" würde einen
+  Werkzeugaufruf, ein Dateisystem-Recht und einen zusätzlichen Turn kosten und
+  skaliert für ~336 Chart-Bilder aus AP3 schlecht.
+- `--bare` wird **nicht** verwendet, obwohl es Startzeit spart: Laut
+  Dokumentation liest der Bare-Modus „never … OAuth credentials or the system
+  keychain" und braucht `ANTHROPIC_API_KEY`. Das ist mit einem
+  Subscription-Profil unvereinbar.
+
+### Alternativen (verworfen)
+
+- **`--output-format text` plus eigenes Parsen** — keine Tokenzahlen, keine
+  Dauer, kein maschinenlesbarer Fehlerzustand.
+- **`--output-format stream-json` als Regelfall** — nötig nur für Bild-Input;
+  für Textaufrufe unnötiger Zeilenparser.
+- **Agent-SDK (`@anthropic-ai/claude-agent-sdk`) statt Prozessaufruf** — neue
+  Laufzeit-Dependency und ein zweiter Auth-Pfad für dieselbe Sache; der
+  Prozessaufruf hält das Backend frei von SDK-Bindungen und passt zum
+  Adaptermodell (T2.3 nutzt daneben die reine HTTP-API).
+- **`--continue`/`--resume` für Gesprächsverläufe** — der `LLMProvider`
+  überträgt den Verlauf ausdrücklich in `messages`; Sitzungszustand auf der
+  Platte des Hosts wäre eine zweite, nicht replizierbare Wahrheit.
+
+---
+
+## ADR-0022 — Container-zu-Host-Zugriff auf die CLI: Host-seitiger Runner über Unix-Domain-Socket
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** Das Backend läuft im Container (`gto-backend`, ADR-0016/0018),
+  die Claude CLI und Profil B liegen auf dem Host. AP2 verlangt eine
+  begründete Entscheidung nach den Kriterien: reproduzierbar im
+  Compose-Betrieb, Profil B isoliert und unverändert (read-only bevorzugt),
+  ohne Root betreibbar, Verhalten bei CLI-Updates, Sicherheitsfolgen.
+
+### Entscheidung
+
+**Ein Host-seitiger Runner-Prozess.** Die CLI wird **nicht** ins Backend-Image
+aufgenommen und Profil B **nicht** in den Container gemountet. Stattdessen:
+
+1. Auf dem Host läuft als Benutzer `phillip` ein kleiner Runner-Prozess, der
+   die Aufrufform aus [ADR-0021](#adr-0021--aufrufform-der-claude-code-cli--p-mit---output-format-json-profil-b-über-claude_config_dir)
+   ausführt und `CLAUDE_CONFIG_DIR=/home/phillip/.claude-b` selbst setzt.
+2. Der Runner lauscht auf einem **Unix-Domain-Socket** in einem eigenen
+   Verzeichnis (`LLM_RUNNER_SOCKET_DIR`, Default `/home/phillip/gto-llm-runner`).
+3. Compose bindet **nur dieses Verzeichnis** in den Backend-Container ein; der
+   CLI-Adapter aus T2.2 spricht den Socket an, statt einen Prozess zu spawnen.
+
+Kein TCP-Port, kein `host-gateway`, kein Docker-Socket. Die Umsetzung
+(Runner-Skript, Compose-Mount, Protokoll) gehört in T2.2.
+
+### Machbarkeitsnachweis (rückstandsfrei, 2026-08-23)
+
+Host-seitiger Node-Listener auf `…/gto-llm.sock` (Mode `srw-------`), Aufruf
+aus einem Wegwerf-Container mit demselben Basis-Image wie das Backend:
+
+```
+docker run --rm --user 1000:1000 -v "$SOCKDIR":/host-llm node:20.19.6-alpine node /host-llm/cli.js
+→ pong:hello-from-container        (container exit=0)
+```
+
+Der Container läuft dabei als **uid 1000** (`node`) — dieselbe uid wie
+`phillip` auf dem Host, deshalb genügt Socket-Mode `0600`. Socket, Skripte und
+Verzeichnis wurden anschließend gelöscht.
+
+### Begründung
+
+- **Profil B bleibt isoliert.** Der Container sieht das Verzeichnis nie. Das
+  ist mehr, als „read-only" leisten würde — und read-only ist ohnehin **nicht**
+  tragfähig: Ein `-p`-Lauf gegen ein frisches Config-Verzeichnis legte
+  nachweislich `.claude.json`, `backups/`, `projects/` und `sessions/` an, und
+  laut <https://code.claude.com/docs/en/env-vars> liegen unter demselben Pfad
+  auch die Zugangsdaten (Linux), deren OAuth-Refresh Schreibrechte braucht.
+  Ein Read-only-Mount würde also entweder brechen oder müsste zum
+  Read-write-Mount aufgeweicht werden.
+- **Sicherheitsfolgen.** Beim Image-Mount hätte der Container die
+  Subscription-Zugangsdaten **und** Schreibrecht darauf. Über den Socket kann
+  er nur genau das, was der Runner anbietet: einen Prompt einreichen. Modell,
+  Werkzeugfreigaben, Arbeitsverzeichnis und Timeout bestimmt der Runner.
+- **CLI-Updates.** Die Host-Installation aktualisiert sich selbst
+  (<https://code.claude.com/docs/en/overview>: „Native installations
+  automatically update in the background"). Eine zweite Installation im Image
+  müsste versioniert, gebaut und nachgezogen werden; Host- und Container-CLI
+  würden auseinanderlaufen.
+- **Ohne Root.** Runner und Socket gehören `phillip`; das Bind-Mount-Verzeichnis
+  liegt in dessen Home. Nichts davon braucht `sudo` (`NoNewPrivs=1` gilt weiter).
+- **Reproduzierbar in Compose.** Ein zusätzliches Bind-Mount plus zwei
+  Umgebungsvariablen; keine Netzwerk- oder Capability-Änderung.
+
+### Alternativen (verworfen)
+
+- **CLI im Backend-Image plus Mount von `/home/phillip/.claude-b`** — die vom
+  Kanon zuerst genannte Option. Verworfen, weil der bevorzugte
+  Read-only-Mount am Schreibverhalten der CLI scheitert (Beleg oben), der
+  Read-write-Mount das Isolationskriterium verletzt und die CLI-Version im
+  Image einfriert. Zusätzlich wüchse das Backend-Image spürbar.
+- **Loopback-TCP über `extra_hosts: host-gateway`** — funktioniert, öffnet aber
+  einen Port, der ohne eigenes Token für **jeden** Container im Netz erreichbar
+  wäre. Der Socket ist über Dateirechte abgesichert, ohne weitere Mechanik.
+- **Docker-Socket in den Container** — wäre faktisch Root auf dem Host.
+- **Backend aus dem Container holen und direkt auf dem Host betreiben** —
+  löst das Problem, wirft aber die in AP1 etablierte Topologie um
+  (ADR-0016/0017/0018) und ist keine AP2-Entscheidung.
+
+### Risiko / offener Punkt
+
+Der Runner ist ein Prozess **außerhalb** von Compose und startet nach einem
+Reboot nicht von selbst mit. Ein Root-freier Weg (`@reboot`-Eintrag in der
+Benutzer-Crontab; `cron` läuft auf dem Host) ist vorgesehen, aber noch nicht
+verifiziert — das gehört in T2.2 samt RUNBOOK-Eintrag. Bis dahin ist der Start
+des Runners ein manueller Deploy-Schritt.

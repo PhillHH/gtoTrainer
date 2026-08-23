@@ -19,3 +19,29 @@ export type {
   MeResponse,
   SessionUser,
 } from './auth.js';
+
+export {
+  LLM_ERROR_KINDS,
+  LLM_ERROR_RETRYABLE,
+  LLM_IMAGE_MEDIA_TYPES,
+  LLM_PROVIDER_IDS,
+  isLlmErrorKind,
+  isLlmErrorRetryable,
+  isLlmProviderId,
+} from './llm.js';
+export type {
+  LLMProvider,
+  LlmCallMeta,
+  LlmContent,
+  LlmErrorKind,
+  LlmErrorPayload,
+  LlmImageContent,
+  LlmImageMediaType,
+  LlmJsonSchema,
+  LlmMessage,
+  LlmProviderId,
+  LlmRequest,
+  LlmResponse,
+  LlmRole,
+  LlmTextContent,
+} from './llm.js';

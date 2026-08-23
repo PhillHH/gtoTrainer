@@ -3,7 +3,7 @@
 Dieses Dokument beschreibt, **wo** sich Komponenten und Arbeitspakete
 gegenseitig berühren. Jeder Task trägt seine Deltas hier nach.
 
-Stand: AP1.T1.5.
+Stand: AP2.T2.1.
 
 ---
 
@@ -28,6 +28,8 @@ statt ihn hier zu importieren, bricht diese Konvention.
 | `HealthResponse`      | `interface`  | Antwortvertrag von `GET /healthz` |
 | `HEALTH_STATUS_OK`    | `const 'ok'` | Einziger gültiger Health-Status   |
 | `isHealthResponse(v)` | Type-Guard   | Laufzeitprüfung gegen den Vertrag |
+| Auth-Verträge         | s. 2a        | Login, Session, CSRF              |
+| `LLMProvider` u. a.   | s. 8         | Vertrag des LLM-Gateways (AP2)    |
 
 ---
 
@@ -472,6 +474,95 @@ Details siehe [`data/book-source/README.md`](../data/book-source/README.md).
 
 ## 7. Noch nicht existierende Schnittstellen
 
-| Schnittstelle          | Entsteht in |
-| ---------------------- | ----------- |
-| CI-Pipeline, E2E-Tests | AP1.T1.6    |
+| Schnittstelle                                               | Entsteht in |
+| ----------------------------------------------------------- | ----------- |
+| CI-Pipeline, E2E-Tests                                      | AP1.T1.6    |
+| CLI-Adapter, Host-Runner, Socket-Protokoll                  | AP2.T2.2    |
+| API-Adapter (Anthropic Messages API)                        | AP2.T2.3    |
+| Prompt-Template-Registry                                    | AP2.T2.4    |
+| LLM-Job-Worker, SSE-Statuskanal, `llm_call_log`-Schreibpfad | AP2.T2.5    |
+| Settings-Endpunkte für Provider/Modell                      | AP2.T2.6    |
+
+---
+
+## 8. LLM-Gateway — `LLMProvider` als einziger KI-Zugang (AP2.T2.1)
+
+**Regel:** Jeder KI-Aufruf im gesamten Projekt läuft über `LLMProvider` aus
+`@gto/shared`. Ein direkter Aufruf der Claude CLI (`child_process`, `spawn`,
+`exec`) oder der Anthropic-API (`fetch` gegen `api.anthropic.com`, SDK) **außerhalb
+der Adapter in `apps/backend/src/llm/`** ist unzulässig — auch nicht „nur kurz"
+in einem Skript oder Test. AP3 (Vision), AP4 (Reports), AP5 (Didaktik),
+AP8 (Analyse) und AP9 (Material) docken ausschließlich hier an.
+
+Quelle des Vertrags: `packages/shared/src/llm.ts`. Nach T2.1 existiert **nur**
+dieser Vertrag; die Adapter kommen in T2.2/T2.3.
+
+### Der Vertrag
+
+```ts
+interface LLMProvider {
+  readonly id: LlmProviderId; // 'cli' | 'api'
+  complete<TJson = unknown>(request: LlmRequest): Promise<LlmResponse<TJson>>;
+}
+```
+
+| Export                                              | Art         | Bedeutung                                                               |
+| --------------------------------------------------- | ----------- | ----------------------------------------------------------------------- |
+| `LLMProvider`                                       | Interface   | der Zugang selbst                                                       |
+| `LlmRequest`                                        | Interface   | `system`, `messages`, `model`, `maxTokens`, `jsonSchema?`, `timeoutMs?` |
+| `LlmMessage` / `LlmContent`                         | Typen       | Rollen `user`/`assistant`; Inhalt aus Text- **und** Bildbausteinen      |
+| `LlmImageContent` / `LLM_IMAGE_MEDIA_TYPES`         | Typ/Const   | Bild als Base64 plus Medientyp (PNG, JPEG, GIF, WebP)                   |
+| `LlmResponse`                                       | Interface   | `text`, `json` (nur bei gesetztem `jsonSchema`), `meta`                 |
+| `LlmCallMeta`                                       | Interface   | Provider, Modell, Dauer, Tokenzahlen → Spalten von `llm_call_log`       |
+| `LLM_ERROR_KINDS` / `LlmErrorKind`                  | Const/Typ   | geschlossene Fehler-Taxonomie                                           |
+| `LLM_ERROR_RETRYABLE` / `isLlmErrorRetryable(kind)` | Const/Fn    | Retry-Fähigkeit je Kategorie                                            |
+| `LlmErrorPayload`                                   | Interface   | Fehlerform, die beide Adapter liefern                                   |
+| `LLM_PROVIDER_IDS` / `isLlmProviderId(v)`           | Const/Guard | erlaubte Provider-Kennungen                                             |
+
+### Bild-Input
+
+`LlmMessage.content` ist immer eine Liste aus Bausteinen; ein Bildbaustein
+trägt `mediaType` und Base64-`data` ohne `data:`-Präfix. Das ist keine
+Vorratshaltung, sondern Voraussetzung: AP3 wertet über denselben Provider rund
+336 Chart-Bilder aus. Der CLI-Adapter setzt das über
+`--input-format stream-json` um ([ADR-0021](./DECISIONS.md)).
+
+### Fehler-Taxonomie und Retry
+
+| Kategorie    | Bedeutung                                              | retrybar |
+| ------------ | ------------------------------------------------------ | -------- |
+| `timeout`    | `timeoutMs` überschritten, Aufruf abgebrochen          | ja       |
+| `rate_limit` | Kontingent erschöpft (Subscription-Limit oder API-429) | ja¹      |
+| `auth`       | Anmeldung/Konfiguration fehlt oder ungültig            | nein     |
+| `transient`  | vorübergehende Störung (Netz, 5xx, Prozessabbruch)     | ja       |
+| `invalid`    | Anfrage fehlerhaft (Modell, Schema, Länge)             | nein     |
+| `parse`      | Antwort nicht auswertbar                               | nein     |
+
+¹ Retry gehört bei `rate_limit` in die Job-Queue (großes `available_at`), nicht
+in den prozessinternen Backoff — ein Subscription-Limit setzt sich erst zur
+genannten Uhrzeit zurück. `LlmErrorPayload.retryAfterMs` transportiert den
+Zeitpunkt, sofern der Provider ihn nennt.
+
+Die Tabelle ist als `Record<LlmErrorKind, boolean>` typisiert: Eine neue
+Kategorie ohne Retry-Aussage übersetzt nicht.
+
+### Wie ein neuer Adapter andockt
+
+1. `LlmProviderId` in `packages/shared/src/llm.ts` um die Kennung erweitern —
+   der Type-Guard und alle `switch`-Zweige über die Taxonomie ziehen nach,
+   sonst bricht `tsc`.
+2. Klasse in `apps/backend/src/llm/` anlegen, die `LLMProvider` implementiert.
+   `meta.provider` ist immer die eigene `id`.
+3. Jede Störung auf **genau eine** `LlmErrorKind` abbilden; keine Restklasse,
+   keine rohen Provider-Fehler nach außen.
+4. Auswahl geschieht rein über Konfiguration (`config`-Schlüssel
+   `llm.provider`), nie über einen Import an der Aufrufstelle.
+
+### Konfiguration
+
+`CLAUDE_CONFIG_DIR=/home/phillip/.claude-b` ist **Pflichtvariable** (siehe
+`.env.example`). Ein Rückfall auf das Default-Profil `/home/phillip/.claude`
+ist verboten — fehlt der Wert, bricht der Adapter mit klarer Meldung ab.
+Weitere Variablen: `LLM_RUNNER_SOCKET_DIR`, `LLM_PROVIDER`, `LLM_MODEL`,
+`LLM_TIMEOUT_MS`, `ANTHROPIC_API_KEY`. Die typisierte Validierung im
+Backend-Config-Modul folgt in T2.2.

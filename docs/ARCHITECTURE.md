@@ -377,6 +377,43 @@ Der E2E-Lauf nutzt eigene Ports (`E2E_BACKEND_PORT` 3020,
 den Dev-Server (5174) stört. Begründungen: [ADR-0019](./DECISIONS.md),
 [ADR-0020](./DECISIONS.md).
 
+## 3f. LLM-Gateway (neu in AP2.T2.1 — bisher nur Vertrag)
+
+Der **einzige** KI-Zugang des Systems. Fachliche Komponenten rufen nie eine
+CLI und nie die Anthropic-API direkt auf, sondern ausschließlich `LLMProvider`
+aus `packages/shared`.
+
+```
+AP3 Vision · AP4 Reports · AP5 Didaktik · AP8 Analyse · AP9 Material
+        │  (nur dieser Weg ist erlaubt)
+        ▼
+   LLMProvider           packages/shared/src/llm.ts  ← Vertrag, AP2.T2.1
+        │
+   ┌────┴─────────────────────────┐
+   ▼                              ▼
+Adapter "cli"  (T2.2)      Adapter "api"  (T2.3)
+   │                              │
+   │ Unix-Domain-Socket           │ HTTPS
+   │ (Bind-Mount, ADR-0022)       ▼
+   ▼                        api.anthropic.com
+── Containergrenze ──────────────────────────────
+CLI-Runner auf dem Host (Benutzer phillip)
+   └─ claude -p …  mit CLAUDE_CONFIG_DIR=/home/phillip/.claude-b
+```
+
+**Container-zu-Host-Weg:** Das Backend läuft im Container, die Claude CLI und
+Profil B liegen auf dem Host. Die CLI wird **nicht** ins Backend-Image
+aufgenommen und Profil B **nicht** in den Container gemountet; der Container
+spricht einen Host-seitigen Runner über einen Unix-Domain-Socket an, der als
+einziges Verzeichnis eingebunden wird ([ADR-0022](./DECISIONS.md)). Damit sieht
+der Container die Subscription-Zugangsdaten nie. Die Aufrufform der CLI —
+`-p` mit `--output-format json`, für Bild-Input `--input-format stream-json` —
+steht in [ADR-0021](./DECISIONS.md).
+
+**Stand nach T2.1:** Es existiert nur der Vertrag (Typen, Fehler-Taxonomie,
+Provider-Kennung) plus die beiden ADRs. Adapter, Template-Registry,
+Job-Worker/Logging und Settings-UI folgen in T2.2–T2.6.
+
 ## 4. Querschnitts-Entscheidungen
 
 - **Node 20.19.6**, fixiert in `.nvmrc`; `engines.node >= 20.19.0`.
@@ -393,3 +430,6 @@ Begründungen siehe [DECISIONS.md](./DECISIONS.md).
 - Host-Nginx-vhost und TLS sind vorbereitet, aber noch nicht eingespielt —
   beides erfordert Root auf dem Host (siehe `docs/status/AP01.md`).
 - Ingestion-Pipeline für `data/book-source/` (AP3)
+- Host-seitiger CLI-Runner aus [ADR-0022](./DECISIONS.md): entschieden,
+  aber noch nicht gebaut (T2.2). Sein Neustart nach einem Reboot ist noch
+  nicht abgesichert.
