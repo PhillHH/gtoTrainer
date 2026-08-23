@@ -14,12 +14,16 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/cli-migrate.ts",
     "db:seed": "tsx src/db/cli-seed.ts",
-    "db:reset": "tsx src/db/cli-reset.ts"
+    "db:reset": "tsx src/db/cli-reset.ts",
+    "auth:set-password": "tsx src/auth/cli-set-password.ts"
   },
   "dependencies": {
+    "@fastify/cookie": "11.1.0",
     "@gto/shared": "workspace:*",
+    "@node-rs/argon2": "^2.1.0",
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.2.0",
+    "fastify-plugin": "^6.0.0",
     "pg": "^8.23.0"
   },
   "devDependencies": {

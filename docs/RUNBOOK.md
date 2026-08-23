@@ -1,7 +1,7 @@
 # Runbook — GTO Trainer
 
-Betriebshandbuch. Stand: AP1.T1.2 — lokales Setup **und Datenbankbetrieb**.
-Deployment, Backup und Restore folgen in AP1.T1.5.
+Betriebshandbuch. Stand: AP1.T1.3 — lokales Setup, Datenbankbetrieb **und
+Zugangsverwaltung**. Deployment, Backup und Restore folgen in AP1.T1.5.
 
 ---
 
@@ -180,6 +180,80 @@ NODE_ENV=development DB_RESET_CONFIRM=yes pnpm db:reset
 
 ---
 
+## 4b. Zugang verwalten (Auth)
+
+### Passwort setzen oder ändern
+
+```bash
+pnpm auth:set-password <benutzername>
+```
+
+Legt den Benutzer an, falls es ihn noch nicht gibt, sonst ändert es dessen
+Passwort. Das Passwort wird **verdeckt abgefragt** (zweimal, zur Kontrolle).
+
+Für Automatisierung lässt es sich über eine Umgebungsvariable übergeben:
+
+```bash
+NEW_PASSWORD='…' pnpm auth:set-password admin
+```
+
+> **Das Passwort wird niemals als Kommandozeilen-Argument angenommen.** Es
+> stünde sonst in der Shell-History und in der Prozessliste. Wird
+> `NEW_PASSWORD` benutzt, gehört die Variable nicht dauerhaft in die `.env`.
+
+Regeln:
+
+- Mindestlänge **12 Zeichen**, reine Leerzeichen werden abgelehnt.
+- Nach jeder Änderung werden **alle bestehenden Sessions dieses Benutzers
+  invalidiert** — wer angemeldet war, muss sich neu anmelden.
+
+### Login von Hand prüfen
+
+```bash
+# 1. CSRF-Token holen (setzt zugleich das Cookie)
+CSRF=$(curl -s -c /tmp/c.txt http://127.0.0.1:3001/api/auth/csrf | jq -r .csrfToken)
+
+# 2. Anmelden
+curl -i -b /tmp/c.txt -c /tmp/c.txt -X POST http://127.0.0.1:3001/api/auth/login \
+  -H 'content-type: application/json' -H "x-csrf-token: $CSRF" \
+  -d '{"username":"admin","password":"…"}'
+
+# 3. Geschützte Route
+curl -b /tmp/c.txt http://127.0.0.1:3001/api/auth/me
+```
+
+### Konfiguration
+
+| Variable                          | Default                   | Bedeutung                                            |
+| --------------------------------- | ------------------------- | ---------------------------------------------------- |
+| `SESSION_TTL_HOURS`               | `168`                     | Lebensdauer einer Session (7 Tage)                   |
+| `COOKIE_SECURE`                   | `NODE_ENV==='production'` | `Secure`-Flag der Cookies                            |
+| `COOKIE_SAMESITE`                 | `lax`                     | `lax` oder `strict`                                  |
+| `ALLOWED_ORIGINS`                 | leer                      | Kommaliste erlaubter Herkünfte; leer = keine Prüfung |
+| `LOGIN_RATE_LIMIT_MAX_ATTEMPTS`   | `5`                       | Erlaubte **Fehl**versuche je Fenster                 |
+| `LOGIN_RATE_LIMIT_WINDOW_MINUTES` | `15`                      | Länge des Fensters                                   |
+| `TOTP_ENABLED`                    | `false`                   | TOTP-Hook (in T1.3 nur vorbereitet)                  |
+
+Das Rate-Limit zählt **nur fehlgeschlagene** Logins und wird nach einem
+erfolgreichen Login zurückgesetzt. Der Zähler liegt im Prozessspeicher und ist
+nach einem Neustart des Backends leer.
+
+### Ausgesperrt? Sperre aufheben
+
+Backend neu starten — das leert die Zähler. Alternativ das Zeitfenster
+abwarten; der `Retry-After`-Header der 429-Antwort nennt die Sekunden.
+
+### Alle Sessions invalidieren
+
+```bash
+docker exec gto-postgres psql -U gto -d gto -c "delete from session;"
+```
+
+Abgelaufene Sessions werden zusätzlich bei jedem Login mit aufgeräumt; ein
+periodischer Lauf kommt mit der Job-Queue in AP2.
+
+---
+
 ## 5. Tests
 
 ```bash
@@ -224,21 +298,27 @@ node apps/backend/dist/server.js
 
 ## 7. Fehlerbehebung
 
-| Symptom                                                          | Ursache                                                                  | Abhilfe                                                                                                         |
-| ---------------------------------------------------------------- | ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
-| `devDependencies: skipped because NODE_ENV is set to production` | `NODE_ENV=production` in der Shell                                       | `NODE_ENV=development pnpm install`                                                                             |
-| `Cannot find module '@gto/shared'`                               | Workspace-Links fehlen oder `dist` nicht gebaut                          | `pnpm install && pnpm build`                                                                                    |
-| `tsc` meldet Fehler in `dist/`                                   | veraltete Build-Info                                                     | `rm -rf **/dist **/*.tsbuildinfo && pnpm build`                                                                 |
-| `make: command not found`                                        | GNU Make nicht installiert                                               | die `pnpm`-Kommandos direkt verwenden                                                                           |
-| Port 3000 belegt                                                 | anderer Prozess                                                          | `PORT=3001 pnpm --filter @gto/backend dev`                                                                      |
-| `all predefined address pools have been fully subnetted`         | Dockers Standard-Subnetze sind auf dem Host durch fremde Projekte belegt | `DOCKER_SUBNET` in der `.env` auf ein freies Subnetz setzen (ADR-0006); **nicht** fremde Netzwerke löschen      |
-| `bind: address already in use` bei `pnpm db:up`                  | `POSTGRES_HOST_PORT` ist belegt                                          | freien Port suchen (`ss -ltn`), dann `POSTGRES_HOST_PORT` **und** beide Verbindungs-URLs in der `.env` anpassen |
-| `DATABASE_URL enthaelt noch den Platzhalter aus .env.example`    | `.env` kopiert, aber nicht bearbeitet                                    | Platzhalter an allen drei Stellen durch dasselbe Passwort ersetzen                                              |
-| `Pflicht-Umgebungsvariable DATABASE_URL fehlt oder ist leer`     | keine `.env` vorhanden                                                   | `cp .env.example .env` und ausfüllen                                                                            |
-| `Postgres ist nicht erreichbar` beim Testlauf                    | Container läuft nicht                                                    | `pnpm db:up`, danach `docker compose ps` prüfen                                                                 |
-| `db:reset ist blockiert: NODE_ENV=production`                    | `NODE_ENV` steht auf diesem Host oft auf `production`                    | bewusst so — nur mit `NODE_ENV=development` ausführen                                                           |
-| `db:reset ist blockiert: Bestaetigung fehlt`                     | Schutz gegen versehentliches Löschen                                     | `DB_RESET_CONFIRM=yes` setzen                                                                                   |
-| `password authentication failed`                                 | `.env`-Passwort geändert, Volume hat noch das alte                       | `docker compose down -v` (löscht die Daten) und neu aufsetzen                                                   |
+| Symptom                                                                               | Ursache                                                                          | Abhilfe                                                                                                         |
+| ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `devDependencies: skipped because NODE_ENV is set to production`                      | `NODE_ENV=production` in der Shell                                               | `NODE_ENV=development pnpm install`                                                                             |
+| `Cannot find module '@gto/shared'`                                                    | Workspace-Links fehlen oder `dist` nicht gebaut                                  | `pnpm install && pnpm build`                                                                                    |
+| `tsc` meldet Fehler in `dist/`                                                        | veraltete Build-Info                                                             | `rm -rf **/dist **/*.tsbuildinfo && pnpm build`                                                                 |
+| `make: command not found`                                                             | GNU Make nicht installiert                                                       | die `pnpm`-Kommandos direkt verwenden                                                                           |
+| Port 3000 belegt                                                                      | anderer Prozess                                                                  | `PORT=3001 pnpm --filter @gto/backend dev`                                                                      |
+| `all predefined address pools have been fully subnetted`                              | Dockers Standard-Subnetze sind auf dem Host durch fremde Projekte belegt         | `DOCKER_SUBNET` in der `.env` auf ein freies Subnetz setzen (ADR-0006); **nicht** fremde Netzwerke löschen      |
+| `bind: address already in use` bei `pnpm db:up`                                       | `POSTGRES_HOST_PORT` ist belegt                                                  | freien Port suchen (`ss -ltn`), dann `POSTGRES_HOST_PORT` **und** beide Verbindungs-URLs in der `.env` anpassen |
+| `DATABASE_URL enthaelt noch den Platzhalter aus .env.example`                         | `.env` kopiert, aber nicht bearbeitet                                            | Platzhalter an allen drei Stellen durch dasselbe Passwort ersetzen                                              |
+| `Pflicht-Umgebungsvariable DATABASE_URL fehlt oder ist leer`                          | keine `.env` vorhanden                                                           | `cp .env.example .env` und ausfüllen                                                                            |
+| `Postgres ist nicht erreichbar` beim Testlauf                                         | Container läuft nicht                                                            | `pnpm db:up`, danach `docker compose ps` prüfen                                                                 |
+| `db:reset ist blockiert: NODE_ENV=production`                                         | `NODE_ENV` steht auf diesem Host oft auf `production`                            | bewusst so — nur mit `NODE_ENV=development` ausführen                                                           |
+| `db:reset ist blockiert: Bestaetigung fehlt`                                          | Schutz gegen versehentliches Löschen                                             | `DB_RESET_CONFIRM=yes` setzen                                                                                   |
+| `password authentication failed`                                                      | `.env`-Passwort geändert, Volume hat noch das alte                               | `docker compose down -v` (löscht die Daten) und neu aufsetzen                                                   |
+| Login liefert 200, aber der nächste Request ist 401 — **Cookie kommt lokal nicht an** | `COOKIE_SECURE=true` ohne HTTPS: der Browser verwirft das Cookie stillschweigend | lokal `COOKIE_SECURE=false` setzen                                                                              |
+| Jeder POST antwortet `403 csrf_failed`                                                | Header `x-csrf-token` fehlt oder passt nicht zum Cookie `gto_csrf`               | zuerst `GET /api/auth/csrf`, Wert spiegeln; Requests mit `credentials: 'include'` senden                        |
+| `403 csrf_failed` trotz korrektem Token                                               | `ALLOWED_ORIGINS` gesetzt, aufrufende Herkunft fehlt darin                       | Herkunft ergänzen oder Variable leeren                                                                          |
+| Login antwortet `429 rate_limited`                                                    | zu viele Fehlversuche für `IP\|benutzername`                                     | `Retry-After` abwarten oder Backend neu starten                                                                 |
+| Login scheitert trotz korrektem Passwort bei `TOTP_ENABLED=true`                      | der TOTP-Hook ist bewusst noch nicht implementiert und lehnt dann ab             | `TOTP_ENABLED=false` setzen                                                                                     |
+| `Das Passwort muss mindestens 12 Zeichen lang sein`                                   | Passwort-Richtlinie                                                              | längeres Passwort wählen                                                                                        |
 
 Kompletter Neuaufbau:
 
@@ -260,4 +340,4 @@ Die folgenden Abschnitte entstehen in **AP1.T1.5**:
 - Datenbank-Backup und Restore
 - Log- und Healthcheck-Betrieb
 
-Login und Passwort-CLI folgen in **AP1.T1.3**.
+Login und Passwort-CLI sind seit **AP1.T1.3** vorhanden (Abschnitt 4b).

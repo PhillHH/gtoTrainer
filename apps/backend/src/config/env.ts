@@ -84,6 +84,24 @@ function numberEnv(key: string, fallback: number): number {
   return parsed;
 }
 
+function booleanEnv(key: string, fallback: boolean): boolean {
+  const raw = optionalEnv(key)?.toLowerCase();
+  if (raw === undefined) return fallback;
+  if (raw === 'true' || raw === '1' || raw === 'yes') return true;
+  if (raw === 'false' || raw === '0' || raw === 'no') return false;
+  throw new ConfigError(`Umgebungsvariable ${key} muss true oder false sein, ist: "${raw}".`);
+}
+
+/** Liest eine kommaseparierte Liste; leer, wenn die Variable fehlt. */
+function listEnv(key: string): readonly string[] {
+  const raw = optionalEnv(key);
+  if (raw === undefined) return [];
+  return raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
 function assertPostgresUrl(key: string, value: string): string {
   let parsed: URL;
   try {
@@ -105,12 +123,38 @@ function assertPostgresUrl(key: string, value: string): string {
   return value;
 }
 
+/** Konfiguration rund um Authentifizierung und Session. */
+export interface AuthConfig {
+  /** Lebensdauer einer Session in Millisekunden. */
+  readonly sessionTtlMs: number;
+  /**
+   * `Secure`-Flag der Cookies. Hinter dem Host-Nginx (ab T1.5) laeuft TLS,
+   * dort muss es an sein. Lokal ohne HTTPS wuerde der Browser das Cookie sonst
+   * verwerfen - deshalb konfigurierbar statt fest verdrahtet.
+   */
+  readonly cookieSecure: boolean;
+  /** `SameSite`-Attribut der Cookies. */
+  readonly cookieSameSite: 'lax' | 'strict';
+  /** Erlaubte Herkuenfte fuer zustandsaendernde Requests (leer = keine Pruefung). */
+  readonly allowedOrigins: readonly string[];
+  /** Erlaubte Login-Fehlversuche je Zeitfenster. */
+  readonly loginMaxAttempts: number;
+  /** Laenge des Rate-Limit-Zeitfensters in Millisekunden. */
+  readonly loginWindowMs: number;
+  /**
+   * Schalter fuer den TOTP-Hook. Default **false** - in T1.3 ist nur die
+   * Einhaengestelle vorbereitet, keine vollstaendige TOTP-Pruefung.
+   */
+  readonly totpEnabled: boolean;
+}
+
 export interface AppConfig {
   readonly nodeEnv: string;
   readonly isProduction: boolean;
   readonly port: number;
   readonly host: string;
   readonly databaseUrl: string;
+  readonly auth: AuthConfig;
 }
 
 /**
@@ -129,6 +173,26 @@ export function loadConfig(): AppConfig {
     port: numberEnv('PORT', 3001),
     host: optionalEnv('HOST') ?? '0.0.0.0',
     databaseUrl: assertPostgresUrl('DATABASE_URL', requireEnv('DATABASE_URL')),
+    auth: loadAuthConfig(nodeEnv),
+  };
+}
+
+/** Liest die Auth-Konfiguration. Defaults sind fuer die Entwicklung sicher. */
+function loadAuthConfig(nodeEnv: string): AuthConfig {
+  const sameSiteRaw = (optionalEnv('COOKIE_SAMESITE') ?? 'lax').toLowerCase();
+  if (sameSiteRaw !== 'lax' && sameSiteRaw !== 'strict') {
+    throw new ConfigError(`COOKIE_SAMESITE muss "lax" oder "strict" sein, ist: "${sameSiteRaw}".`);
+  }
+
+  return {
+    sessionTtlMs: numberEnv('SESSION_TTL_HOURS', 24 * 7) * 60 * 60 * 1000,
+    // Default folgt der Umgebung: produktiv an, lokal aus.
+    cookieSecure: booleanEnv('COOKIE_SECURE', nodeEnv === 'production'),
+    cookieSameSite: sameSiteRaw,
+    allowedOrigins: listEnv('ALLOWED_ORIGINS'),
+    loginMaxAttempts: numberEnv('LOGIN_RATE_LIMIT_MAX_ATTEMPTS', 5),
+    loginWindowMs: numberEnv('LOGIN_RATE_LIMIT_WINDOW_MINUTES', 15) * 60 * 1000,
+    totpEnabled: booleanEnv('TOTP_ENABLED', false),
   };
 }
 

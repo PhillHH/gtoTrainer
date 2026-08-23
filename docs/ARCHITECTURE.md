@@ -1,6 +1,6 @@
 # Architektur — GTO Trainer
 
-Stand: AP1.T1.2 (Datenbank & Migrationen). Dieses Dokument wird in jedem Task
+Stand: AP1.T1.3 (Auth & Single-User-Login). Dieses Dokument wird in jedem Task
 um die jeweiligen Deltas fortgeschrieben.
 
 ## 1. Systemübersicht (Zielarchitektur)
@@ -45,6 +45,7 @@ gtoTrainer/
 │   │   ├── src/app.ts      Routen-Aufbau (testbar, ohne listen)
 │   │   ├── src/server.ts   Prozess-Einstieg (listen)
 │   │   ├── src/config/     Typisiertes Laden/Validieren der .env
+│   │   ├── src/auth/       Passwort, Session, CSRF, Rate-Limit, Guard
 │   │   ├── src/db/         Schema, Pool, Migration, Seed, Reset
 │   │   ├── drizzle/        Versionierte SQL-Migrationen (generiert)
 │   │   └── test/           Vitest (inkl. DB-Integrationstests)
@@ -81,18 +82,18 @@ gtoTrainer/
   Reihenfolge und erzeugt Deklarationen. Das Frontend ist ein Blatt und wird
   nur typgeprüft (`tsc --noEmit`), gebaut wird es von Vite.
 
-## 3. Laufzeit-Komponenten (Ist-Stand nach T1.2)
+## 3. Laufzeit-Komponenten (Ist-Stand nach T1.3)
 
-| Komponente | Technik                 | Zustand nach T1.2                                |
-| ---------- | ----------------------- | ------------------------------------------------ |
-| Backend    | Fastify 5, Node 20, ESM | Startbar, `GET /healthz`; DB-Anbindung vorhanden |
-| Frontend   | React 18, Vite 6        | Baubar, Platzhalter-Inhalt                       |
-| Shared     | TypeScript              | `HealthResponse` + Type-Guard                    |
-| Datenbank  | Postgres 16 (Compose)   | Läuft, Basisschema migriert (5 Tabellen)         |
-| DB-Zugriff | Drizzle ORM + `pg`-Pool | Schema, Migration, Seed, Reset                   |
-| Auth       | —                       | folgt in T1.3                                    |
-| Deployment | —                       | folgt in T1.5                                    |
-| CI         | —                       | folgt in T1.6                                    |
+| Komponente | Technik                 | Zustand nach T1.3                               |
+| ---------- | ----------------------- | ----------------------------------------------- |
+| Backend    | Fastify 5, Node 20, ESM | `GET /healthz` + Auth-API unter `/api/auth/`    |
+| Frontend   | React 18, Vite 6        | Baubar, Platzhalter-Inhalt                      |
+| Shared     | TypeScript              | Health- **und** Auth-Verträge                   |
+| Datenbank  | Postgres 16 (Compose)   | Läuft, Basisschema migriert (5 Tabellen)        |
+| DB-Zugriff | Drizzle ORM + `pg`-Pool | Schema, Migration, Seed, Reset                  |
+| Auth       | argon2id + DB-Sessions  | Login/Logout/me, CSRF, Rate-Limit, Passwort-CLI |
+| Deployment | —                       | folgt in T1.5                                   |
+| CI         | —                       | folgt in T1.6                                   |
 
 ## 3a. Datenbank-Komponente (neu in T1.2)
 
@@ -140,6 +141,58 @@ Container gto-postgres  ->  Volume gto-pgdata
 Der Pool wird bei `SIGTERM`/`SIGINT` über `registerShutdownHandlers()`
 geschlossen, damit keine Verbindungen verwaisen.
 
+## 3b. Auth-Komponente (neu in T1.3)
+
+Der Zugangsschutz sitzt vollständig im Backend. Es gibt **genau einen** Ort, an
+dem über Zugriff entschieden wird.
+
+```
+Browser
+   │  1. GET /api/auth/csrf         → Cookie gto_csrf (lesbar)
+   │  2. POST /api/auth/login       → Header x-csrf-token + Zugangsdaten
+   ▼
+┌──────────────────────────────────────────────────────────────┐
+│ Fastify                                                      │
+│                                                              │
+│  onRequest-Hook 1: CSRF-Prüfung                              │
+│     nur für POST/PUT/PATCH/DELETE                            │
+│     Cookie gto_csrf  ==  Header x-csrf-token ?  sonst 403    │
+│                                                              │
+│  onRequest-Hook 2: Session auflösen                          │
+│     Cookie gto_session → SHA-256 → session.token_hash        │
+│     gültig & nicht abgelaufen → request.sessionUser          │
+│                                                              │
+│  preHandler app.requireSession   ← DIE Zugriffsentscheidung  │
+│     kein sessionUser → 401 unauthenticated                   │
+│                                                              │
+│  Login-Pfad:                                                 │
+│     Rate-Limit (nur Fehlversuche, IP|benutzername)           │
+│       → argon2id-Verify (Dummy-Hash bei unbekanntem Konto)   │
+│       → [TOTP-Hook, Default aus]                             │
+│       → Session anlegen, Cookies setzen                      │
+└──────────────────────────────────────────────────────────────┘
+   │
+   ▼
+Postgres:  user.password_hash (argon2id) · session.token_hash (SHA-256)
+```
+
+| Baustein     | Datei                      | Aufgabe                                     |
+| ------------ | -------------------------- | ------------------------------------------- |
+| Passwort     | `src/auth/password.ts`     | argon2id hashen/prüfen, Timing-Gleichheit   |
+| Session      | `src/auth/session.ts`      | Token erzeugen, hashen, auflösen, aufräumen |
+| CSRF         | `src/auth/csrf.ts`         | Double-Submit + Origin-Prüfung              |
+| Rate-Limit   | `src/auth/rate-limit.ts`   | Fehlversuche je `IP\|benutzer`              |
+| Plugin/Guard | `src/auth/plugin.ts`       | Hooks, Cookies, `requireSession`            |
+| Endpunkte    | `src/auth/routes.ts`       | login/logout/me/csrf, TOTP-Hook             |
+| Passwort-CLI | `src/auth/set-password.ts` | Benutzer anlegen/Passwort ändern            |
+
+**Öffentlich bleibt nur `GET /healthz`** — ab T1.5 rufen Host-Nginx und
+Container-Healthcheck ihn ohne Session auf.
+
+Begründungen: [ADR-0007](./DECISIONS.md) (argon2-Parameter),
+[ADR-0008](./DECISIONS.md) (Token-Hashing, Cookies),
+[ADR-0009](./DECISIONS.md) (CSRF), [ADR-0010](./DECISIONS.md) (Rate-Limit).
+
 ## 4. Querschnitts-Entscheidungen
 
 - **Node 20.19.6**, fixiert in `.nvmrc`; `engines.node >= 20.19.0`.
@@ -153,7 +206,6 @@ Begründungen siehe [DECISIONS.md](./DECISIONS.md).
 
 ## 5. Offene Architektur-Punkte
 
-- Session-/Auth-Modell (T1.3)
-- API-Client und Routing im Frontend (T1.4)
+- API-Client, Login-Screen und Routing im Frontend (T1.4)
 - Container-Topologie, Nginx-Vhost, Backup/Restore (T1.5)
 - Ingestion-Pipeline für `data/book-source/` (AP3)

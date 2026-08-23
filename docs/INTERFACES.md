@@ -3,7 +3,7 @@
 Dieses Dokument beschreibt, **wo** sich Komponenten und Arbeitspakete
 gegenseitig berühren. Jeder Task trägt seine Deltas hier nach.
 
-Stand: AP1.T1.2.
+Stand: AP1.T1.3.
 
 ---
 
@@ -56,6 +56,112 @@ Weitere Endpunkte existieren nach T1.1 nicht.
 
 ---
 
+## 2a. Auth-API (AP1.T1.3)
+
+Alle Auth-Endpunkte liegen unter `/api/auth/`. Antwort- und Fehlertypen kommen
+aus `@gto/shared` — das Frontend (T1.4) importiert sie von dort und definiert
+nichts nach.
+
+### Endpunkte
+
+| Methode | Pfad               | Session nötig | Zweck                                       |
+| ------- | ------------------ | ------------- | ------------------------------------------- |
+| `GET`   | `/api/auth/csrf`   | nein          | CSRF-Token holen (setzt `gto_csrf`)         |
+| `POST`  | `/api/auth/login`  | nein          | Anmelden, setzt `gto_session`               |
+| `POST`  | `/api/auth/logout` | nein          | Session serverseitig löschen, Cookie leeren |
+| `GET`   | `/api/auth/me`     | **ja**        | Basisdaten des angemeldeten Benutzers       |
+
+#### `POST /api/auth/login`
+
+Body: `LoginRequest` — `{ "username": "…", "password": "…" }`
+
+| Status | Body                                                 | Bedeutung                                                    |
+| ------ | ---------------------------------------------------- | ------------------------------------------------------------ |
+| `200`  | `LoginResponse` — `{ "user": { "id", "username" } }` | Erfolg; `gto_session` gesetzt                                |
+| `400`  | `{ "error": "invalid_request" }`                     | Feld fehlt                                                   |
+| `401`  | `{ "error": "invalid_credentials" }`                 | **Identisch** bei falschem Passwort und unbekanntem Benutzer |
+| `403`  | `{ "error": "csrf_failed" }`                         | CSRF-Prüfung fehlgeschlagen                                  |
+| `429`  | `{ "error": "rate_limited" }` + `Retry-After`        | Zu viele Fehlversuche                                        |
+
+> Die `401`-Antwort ist bei falschem Passwort und unbekanntem Benutzer
+> **byte-gleich**, und beide Fälle kosten dieselbe Rechenzeit (Verify gegen
+> einen Dummy-Hash). Das Frontend darf daraus nichts ableiten.
+
+### Cookie-Vertrag
+
+| Cookie        | HttpOnly | Inhalt                   | Wer liest es                  |
+| ------------- | -------- | ------------------------ | ----------------------------- |
+| `gto_session` | **ja**   | Session-Token (Klartext) | nur der Server                |
+| `gto_csrf`    | **nein** | CSRF-Token               | der Client (muss es spiegeln) |
+
+Beide mit `Path=/`, `SameSite=Lax` (konfigurierbar) und `Secure` gemäß
+`COOKIE_SECURE`. Details und Begründung: [ADR-0008](./DECISIONS.md).
+
+> **Lokal ohne HTTPS muss `COOKIE_SECURE=false` gesetzt sein**, sonst verwirft
+> der Browser das Cookie und der Login scheint grundlos zu scheitern.
+
+### CSRF-Ablauf für das Frontend (T1.4)
+
+1. Einmalig (und nach jedem Login) `GET /api/auth/csrf` aufrufen.
+2. Den Wert aus dem Body (`csrfToken`) **oder** aus dem lesbaren Cookie
+   `gto_csrf` entnehmen.
+3. Bei **jedem** `POST`/`PUT`/`PATCH`/`DELETE` als Header
+   **`x-csrf-token: <wert>`** mitschicken.
+4. Alle Requests mit `credentials: 'include'` senden, damit die Cookies mitgehen.
+
+Fehlt der Header oder passt er nicht zum Cookie: **403 `csrf_failed`**.
+Lesende Requests (`GET`/`HEAD`/`OPTIONS`) brauchen kein Token.
+Nach erfolgreichem Login setzt der Server ein **frisches** CSRF-Cookie — der
+Client sollte den Wert danach neu einlesen.
+
+### Eine neue Route als geschützt markieren
+
+Es gibt **genau eine** Stelle, die über Zugriff entscheidet: den Guard
+`app.requireSession` aus `src/auth/plugin.ts`. Folge-APs implementieren keine
+eigene Prüfung, sondern hängen sich dort ein:
+
+```ts
+app.get('/api/lernen/aufgaben', { preHandler: app.requireSession }, async (request) => {
+  // request.sessionUser ist hier garantiert gesetzt
+  return ladeAufgaben(request.sessionUser!.id);
+});
+```
+
+Ohne gültige Session antwortet der Guard mit `401 unauthenticated`.
+Der CSRF-Hook greift davon unabhängig **global** für alle zustandsändernden
+Methoden — eine neue Route kann ihn nicht versehentlich umgehen.
+
+### Ausnahme: `GET /healthz` bleibt öffentlich
+
+`/healthz` ist **bewusst ohne Session erreichbar** und liegt außerhalb von
+`/api/auth/`. Grund: Ab T1.5 rufen der Host-Nginx und der Container-Healthcheck
+diesen Endpunkt ohne Anmeldung auf. Er liefert ausschließlich
+`{ "status": "ok" }` und keinerlei interne Daten.
+
+### TOTP-Hook — vorbereitet, standardmäßig aus
+
+In T1.3 ist **nur die Einhängestelle** vorhanden, keine TOTP-Prüfung.
+
+| Baustein           | Zustand                                                          |
+| ------------------ | ---------------------------------------------------------------- |
+| `user.totp_secret` | Spalte existiert seit T1.2, `NULL`                               |
+| `TOTP_ENABLED`     | Umgebungsvariable, Default **`false`**                           |
+| Einhängestelle     | `src/auth/routes.ts`, Block `TOTP-HOOK` nach der Passwortprüfung |
+
+Verhalten heute: Ist `TOTP_ENABLED=true` **und** hat der Benutzer ein
+`totp_secret`, wird der Login **abgelehnt** statt den zweiten Faktor
+stillschweigend zu überspringen — ein aktivierter Schalter darf nicht
+wirkungslos sein.
+
+Zum späteren Aktivieren sind drei Schritte nötig:
+
+1. TOTP-Verifikation im markierten Block implementieren (`body.totp` gegen
+   `user.totp_secret` prüfen).
+2. Einen Weg schaffen, das Secret zu setzen (Erweiterung des Passwort-CLI).
+3. `TOTP_ENABLED=true` setzen.
+
+---
+
 ## 3. Datenbankschema (Basisschema, AP1.T1.2)
 
 Quelle der Wahrheit ist `apps/backend/src/db/schema.ts`. Alles Weitere
@@ -77,28 +183,28 @@ in der Datenbank geändert.
 
 ### Die fünf Tabellen
 
-**`user`** — Single-User-Betrieb. In T1.2 nur Schema, **fachlich ungenutzt**;
-Login und Hashing folgen in T1.3.
+**`user`** — Single-User-Betrieb. Seit T1.3 fachlich in Benutzung (Login,
+Passwort-CLI).
 
-| Spalte          | Typ           | Hinweis                                         |
-| --------------- | ------------- | ----------------------------------------------- |
-| `id`            | `uuid` PK     | `gen_random_uuid()`                             |
-| `username`      | `text`        | eindeutig (`user_username_key`)                 |
-| `password_hash` | `text`        | Argon2-Hash; erzeugt wird er erst in T1.3       |
-| `totp_secret`   | `text` NULL   | Hook für den optionalen TOTP-Faktor (T1.3, aus) |
-| `created_at`    | `timestamptz` | Default `now()`                                 |
-| `updated_at`    | `timestamptz` | Default `now()`                                 |
+| Spalte          | Typ           | Hinweis                                           |
+| --------------- | ------------- | ------------------------------------------------- |
+| `id`            | `uuid` PK     | `gen_random_uuid()`                               |
+| `username`      | `text`        | eindeutig (`user_username_key`)                   |
+| `password_hash` | `text`        | argon2id-Hash ([ADR-0007](./DECISIONS.md))        |
+| `totp_secret`   | `text` NULL   | TOTP-Hook, standardmäßig aus (siehe Abschnitt 2a) |
+| `created_at`    | `timestamptz` | Default `now()`                                   |
+| `updated_at`    | `timestamptz` | Default `now()`                                   |
 
-**`session`** — ebenfalls nur Schema in T1.2.
+**`session`** — seit T1.3 in Benutzung.
 
-| Spalte         | Typ                | Hinweis                                                                                                                  |
-| -------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| `id`           | `uuid` PK          | `gen_random_uuid()`                                                                                                      |
-| `token`        | `text`             | eindeutig; **der Cookie trägt den Token, nicht die `id`** — so lässt sich der Token rotieren, ohne die Zeile zu ersetzen |
-| `user_id`      | `uuid` FK → `user` | `ON DELETE CASCADE`                                                                                                      |
-| `expires_at`   | `timestamptz`      | Index `session_expires_at_idx` fürs Aufräumen                                                                            |
-| `last_seen_at` | `timestamptz` NULL |                                                                                                                          |
-| `created_at`   | `timestamptz`      | Index `session_user_id_idx` auf `user_id`                                                                                |
+| Spalte         | Typ                | Hinweis                                                                                                                                                                           |
+| -------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`           | `uuid` PK          | `gen_random_uuid()`                                                                                                                                                               |
+| `token_hash`   | `text`             | eindeutig; **SHA-256 des Session-Tokens**. Der Klartext steht ausschließlich im Cookie, nie in der Datenbank ([ADR-0008](./DECISIONS.md)). Seit Migration `0001` (vorher `token`) |
+| `user_id`      | `uuid` FK → `user` | `ON DELETE CASCADE`                                                                                                                                                               |
+| `expires_at`   | `timestamptz`      | Index `session_expires_at_idx` fürs Aufräumen                                                                                                                                     |
+| `last_seen_at` | `timestamptz` NULL |                                                                                                                                                                                   |
+| `created_at`   | `timestamptz`      | Index `session_user_id_idx` auf `user_id`                                                                                                                                         |
 
 **`config`** — Key/Value-Konfiguration zur Laufzeit.
 
@@ -208,7 +314,6 @@ Details siehe [`data/book-source/README.md`](../data/book-source/README.md).
 | Schnittstelle                                 | Entsteht in |
 | --------------------------------------------- | ----------- |
 | Datenbankzugriff / Migrationen                | AP1.T1.2    |
-| Auth-/Session-Endpunkte                       | AP1.T1.3    |
 | Frontend-API-Client, Routing                  | AP1.T1.4    |
 | Nginx-Vhost, Compose-Netzwerk, Backup/Restore | AP1.T1.5    |
 | CI-Pipeline, E2E-Tests                        | AP1.T1.6    |

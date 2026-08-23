@@ -265,3 +265,202 @@ selbstdokumentierend.
 - **`network_mode: bridge`** — umgeht das Problem, verhindert aber die
   Service-zu-Service-Auflösung per Name, die in T1.5 für Backend↔Postgres
   gebraucht wird.
+
+---
+
+## ADR-0007 — argon2id als Passwort-Hash mit OWASP-Parametern
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** AP1.T1.3 verlangt Passwort-Hashing mit argon2. Die Parameter
+  (Memory, Iterationen, Parallelität) sind bewusst zu wählen und zu begründen.
+
+### Entscheidung
+
+**argon2id** über das Paket **`@node-rs/argon2`** mit:
+
+| Parameter                | Wert               |
+| ------------------------ | ------------------ |
+| Algorithmus              | argon2id           |
+| `memoryCost`             | 19456 KiB (19 MiB) |
+| `timeCost` (Iterationen) | 2                  |
+| `parallelism`            | 1                  |
+
+Mindestlänge für Passwörter: **12 Zeichen**.
+
+### Begründung
+
+- **argon2id statt argon2i/argon2d:** Die Hybridvariante ist gegen
+  Seitenkanal- **und** GPU-/ASIC-Angriffe abgesichert und ist die von OWASP
+  und RFC 9106 empfohlene Standardwahl.
+- **19 MiB / t=2 / p=1:** exakt eine der im OWASP Password Storage Cheat Sheet
+  genannten Konfigurationen. Höherer Speicher (z. B. 64 MiB) wäre stärker, aber
+  der Host teilt sich RAM mit über 30 fremden Containern — ein Login darf dort
+  keine dreistelligen MB-Beträge belegen. `p=1`, weil Parallelität auf einem
+  geteilten Host keinen echten Gewinn bringt.
+- **`@node-rs/argon2` statt `argon2`:** liefert vorkompilierte Binaries per
+  napi-rs. Das Paket `argon2` braucht auf vielen Systemen `node-gyp` und eine
+  Build-Toolchain — im Container-Build (T1.5) wäre das zusätzlicher Ballast.
+
+### Timing-Gleichheit
+
+`verifyPassword(undefined, …)` verifiziert gegen einen zwischengespeicherten
+**Dummy-Hash**. Ohne das wäre die Antwort bei unbekanntem Benutzer messbar
+schneller als bei falschem Passwort und würde die Existenz eines Kontos
+verraten. Der Dummy wird verzögert erzeugt und gecacht, damit die ~30 ms nicht
+bei jedem Fehlversuch erneut anfallen.
+
+### Alternativen (verworfen)
+
+- **bcrypt** — weit verbreitet, aber auf 72 Byte begrenzt und ohne
+  Speicherhärte; gegen GPU-Angriffe deutlich schwächer.
+- **scrypt aus `node:crypto`** — dependency-frei und speicherhart, aber der
+  Kanon nennt argon2 ausdrücklich.
+- **Höhere Parameter (64 MiB, t=3)** — sicherer, aber auf diesem geteilten Host
+  unverhältnismäßig.
+
+---
+
+## ADR-0008 — Session-Token gehasht speichern, Cookie-Attribute
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** Das Session-Cookie ist der Zugangsschlüssel zur gesamten
+  Anwendung. Die `session`-Tabelle aus T1.2 hatte eine Spalte `token`.
+
+### Entscheidung
+
+1. Der Token besteht aus **32 Byte** (256 Bit) aus `crypto.randomBytes`,
+   base64url-kodiert.
+2. In der Datenbank steht ausschließlich der **SHA-256-Hash** des Tokens. Die
+   Spalte heißt deshalb jetzt **`token_hash`** (Migration `0001`, siehe unten).
+3. Cookie-Attribute:
+
+| Attribut   | Wert                                                   | Grund                                                                                                                                             |
+| ---------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `HttpOnly` | immer an                                               | Kein Zugriff aus JavaScript → XSS kann den Token nicht auslesen                                                                                   |
+| `SameSite` | `Lax` (Default), `strict` möglich                      | `Lax` erlaubt normale Navigation zur App; `Strict` bräche Links von außen ohne Sicherheitsgewinn, da CSRF bereits per Double-Submit abgedeckt ist |
+| `Secure`   | `COOKIE_SECURE`, Default = `NODE_ENV === 'production'` | Hinter dem Host-Nginx läuft TLS; lokal ohne HTTPS würde der Browser ein `Secure`-Cookie verwerfen und Entwicklung unmöglich machen                |
+| `Path`     | `/`                                                    | Gilt für API und spätere Frontend-Routen                                                                                                          |
+| `Expires`  | `SESSION_TTL_HOURS`, Default 168 h                     | Serverseitig zusätzlich über `expires_at` geprüft — ein manipuliertes Cookie verlängert nichts                                                    |
+
+### Begründung für SHA-256 statt argon2 beim Token
+
+Der Token ist bereits **hochentropischer Zufall** (256 Bit) — es gibt nichts zu
+erraten, ein Brute-Force über den Hash ist praktisch ausgeschlossen. Ein
+langsamer Passwort-Hash würde bei **jedem** Request anfallen und die API
+spürbar bremsen, ohne Sicherheitsgewinn. Anders als bei Passwörtern gibt es
+hier auch kein Wörterbuch-Problem.
+
+### Schemaänderung
+
+Die Leitplanke des Tasks erlaubt Schemaänderungen, wenn sie nötig sind, als
+**neue** Migration. Die Spalte `session.token` wurde deshalb per Migration
+`0001_wild_blue_marvel.sql` (`ALTER TABLE … RENAME COLUMN`) zu `token_hash`
+umbenannt. Grund: Eine Spalte namens `token`, die in Wahrheit einen Hash
+enthält, lädt Folge-APs zu einem gefährlichen Fehlschluss ein. Die Migration
+aus T1.2 blieb unverändert; die Tabelle war fachlich noch ungenutzt.
+
+### Alternativen (verworfen)
+
+- **Token im Klartext speichern** — ein Datenbank-Leak (Backup, `pg_dump`,
+  SQL-Injection) erlaubte sofortige Übernahme aller laufenden Sessions.
+- **Signierte, zustandslose Tokens (JWT)** — kein serverseitiges Invalidieren
+  ohne Sperrliste; genau das braucht Logout und die Passwortänderung.
+- **`SameSite=Strict`** — würde bei jedem Aufruf aus einer externen Quelle
+  abmelden, ohne zusätzlichen Schutz gegenüber der bestehenden CSRF-Lösung.
+
+---
+
+## ADR-0009 — CSRF-Schutz per Double-Submit-Cookie plus Origin-Prüfung
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** Die Session liegt in einem Cookie und wird vom Browser bei jedem
+  Request automatisch mitgeschickt — auch bei Requests, die eine fremde Seite
+  auslöst. Zustandsändernde Requests brauchen deshalb einen zweiten Nachweis.
+
+### Entscheidung
+
+**Double-Submit-Cookie**, kombiniert mit einer **Origin-/Referer-Prüfung**.
+
+Ablauf für das Frontend (T1.4):
+
+1. `GET /api/auth/csrf` aufrufen. Der Server setzt das Cookie **`gto_csrf`**
+   (bewusst **nicht** `HttpOnly`) und liefert denselben Wert im Body als
+   `{ "csrfToken": "…" }`.
+2. Bei **jedem** `POST`/`PUT`/`PATCH`/`DELETE` den Wert im Header
+   **`x-csrf-token`** mitschicken.
+3. Der Server vergleicht Cookie und Header in konstanter Zeit. Bei Abweichung:
+   **403** mit `{ "error": "csrf_failed" }`.
+
+Der Vergleich läuft als globaler `onRequest`-Hook — er greift für jede
+zustandsändernde Route, auch für künftige. Eine neue Route kann den Schutz also
+nicht versehentlich umgehen.
+
+### Begründung
+
+- **Warum das trägt:** Eine fremde Seite kann das Cookie zwar mitschicken
+  lassen, es aber wegen der Same-Origin-Policy nicht **auslesen** und damit
+  nicht in den Header spiegeln.
+- **Kein `HttpOnly` auf dem CSRF-Cookie:** Das ist Absicht und kein Widerspruch
+  — der Wert ist kein Geheimnis, sondern nur der Nachweis, dass der Request von
+  der eigenen Seite stammt. Der eigentliche Zugangsschlüssel (`gto_session`)
+  bleibt `HttpOnly`.
+- **Zusätzliche Origin-Prüfung:** greift, wenn `ALLOWED_ORIGINS` gesetzt ist.
+  Fehlen `Origin` und `Referer` ganz (curl, Tests, Server-zu-Server), wird
+  durchgelassen — der Double-Submit-Token trägt dort die Absicherung.
+- **Token-Rotation nach dem Login:** verhindert Session-Fixation über ein
+  vorab untergeschobenes CSRF-Cookie.
+
+### Alternativen (verworfen)
+
+- **`@fastify/csrf-protection`** — zusätzliche Dependency für ~60 Zeilen
+  nachvollziehbaren Code; das Double-Submit-Verfahren ist hier vollständig
+  überschaubar.
+- **Nur Origin-/Referer-Prüfung** — scheitert bei Clients, die keinen Origin
+  senden, und lässt sich in manchen Konstellationen umgehen.
+- **`SameSite=Strict` allein** — kein Schutz in älteren Browsern und bricht
+  legitime Navigation von außen.
+
+---
+
+## ADR-0010 — Eigener Login-Rate-Limiter statt Plugin
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** Der Login-Endpunkt braucht ein Limit gegen das Durchprobieren
+  von Passwörtern. Die Anforderung lautet ausdrücklich: **erfolgreiche Logins
+  dürfen nicht unnötig blockiert werden.**
+
+### Entscheidung
+
+Ein eigener, in-memory `LoginRateLimiter` (`src/auth/rate-limit.ts`, ~90
+Zeilen). Gezählt werden **ausschließlich Fehlversuche**, der Schlüssel ist
+`IP|benutzername`. Nach erfolgreichem Login wird der Zähler zurückgesetzt.
+Defaults: **5 Fehlversuche je 15 Minuten**, konfigurierbar über
+`LOGIN_RATE_LIMIT_MAX_ATTEMPTS` und `LOGIN_RATE_LIMIT_WINDOW_MINUTES`.
+Bei Überschreitung: **429** mit `Retry-After`, ohne Hinweis darauf, ob das
+Konto existiert.
+
+### Begründung
+
+- `@fastify/rate-limit` zählt **jeden** Request, nicht nur gescheiterte. Ein
+  Benutzer, der sich mehrfach korrekt anmeldet, liefe dort ins Limit — genau
+  das schließt die Anforderung aus. Man kann das mit eigenem Store nachbauen,
+  dann bleibt vom Plugin aber kaum noch etwas übrig.
+- Der zusammengesetzte Schlüssel bremst beides: Angriffe von einer IP über
+  viele Benutzernamen und Angriffe auf ein Konto von wechselnden IPs.
+- Prozessspeicher genügt: ein Single-User-Dienst mit einer Backend-Instanz.
+
+### Alternativen (verworfen)
+
+- **`@fastify/rate-limit`** — siehe oben; passt nicht zur Fehlversuch-Semantik.
+- **Zähler in der `config`- oder einer eigenen Tabelle** — überlebt Neustarts,
+  kostet aber bei jedem Login einen Schreibvorgang. Bei mehreren
+  Backend-Instanzen (heute nicht absehbar) wäre das der nächste Schritt.
+
+### Konsequenz
+
+Ein Neustart des Backends leert die Zähler. Für einen Angreifer ist das kein
+brauchbarer Hebel — er kann den Neustart nicht auslösen.

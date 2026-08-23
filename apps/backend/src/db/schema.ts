@@ -52,8 +52,11 @@ export const user = pgTable(
 );
 
 /**
- * Sessions. Der Cookie transportiert den `token`, nicht die `id` - so laesst
- * sich der Token rotieren, ohne den Datensatz zu ersetzen.
+ * Sessions.
+ *
+ * In der Datenbank steht ausschliesslich der **Hash** des Session-Tokens
+ * (`token_hash`). Der Klartext-Token existiert nur im Cookie des Clients. Wer
+ * die Datenbank liest, kann daraus keine gueltige Session herstellen.
  */
 export const session = pgTable(
   'session',
@@ -61,8 +64,11 @@ export const session = pgTable(
     id: uuid('id')
       .primaryKey()
       .default(sql`gen_random_uuid()`),
-    /** Kryptografisch zufaelliger Token; wird in T1.3 erzeugt und gesetzt. */
-    token: text('token').notNull(),
+    /**
+     * SHA-256 des Klartext-Tokens, hex-kodiert. Niemals der Token selbst.
+     * Siehe `src/auth/session.ts`.
+     */
+    tokenHash: text('token_hash').notNull(),
     userId: uuid('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -71,7 +77,7 @@ export const session = pgTable(
     createdAt,
   },
   (table) => [
-    uniqueIndex('session_token_key').on(table.token),
+    uniqueIndex('session_token_hash_key').on(table.tokenHash),
     index('session_user_id_idx').on(table.userId),
     // Fuer das Aufraeumen abgelaufener Sessions.
     index('session_expires_at_idx').on(table.expiresAt),
