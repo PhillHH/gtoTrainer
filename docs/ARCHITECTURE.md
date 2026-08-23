@@ -410,9 +410,48 @@ der Container die Subscription-Zugangsdaten nie. Die Aufrufform der CLI —
 `-p` mit `--output-format json`, für Bild-Input `--input-format stream-json` —
 steht in [ADR-0021](./DECISIONS.md).
 
-**Stand nach T2.1:** Es existiert nur der Vertrag (Typen, Fehler-Taxonomie,
-Provider-Kennung) plus die beiden ADRs. Adapter, Template-Registry,
-Job-Worker/Logging und Settings-UI folgen in T2.2–T2.6.
+### CLI-Adapter (neu in T2.2)
+
+`apps/backend/src/llm/` implementiert Adapter „cli". Aufbau:
+
+| Modul          | Aufgabe                                                            |
+| -------------- | ------------------------------------------------------------------ |
+| `cli-provider` | `LLMProvider`-Implementierung: Semaphore, Retry, Transportwahl     |
+| `invocation`   | `LlmRequest` → Argumentliste, stdin-Nachricht, Prozess-Environment |
+| `spawn`        | Prozessstart ohne Shell, Timeout, SIGTERM → SIGKILL                |
+| `interpret`    | CLI-Ausgabe → `LlmResponse` oder `LlmError` der Taxonomie          |
+| `parse`        | Fence-Stripping, Wrapper-Text, schlanke Schemaprüfung              |
+| `concurrency`  | Semaphore und Backoff mit Streuung                                 |
+| `runner`       | Host-Runner (Server) und sein Gegenstück im Container (Client)     |
+| `runner-main`  | Einstiegspunkt des Host-Prozesses (`pnpm llm:runner`)              |
+
+Der Aufrufweg ist **einer**, nur der Transport unterscheidet sich — und der
+kommt aus der Konfiguration, nicht aus einer Code-Verzweigung:
+
+```
+LLM_TRANSPORT=direct                      LLM_TRANSPORT=socket  (Container)
+  cli-provider                              cli-provider
+    └─ spawn ── claude -p …                   └─ runner-client ──┐
+                                                                  │ /run/gto-llm/gto-llm.sock (ro)
+                                          ── Containergrenze ─────┼──────────────
+                                                                  │
+                                             runner-main (Host)  ─┘
+                                               └─ spawn ── claude -p …
+```
+
+Beide Wege münden in dasselbe Rohergebnis und werden von demselben Code
+ausgewertet. Der Runner setzt `CLAUDE_CONFIG_DIR` selbst; im Container ist die
+Variable **nicht** gesetzt und das Profil-B-Verzeichnis **nicht** gemountet.
+
+**Aufrufform** (ADR-0021, präzisiert in ADR-0023): `claude -p --model …
+--system-prompt … --tools "" --input-format stream-json --output-format
+stream-json --verbose [--json-schema …]`, Prompt über stdin. Der Kindprozess
+erhält ein Environment aus genau vier Variablen — `ANTHROPIC_API_KEY` ist
+bewusst nicht darunter.
+
+**Stand nach T2.2:** Der Adapter ist gebaut und getestet, aber noch **nicht**
+an Job-Verarbeitung, `llm_call_log` oder UI angebunden. Das folgt in T2.5/T2.6;
+der API-Adapter kommt in T2.3.
 
 ## 4. Querschnitts-Entscheidungen
 
@@ -430,6 +469,6 @@ Begründungen siehe [DECISIONS.md](./DECISIONS.md).
 - Host-Nginx-vhost und TLS sind vorbereitet, aber noch nicht eingespielt —
   beides erfordert Root auf dem Host (siehe `docs/status/AP01.md`).
 - Ingestion-Pipeline für `data/book-source/` (AP3)
-- Host-seitiger CLI-Runner aus [ADR-0022](./DECISIONS.md): entschieden,
-  aber noch nicht gebaut (T2.2). Sein Neustart nach einem Reboot ist noch
-  nicht abgesichert.
+- Der Host-seitige CLI-Runner aus [ADR-0022](./DECISIONS.md) läuft außerhalb
+  von Compose. Sein Neustart nach einem Reboot ist noch nicht abgesichert
+  (siehe `docs/RUNBOOK.md` 9.2).

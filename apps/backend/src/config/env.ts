@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 
 /**
@@ -210,6 +211,142 @@ function loadAuthConfig(nodeEnv: string): AuthConfig {
     loginWindowMs: numberEnv('LOGIN_RATE_LIMIT_WINDOW_MINUTES', 15) * 60 * 1000,
     totpEnabled: booleanEnv('TOTP_ENABLED', false),
   };
+}
+
+/* -------------------------------------------------------------------------
+ * LLM-Gateway (AP2.T2.2)
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Wie das Backend die Claude CLI erreicht.
+ *
+ * - `direct` - dieser Prozess startet die CLI selbst. Gilt lokal und fuer den
+ *   Host-Runner.
+ * - `socket` - dieser Prozess spricht den Host-Runner ueber einen
+ *   Unix-Domain-Socket an. Gilt im Container (ADR-0022).
+ *
+ * Der Unterschied liegt **nur** in der Konfiguration; der Adaptercode ist
+ * derselbe.
+ */
+export const LLM_TRANSPORTS = ['direct', 'socket'] as const;
+export type LlmTransport = (typeof LLM_TRANSPORTS)[number];
+
+/** Konfiguration des CLI-Adapters. */
+export interface LlmConfig {
+  readonly transport: LlmTransport;
+  /**
+   * Config-Verzeichnis der Claude CLI - **Profil B**. Pflicht, sobald dieser
+   * Prozess die CLI selbst startet. Es gibt **keinen** Rueckfall auf ein
+   * Default-Profil.
+   */
+  readonly claudeConfigDir: string | undefined;
+  /** Ausfuehrbare Datei der CLI. */
+  readonly cliPath: string;
+  /**
+   * Arbeitsverzeichnis des CLI-Prozesses. Bewusst ein leeres, projektfremdes
+   * Verzeichnis: `-p` laedt sonst CLAUDE.md, Hooks und MCP-Server aus dem cwd.
+   */
+  readonly cliCwd: string;
+  /** Pfad des Runner-Sockets. Pflicht bei `transport: 'socket'`. */
+  readonly runnerSocketPath: string | undefined;
+  /** Standardmodell, wenn der Request keines vorgibt. */
+  readonly model: string;
+  /** Standard-Timeout je Aufruf in Millisekunden. */
+  readonly timeoutMs: number;
+  /** Obergrenze gleichzeitiger CLI-Prozesse. */
+  readonly maxConcurrency: number;
+  /** Gesamtzahl der Versuche je Aufruf (1 = kein Retry). */
+  readonly maxAttempts: number;
+  /** Basiswartezeit des exponentiellen Backoffs in Millisekunden. */
+  readonly retryBaseDelayMs: number;
+  /** Obergrenze einer einzelnen Backoff-Wartezeit. */
+  readonly retryMaxDelayMs: number;
+  /** Harte Obergrenze fuer alle Versuche zusammen. */
+  readonly retryTotalBudgetMs: number;
+}
+
+/** Default-Socketname innerhalb von `LLM_RUNNER_SOCKET_DIR`. */
+export const LLM_RUNNER_SOCKET_NAME = 'gto-llm.sock';
+
+/**
+ * Liest die LLM-Konfiguration. Wird bei der **Adapter-Initialisierung**
+ * aufgerufen, nicht beim Serverstart: Das Backend muss auch ohne CLI starten
+ * koennen (CI, und ab T2.3 der reine API-Adapter).
+ *
+ * Wirft `ConfigError`, wenn `CLAUDE_CONFIG_DIR` fehlt und dieser Prozess die
+ * CLI selbst starten wuerde.
+ */
+export function loadLlmConfig(): LlmConfig {
+  loadEnvFile();
+
+  const transportRaw = optionalEnv('LLM_TRANSPORT') ?? 'direct';
+  if (!(LLM_TRANSPORTS as readonly string[]).includes(transportRaw)) {
+    throw new ConfigError(
+      `LLM_TRANSPORT muss "direct" oder "socket" sein, ist: "${transportRaw}".`,
+    );
+  }
+  const transport = transportRaw as LlmTransport;
+
+  const claudeConfigDir =
+    transport === 'direct' ? requireClaudeConfigDir() : optionalEnv('CLAUDE_CONFIG_DIR');
+
+  const runnerSocketPath = transport === 'socket' ? requireRunnerSocketPath() : resolveSocketPath();
+
+  const maxAttempts = numberEnv('LLM_MAX_ATTEMPTS', 3);
+
+  return {
+    transport,
+    claudeConfigDir,
+    cliPath: optionalEnv('LLM_CLI_PATH') ?? 'claude',
+    cliCwd: optionalEnv('LLM_CLI_CWD') ?? tmpdir(),
+    runnerSocketPath,
+    model: optionalEnv('LLM_MODEL') ?? 'claude-sonnet-5',
+    timeoutMs: numberEnv('LLM_TIMEOUT_MS', 120_000),
+    maxConcurrency: numberEnv('LLM_MAX_CONCURRENCY', 2),
+    maxAttempts,
+    retryBaseDelayMs: numberEnv('LLM_RETRY_BASE_DELAY_MS', 1_000),
+    retryMaxDelayMs: numberEnv('LLM_RETRY_MAX_DELAY_MS', 30_000),
+    retryTotalBudgetMs: numberEnv('LLM_RETRY_TOTAL_BUDGET_MS', 300_000),
+  };
+}
+
+/**
+ * Pflichtpruefung fuer das Profil-B-Verzeichnis. Die Meldung sagt, was zu tun
+ * ist - ein stiller Default waere hier besonders gefaehrlich, weil er das
+ * falsche Subscription-Profil verbrauchen wuerde.
+ */
+function requireClaudeConfigDir(): string {
+  const value = optionalEnv('CLAUDE_CONFIG_DIR');
+  if (value === undefined) {
+    throw new ConfigError(
+      'Pflicht-Umgebungsvariable CLAUDE_CONFIG_DIR fehlt oder ist leer. ' +
+        'Der Claude-CLI-Adapter laeuft ausschliesslich gegen Profil B und faellt ' +
+        'nicht auf ein Default-Profil zurueck. Setze CLAUDE_CONFIG_DIR auf das ' +
+        'Profil-B-Verzeichnis (siehe .env.example) und stelle sicher, dass es ' +
+        'eingeloggt ist.',
+    );
+  }
+  return value;
+}
+
+function requireRunnerSocketPath(): string {
+  const explicit = resolveSocketPath();
+  if (explicit === undefined) {
+    throw new ConfigError(
+      'LLM_TRANSPORT=socket verlangt LLM_RUNNER_SOCKET_PATH oder ' +
+        'LLM_RUNNER_SOCKET_DIR. Im Container wird das Socket-Verzeichnis des ' +
+        'Host-Runners eingehaengt (siehe docker-compose.yml und ADR-0022).',
+    );
+  }
+  return explicit;
+}
+
+function resolveSocketPath(): string | undefined {
+  const explicit = optionalEnv('LLM_RUNNER_SOCKET_PATH');
+  if (explicit !== undefined) return explicit;
+  const dir = optionalEnv('LLM_RUNNER_SOCKET_DIR');
+  if (dir === undefined) return undefined;
+  return resolve(dir, LLM_RUNNER_SOCKET_NAME);
 }
 
 /**

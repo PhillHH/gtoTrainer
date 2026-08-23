@@ -39,5 +39,18 @@ export default tseslint.config(
       'no-console': 'off',
     },
   },
+  {
+    // Test-Hilfsprogramme, die als eigenstaendiger Node-Prozess starten
+    // (z. B. die gefaelschte Claude CLI). Flat Config bringt keine
+    // Node-Globals mit; hier werden nur die tatsaechlich genutzten deklariert.
+    files: ['**/test/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        process: 'readonly',
+        setTimeout: 'readonly',
+        setInterval: 'readonly',
+      },
+    },
+  },
   prettier,
 );

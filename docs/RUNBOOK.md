@@ -659,7 +659,100 @@ Die produktive Datenbank war vorher und nachher unverändert
 
 ---
 
-## 9. Noch nicht abgedeckt
+## 9. LLM-Gateway (AP2)
+
+### 9.1 Voraussetzung: Profil B
+
+Das Projekt nutzt **ausschließlich** das Claude-CLI-Profil B unter
+`/home/phillip/.claude-b`. Das Default-Profil `/home/phillip/.claude` wird nie
+angefasst, und es gibt keinen Rückfall darauf.
+
+Prüfen, ob Profil B eingeloggt ist:
+
+```bash
+CLAUDE_CONFIG_DIR=/home/phillip/.claude-b claude -p "Antworte nur mit OK"
+# erwartet: OK, Exit-Code 0, keine Login-Aufforderung
+```
+
+Kommt `Not logged in · Please run /login`, muss der Login **einmalig
+interaktiv** nachgeholt werden:
+
+```bash
+CLAUDE_CONFIG_DIR=/home/phillip/.claude-b claude   # dann /login
+```
+
+Empfehlung aus `docs/ap/AP02.md`: `chmod 700 /home/phillip/.claude-b` — das
+Verzeichnis ist aktuell weltlesbar.
+
+### 9.2 Host-Runner starten
+
+Das Backend läuft im Container, die CLI auf dem Host. Die Brücke ist ein
+Host-Prozess mit Unix-Domain-Socket ([ADR-0022](./DECISIONS.md)):
+
+```bash
+cd /home/phillip/gto
+pnpm llm:runner
+# [llm-runner] bereit auf /home/phillip/gto-llm-runner/gto-llm.sock (Profil /home/phillip/.claude-b, CLI claude)
+```
+
+Im Hintergrund, mit Protokoll:
+
+```bash
+nohup pnpm llm:runner > /home/phillip/gto-llm-runner/runner.log 2>&1 &
+```
+
+Der Runner läuft als Benutzer `phillip`, **nicht** als root, und legt den
+Socket mit Mode `0600` an. Er ist der einzige Prozess, der Profil B kennt.
+
+> **Offen:** Nach einem Reboot startet der Runner nicht von selbst. Ein
+> root-freier Weg wäre ein `@reboot`-Eintrag in der Benutzer-Crontab
+> (`crontab -e`, `cron` läuft auf dem Host); das ist noch nicht eingerichtet
+> und nicht verifiziert. Bis dahin: nach jedem Neustart von Hand starten.
+
+### 9.3 Testaufruf von Hand
+
+**Lokal, ohne Container** (`LLM_TRANSPORT=direct`):
+
+```bash
+LLM_LIVE_SMOKE=true LLM_MODEL=claude-haiku-4-5 \
+  pnpm --filter @gto/backend exec vitest run test/llm/live-smoke.test.ts
+```
+
+Ohne `LLM_LIVE_SMOKE=true` wird der Test übersprungen — in der CI ist die
+Variable nicht gesetzt, damit kein Lauf Subscription-Kontingent verbraucht.
+
+**Aus dem laufenden Container** (prüft zugleich den Runner und das Mount):
+
+```bash
+docker exec gto-backend node -e '
+import("/app/dist/llm/index.js").then(async ({ createClaudeCliProvider }) => {
+  const { loadLlmConfig } = await import("/app/dist/config/env.js");
+  const res = await createClaudeCliProvider(loadLlmConfig()).complete({
+    system: "Antworte mit genau einem Wort.",
+    messages: [{ role: "user", content: [{ type: "text", text: "Antworte nur mit OK" }] }],
+    model: "claude-haiku-4-5", maxTokens: 1024, timeoutMs: 120000,
+  });
+  console.log(JSON.stringify({ text: res.text, meta: res.meta }));
+}).catch((e) => { console.error("FEHLER:", e.kind, e.message); process.exit(1); });'
+```
+
+### 9.4 Typische Fehlerbilder
+
+| Meldung / Symptom                                                      | Ursache                                         | Abhilfe                                                                    |
+| ---------------------------------------------------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------- |
+| `CLAUDE_CONFIG_DIR fehlt oder ist leer`                                | Pflichtvariable nicht gesetzt                   | `.env` aus `.env.example` ergänzen; **kein** Default-Profil verwenden      |
+| `Not logged in · Please run /login` (Kategorie `auth`)                 | Profil B nicht eingeloggt oder Token abgelaufen | Abschnitt 9.1                                                              |
+| `You've hit your session limit · resets …` (Kategorie `rate_limit`)    | Subscription-Kontingent erschöpft               | bis zur genannten Uhrzeit warten; `LLM_MAX_CONCURRENCY` senken             |
+| `Die Claude CLI wurde nicht gefunden` (Kategorie `auth`)               | CLI fehlt oder falscher `LLM_CLI_PATH`          | im Container erwartet: `LLM_TRANSPORT=socket` — die CLI liegt auf dem Host |
+| `Der CLI-Runner ist unter … nicht erreichbar` (Kategorie `auth`)       | Host-Runner läuft nicht                         | Abschnitt 9.2                                                              |
+| `hat nicht innerhalb des Zeitlimits geantwortet` (Kategorie `timeout`) | Aufruf zu langsam                               | `LLM_TIMEOUT_MS` erhöhen; Vision-Aufrufe brauchen länger als Textaufrufe   |
+| `exceeded the N output token maximum` (Kategorie `invalid`)            | `maxTokens` zu klein — die CLI kürzt nicht      | `maxTokens` im Request erhöhen                                             |
+| `Die Antwort verletzt das angeforderte Schema` (Kategorie `parse`)     | Antwort passt nicht zum `jsonSchema`            | Schema oder Prompt schärfen; wird bewusst **nicht** wiederholt             |
+
+Laufendes Protokoll des Runners: `tail -f /home/phillip/gto-llm-runner/runner.log`.
+
+## 10. Noch nicht abgedeckt
 
 - Der Host-Nginx-vhost und das TLS-Zertifikat sind vorbereitet, aber noch nicht
   eingespielt: Beides erfordert Root auf dem Host (Abschnitte 8.4 und 8.5).
+- Der Host-Runner startet nach einem Reboot nicht automatisch (Abschnitt 9.2).

@@ -3,7 +3,7 @@
 Dieses Dokument beschreibt, **wo** sich Komponenten und Arbeitspakete
 gegenseitig berühren. Jeder Task trägt seine Deltas hier nach.
 
-Stand: AP2.T2.1.
+Stand: AP2.T2.2.
 
 ---
 
@@ -546,6 +546,54 @@ Zeitpunkt, sofern der Provider ihn nennt.
 Die Tabelle ist als `Record<LlmErrorKind, boolean>` typisiert: Eine neue
 Kategorie ohne Retry-Aussage übersetzt nicht.
 
+### Adapter „cli" — vorhanden seit T2.2
+
+```ts
+import { createClaudeCliProvider } from '../llm/index.js';
+
+const provider = createClaudeCliProvider(); // liest die Konfiguration selbst
+const response = await provider.complete({
+  system: 'Du digitalisierst GTO-Charts.',
+  messages: [{ role: 'user', content: [{ type: 'text', text: 'Los geht es.' }] }],
+  model: 'claude-sonnet-5',
+  maxTokens: 4096,
+});
+```
+
+- Einstieg ist **ausschließlich** `apps/backend/src/llm/index.ts`. Die Module
+  darunter (`spawn`, `invocation`, `runner`, …) sind nicht für Aufrufer
+  gedacht.
+- `createClaudeCliProvider()` wirft `ConfigError`, wenn `CLAUDE_CONFIG_DIR`
+  fehlt und dieser Prozess die CLI selbst startet. Es gibt **keinen** Rückfall
+  auf ein Default-Profil.
+- Fehler kommen als `LlmError` (`kind`, `provider`, `message`, `retryAfterMs?`,
+  `retryable`). `kind` ist immer eine Kategorie der Taxonomie oben.
+- Der Adapter begrenzt die Parallelität selbst und wiederholt retrybare Fehler
+  selbst. Aufrufer bauen **keinen** eigenen Retry darum.
+- Anbindung an Job-Queue, `llm_call_log` und UI gibt es noch nicht — die folgt
+  in T2.5/T2.6.
+
+**Nicht erlaubt** ist jeder Weg an diesem Einstieg vorbei: kein `spawn('claude')`
+in einem Feature-Modul, kein `fetch` gegen `api.anthropic.com`, kein eigener
+Prompt-Prozess in einem Skript. Wer einen zweiten Zugang braucht, baut einen
+Adapter (siehe unten).
+
+### Der Host-Runner (Container-Betrieb)
+
+Im Container erreicht das Backend die CLI nicht selbst. `LLM_TRANSPORT=socket`
+schaltet auf den Host-Runner um:
+
+| Seite  | Wo                                          | Konfiguration                                    |
+| ------ | ------------------------------------------- | ------------------------------------------------ |
+| Runner | Host, Benutzer `phillip`, `pnpm llm:runner` | `CLAUDE_CONFIG_DIR`, `LLM_RUNNER_SOCKET_DIR`     |
+| Client | Backend-Container                           | `LLM_TRANSPORT=socket`, `LLM_RUNNER_SOCKET_PATH` |
+
+Compose hängt **nur** das Socket-Verzeichnis ein, read-only
+(`/run/gto-llm:ro`); das Profil-B-Verzeichnis wird nicht gemountet. Protokoll:
+eine NDJSON-Zeile je Verbindung, Version in `RUNNER_PROTOCOL_VERSION`. Der
+Client bestimmt allein den **Inhalt** der Anfrage — Aufrufform, Werkzeuge,
+Arbeitsverzeichnis, Profil und die Timeout-Obergrenze legt der Runner fest.
+
 ### Wie ein neuer Adapter andockt
 
 1. `LlmProviderId` in `packages/shared/src/llm.ts` um die Kennung erweitern —
@@ -560,9 +608,23 @@ Kategorie ohne Retry-Aussage übersetzt nicht.
 
 ### Konfiguration
 
-`CLAUDE_CONFIG_DIR=/home/phillip/.claude-b` ist **Pflichtvariable** (siehe
-`.env.example`). Ein Rückfall auf das Default-Profil `/home/phillip/.claude`
-ist verboten — fehlt der Wert, bricht der Adapter mit klarer Meldung ab.
-Weitere Variablen: `LLM_RUNNER_SOCKET_DIR`, `LLM_PROVIDER`, `LLM_MODEL`,
-`LLM_TIMEOUT_MS`, `ANTHROPIC_API_KEY`. Die typisierte Validierung im
-Backend-Config-Modul folgt in T2.2.
+`CLAUDE_CONFIG_DIR=/home/phillip/.claude-b` ist **Pflichtvariable** für jeden
+Prozess, der die CLI selbst startet (lokales Backend und Host-Runner). Ein
+Rückfall auf das Default-Profil `/home/phillip/.claude` ist verboten — fehlt
+der Wert, bricht `loadLlmConfig()` mit einer handlungsanweisenden Meldung ab.
+
+Gelesen wird die Konfiguration bei der **Adapter-Initialisierung**, nicht beim
+Serverstart: Das Backend muss auch ohne CLI starten können (CI, und ab T2.3 der
+reine API-Adapter).
+
+| Variable                          | Bedeutung                                                              |
+| --------------------------------- | ---------------------------------------------------------------------- |
+| `CLAUDE_CONFIG_DIR`               | Profil B — Pflicht bei `LLM_TRANSPORT=direct`                          |
+| `LLM_TRANSPORT`                   | `direct` (Prozess startet die CLI) oder `socket`                       |
+| `LLM_RUNNER_SOCKET_DIR/_PATH`     | Socket des Host-Runners — Pflicht bei `socket`                         |
+| `LLM_CLI_PATH`, `LLM_CLI_CWD`     | Programm und Arbeitsverzeichnis der CLI                                |
+| `LLM_MODEL`, `LLM_TIMEOUT_MS`     | Vorgaben, wenn der Request nichts angibt                               |
+| `LLM_MAX_CONCURRENCY`             | Obergrenze gleichzeitiger CLI-Prozesse                                 |
+| `LLM_MAX_ATTEMPTS`, `LLM_RETRY_*` | Versuche und Backoff (ADR-0023)                                        |
+| `LLM_LIVE_SMOKE`                  | gibt den Live-Test frei; in der CI nicht gesetzt                       |
+| `ANTHROPIC_API_KEY`               | nur für Adapter B (T2.3); wird dem CLI-Prozess **nicht** durchgereicht |

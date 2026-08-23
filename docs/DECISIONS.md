@@ -1113,3 +1113,122 @@ Reboot nicht von selbst mit. Ein Root-freier Weg (`@reboot`-Eintrag in der
 Benutzer-Crontab; `cron` läuft auf dem Host) ist vorgesehen, aber noch nicht
 verifiziert — das gehört in T2.2 samt RUNBOOK-Eintrag. Bis dahin ist der Start
 des Runners ein manueller Deploy-Schritt.
+
+---
+
+## ADR-0023 — CLI-Adapter: einheitlicher stream-json-Aufruf, eigene Persona ohne Werkzeuge, Semaphore- und Retry-Parameter
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** AP2.T2.2 setzt [ADR-0021](#adr-0021--aufrufform-der-claude-code-cli--p-mit---output-format-json-profil-b-über-claude_config_dir)
+  und [ADR-0022](#adr-0022--container-zu-host-zugriff-auf-die-cli-host-seitiger-runner-über-unix-domain-socket)
+  um. Bei der Umsetzung sind vier Punkte entschieden worden, die dort noch
+  offen waren. Alle Messungen mit CLI **2.1.240** gegen Profil B.
+
+### Entscheidung 1 — **immer** `--input-format stream-json`, nie ein Prompt-Argument
+
+ADR-0021 sah zwei Aufrufformen vor: Prompt als Argument für Text, Streaming-Input
+für Bilder. Der Adapter nutzt **nur** die Streaming-Form.
+
+Begründung: Der Prompt steht damit nie auf der Kommandozeile — weder ein
+`ARG_MAX`-Limit noch ein Escaping-Thema, und Bild- und Textaufrufe teilen sich
+einen Parser statt zweier Codepfade. Das entspricht auch der Vorgabe des Tasks
+(„Prompt über stdin übergeben, nicht als Argument"). Nachtrag zu ADR-0021,
+keine Abweichung von dessen Kern: `--json-schema` und die Auswertung über
+`is_error` bleiben unverändert. Beachte: Die CLI lehnt
+`--input-format stream-json` in Verbindung mit `--output-format json` ab
+(`Error: --input-format=stream-json requires output-format=stream-json`),
+deshalb ist die Ausgabe durchgängig `stream-json` und der Parser liest die
+letzte Zeile mit `type: "result"`.
+
+### Entscheidung 2 — `--system-prompt` statt Anhängen, und `--tools ""`
+
+`LlmRequest.system` **ersetzt** den Standard-Systemprompt (`--system-prompt`),
+und der Aufruf bekommt **keine Werkzeuge** (`--tools ""`).
+
+Gemessen (Haiku, gleicher Prompt):
+
+| Aufruf                             | Eingabetokens                           |
+| ---------------------------------- | --------------------------------------- |
+| `--system-prompt`, Werkzeuge aktiv | `input 10` + **`cache_creation 18543`** |
+| `--system-prompt --tools ""`       | `input 247`, `cache_creation 0`         |
+
+Das Gateway will eine Antwort, keinen Agenten: Datei- und Bash-Werkzeuge im
+Container-Kontext wären zusätzlich ein Sicherheitsrisiko. `--json-schema`
+funktioniert nachweislich weiter (`structured_output` gesetzt, `num_turns: 2`)
+— das Werkzeug für strukturierte Ausgabe bleibt trotz `--tools ""` verfügbar.
+
+Aus demselben Grund läuft der Prozess in einem **projektfremden**
+Arbeitsverzeichnis (`LLM_CLI_CWD`, Default: temporäres Verzeichnis): Laut
+<https://code.claude.com/docs/en/headless> lädt ein `-p`-Lauf ohne `--bare`
+Hooks, MCP-Server und CLAUDE.md aus dem cwd. `--bare` selbst ist keine Option
+— es liest keine OAuth-Zugangsdaten und wäre mit Profil B unvereinbar.
+
+`maxTokens` wird als `CLAUDE_CODE_MAX_OUTPUT_TOKENS` gesetzt. Zu beachten: Die
+CLI **kürzt nicht**, sie bricht ab
+(`API Error: Claude's response exceeded the N output token maximum`). Der
+Adapter meldet das als `invalid` — die Anfrage war so nicht erfüllbar.
+
+### Entscheidung 3 — Prozess-Environment ist eine Allowlist
+
+Der Kindprozess bekommt **nicht** das Eltern-Environment, sondern genau vier
+Variablen: `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, `PATH`, `HOME`.
+
+Entscheidend ist, was **fehlt**: `ANTHROPIC_API_KEY`. Laut
+<https://code.claude.com/docs/en/env-vars> gilt „In non-interactive mode (`-p`),
+the key is always used when present" — ein gesetzter Schlüssel würde also still
+an Profil B vorbei abrechnen. Der CLI-Adapter ist der Subscription-Weg; der
+API-Weg ist Adapter B (T2.3).
+
+### Entscheidung 4 — Semaphore- und Retry-Parameter
+
+| Parameter                   | Default  | Begründung                                                                                                                                                                     |
+| --------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `LLM_MAX_CONCURRENCY`       | `2`      | Jeder Aufruf ist ein Node-Prozess. Der Host ist geteilt (30+ fremde Container); AP3 setzt ~336 Aufrufe ab. Zwei parallel halten den Durchsatz oben, ohne den Host zu belasten. |
+| `LLM_MAX_ATTEMPTS`          | `3`      | Ein Wiederholungsversuch deckt die üblichen 429/529 ab; mehr verbrennt bei echter Störung nur Kontingent.                                                                      |
+| `LLM_RETRY_BASE_DELAY_MS`   | `1000`   | Exponentiell (1 s, 2 s, 4 s …) mit **voller Streuung** (`0,5–1,0 ×`), damit parallele Aufrufe nicht im Gleichtakt erneut anklopfen.                                            |
+| `LLM_RETRY_MAX_DELAY_MS`    | `30000`  | Deckel je Wartezeit.                                                                                                                                                           |
+| `LLM_RETRY_TOTAL_BUDGET_MS` | `300000` | Harte Obergrenze über alle Versuche. Wird sie durch den nächsten Backoff gesprengt, fliegt der Fehler sofort durch.                                                            |
+
+Wiederholt wird ausschließlich, was die Taxonomie aus T2.1 als retrybar
+ausweist (`timeout`, `rate_limit`, `transient`). **Unbekannte** CLI-Fehler
+werden bewusst als `invalid` eingestuft, nicht als `transient`: Bei unklarer
+Ursache wird nicht blind wiederholt. Der Preis ist eine leicht schiefe
+Benennung — `invalid` ist zugleich Auffangkategorie —, der Gewinn ist, dass
+keine unerklärte Störung Kontingent verbrennt.
+
+Ein `rate_limit` bleibt retrybar, aber nicht sofort: `retryAfterMs` schiebt den
+Versuch über den Backoff hinaus, und das Gesamtbudget bricht sauber ab, sodass
+die Job-Queue aus T2.5 die eigentliche Wiedervorlage übernimmt.
+
+### Entscheidung 5 — Schemaprüfung ohne neue Dependency
+
+Bei gesetztem `jsonSchema` prüft der Adapter die Nutzlast gegen eine
+**Teilmenge** von JSON Schema (`type`, `required`, `properties`, `items`,
+`enum`, `additionalProperties: false`) — rund 80 Zeilen in
+`apps/backend/src/llm/parse.ts`. Ein Verstoß ergibt `parse`, nie einen stillen
+Rückfall auf Rohtext.
+
+Begründung: Die **maßgebliche** Durchsetzung leistet die CLI über
+`--json-schema`; die eigene Prüfung ist das Netz für den Fall, dass die
+Nutzlast aus dem Antworttext rekonstruiert werden musste (Code-Fence,
+Wrapper-Text). Dafür rechtfertigt Regel 5 des AGENT_GUIDE keine
+Validator-Dependency wie `ajv`. Die geprüften Schlüsselwörter sind im
+Quelltext dokumentiert; alles andere wird ignoriert statt fälschlich
+durchgewunken.
+
+**Keine neuen Dependencies in T2.2.**
+
+### Alternativen (verworfen)
+
+- **Zwei Aufrufformen wie in ADR-0021 skizziert** — zwei Parser, zwei
+  Fehlerpfade, und der Textpfad bliebe an `ARG_MAX` gebunden.
+- **`--append-system-prompt` statt `--system-prompt`** — behielte den
+  Coding-Agenten-Prompt samt Werkzeugbeschreibungen; genau die 18.500 Tokens,
+  die Entscheidung 2 einspart.
+- **Werkzeuge aktiv lassen und Bilder per Read-Tool laden** — ein zusätzlicher
+  Turn, Dateisystemrechte im Container und deutlich mehr Tokens je Chart.
+- **`ajv` für die Schemaprüfung** — vollständiger, aber eine Dependency für
+  einen Sonderfall, den die CLI bereits abdeckt.
+- **Unbekannte Fehler als `transient`** — bequem, aber genau das „blinde
+  Wiederholen bei unklarer Ursache", das der Task ausschließt.

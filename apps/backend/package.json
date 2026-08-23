@@ -18,7 +18,8 @@
     "db:migrate": "tsx src/db/cli-migrate.ts",
     "db:seed": "tsx src/db/cli-seed.ts",
     "db:reset": "tsx src/db/cli-reset.ts",
-    "auth:set-password": "tsx src/auth/cli-set-password.ts"
+    "auth:set-password": "tsx src/auth/cli-set-password.ts",
+    "llm:runner": "tsx src/llm/runner-main.ts"
   },
   "dependencies": {
     "@fastify/cookie": "11.1.0",

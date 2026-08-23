@@ -51,8 +51,27 @@ services:
       LOGIN_RATE_LIMIT_MAX_ATTEMPTS: ${LOGIN_RATE_LIMIT_MAX_ATTEMPTS:-5}
       LOGIN_RATE_LIMIT_WINDOW_MINUTES: ${LOGIN_RATE_LIMIT_WINDOW_MINUTES:-15}
       TOTP_ENABLED: ${TOTP_ENABLED:-false}
+      # --- LLM-Gateway (AP2.T2.2) ---------------------------------------
+      # Der Container startet die Claude CLI NICHT selbst: Sie liegt samt
+      # Profil B auf dem Host. Der Zugriff laeuft ueber den Host-Runner am
+      # Unix-Domain-Socket (ADR-0022). Deshalb steht hier bewusst KEIN
+      # CLAUDE_CONFIG_DIR - das Profil kennt allein der Runner.
+      LLM_TRANSPORT: socket
+      LLM_RUNNER_SOCKET_PATH: /run/gto-llm/gto-llm.sock
+      LLM_MODEL: ${LLM_MODEL:-claude-sonnet-5}
+      LLM_TIMEOUT_MS: ${LLM_TIMEOUT_MS:-120000}
+      LLM_MAX_CONCURRENCY: ${LLM_MAX_CONCURRENCY:-2}
+      LLM_MAX_ATTEMPTS: ${LLM_MAX_ATTEMPTS:-3}
+      LLM_RETRY_BASE_DELAY_MS: ${LLM_RETRY_BASE_DELAY_MS:-1000}
+      LLM_RETRY_MAX_DELAY_MS: ${LLM_RETRY_MAX_DELAY_MS:-30000}
+      LLM_RETRY_TOTAL_BUDGET_MS: ${LLM_RETRY_TOTAL_BUDGET_MS:-300000}
     ports:
       - '127.0.0.1:${BACKEND_HOST_PORT:?BACKEND_HOST_PORT fehlt - .env aus .env.example anlegen}:3000'
+    volumes:
+      # Nur das Socket-Verzeichnis des Host-Runners, read-only. Das
+      # Profil-B-Verzeichnis wird bewusst NICHT eingehaengt - der Container
+      # sieht die Subscription-Zugangsdaten nie (ADR-0022).
+      - ${LLM_RUNNER_SOCKET_DIR:?LLM_RUNNER_SOCKET_DIR fehlt - .env aus .env.example anlegen}:/run/gto-llm:ro
     depends_on:
       postgres:
         # Das Backend startet erst, wenn die Datenbank Anfragen annimmt.
