@@ -1,0 +1,98 @@
+.layout {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) 1fr;
+  min-height: 100%;
+}
+
+.layout__sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: var(--space-5) var(--space-4);
+  border-right: var(--border-width) solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.layout__brand {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+.layout__nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.layout__link {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  color: var(--color-text-muted);
+  text-decoration: none;
+  transition: background var(--transition-fast);
+}
+
+.layout__link:hover {
+  background: var(--color-accent-subtle);
+  color: var(--color-accent-text);
+}
+
+/*
+ * Aktiver Zustand: Flaeche plus linke Kante plus kraeftigere Schrift. Die
+ * Markierung haengt nicht allein an der Farbe und bleibt in beiden Modi
+ * deutlich erkennbar.
+ */
+.layout__link--active {
+  background: var(--color-accent-subtle);
+  color: var(--color-accent-text);
+  font-weight: var(--font-weight-medium);
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+
+.layout__main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.layout__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-5);
+  border-bottom: var(--border-width) solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.layout__user {
+  font-size: var(--font-size-sm);
+}
+
+.layout__actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.layout__content {
+  flex: 1;
+  padding: var(--space-6) var(--space-5);
+}
+
+@media (max-width: 40rem) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .layout__sidebar {
+    border-right: none;
+    border-bottom: var(--border-width) solid var(--color-border);
+  }
+
+  .layout__nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+}

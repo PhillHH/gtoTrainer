@@ -1,0 +1,28 @@
+.login {
+  width: 100%;
+  max-width: 22rem;
+  padding: var(--space-6);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-md);
+}
+
+.login__topbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--space-2);
+}
+
+.login__title {
+  margin-bottom: var(--space-1);
+}
+
+.login__subtitle {
+  margin-bottom: var(--space-5);
+  font-size: var(--font-size-sm);
+}
+
+.login__submit {
+  width: 100%;
+}

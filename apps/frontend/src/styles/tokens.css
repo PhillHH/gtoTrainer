@@ -1,0 +1,102 @@
+/*
+ * Design-Tokens - DIE zentrale Stelle fuer alle visuellen Werte.
+ *
+ * Regel: Komponenten verwenden ausschliesslich diese Custom Properties und
+ * niemals hartkodierte Farbwerte. Wer eine neue Farbe braucht, ergaenzt sie
+ * hier in BEIDEN Sets (hell und dunkel).
+ *
+ * Umschaltung ueber `data-theme="light" | "dark"` am <html>-Element.
+ * Der Startwert folgt der Systemeinstellung (siehe theme/ThemeProvider.tsx).
+ */
+
+:root {
+  /* --- Typografie ------------------------------------------------------- */
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+
+  --font-size-xs: 0.75rem;
+  --font-size-sm: 0.875rem;
+  --font-size-md: 1rem;
+  --font-size-lg: 1.25rem;
+  --font-size-xl: 1.5rem;
+  --font-size-2xl: 2rem;
+
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-bold: 700;
+
+  --line-height-tight: 1.25;
+  --line-height-normal: 1.5;
+
+  /* --- Abstaende -------------------------------------------------------- */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-8: 3rem;
+
+  /* --- Radien ----------------------------------------------------------- */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 999px;
+
+  /* --- Sonstiges -------------------------------------------------------- */
+  --sidebar-width: 15rem;
+  --border-width: 1px;
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 12%);
+  --shadow-md: 0 4px 12px rgb(0 0 0 / 16%);
+  --transition-fast: 120ms ease;
+}
+
+/* --- Helles Set (auch Fallback, wenn kein data-theme gesetzt ist) -------- */
+:root,
+[data-theme='light'] {
+  --color-bg: #f6f7f9;
+  --color-surface: #ffffff;
+  --color-surface-raised: #ffffff;
+  --color-border: #d7dbe0;
+
+  --color-text: #14181d;
+  --color-text-muted: #5a636e;
+  --color-text-inverted: #ffffff;
+
+  --color-accent: #1b5fbe;
+  --color-accent-hover: #164e9c;
+  --color-accent-subtle: #e4edfb;
+  --color-accent-text: #12448a;
+
+  /* Kontrast gegen --color-danger-subtle: 7.4:1 - deutlich ueber WCAG AA. */
+  --color-danger: #a3182a;
+  --color-danger-subtle: #fdeaec;
+  --color-danger-border: #eab5bc;
+
+  --color-focus-ring: #1b5fbe;
+}
+
+/* --- Dunkles Set --------------------------------------------------------- */
+[data-theme='dark'] {
+  --color-bg: #12151a;
+  --color-surface: #1a1f26;
+  --color-surface-raised: #222932;
+  --color-border: #333c47;
+
+  --color-text: #eef1f5;
+  --color-text-muted: #a3adba;
+  --color-text-inverted: #12151a;
+
+  --color-accent: #6aa6f5;
+  --color-accent-hover: #8bbcfa;
+  --color-accent-subtle: #1e3557;
+  --color-accent-text: #cfe0fb;
+
+  /* Kontrast gegen --color-danger-subtle: 8.1:1. */
+  --color-danger: #ff9aa5;
+  --color-danger-subtle: #40191f;
+  --color-danger-border: #6d2b34;
+
+  --color-focus-ring: #8bbcfa;
+}

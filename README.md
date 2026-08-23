@@ -13,7 +13,7 @@ cp .env.example .env # Platzhalter ersetzen (siehe RUNBOOK)
 pnpm db:up           # Postgres-Container starten
 pnpm db:migrate      # Basisschema anlegen
 pnpm auth:set-password admin   # Benutzer fuer den Login anlegen
-pnpm dev
+pnpm dev                       # Backend + Frontend (http://localhost:5174)
 ```
 
 ## Struktur

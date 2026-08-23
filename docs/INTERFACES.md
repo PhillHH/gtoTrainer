@@ -3,7 +3,7 @@
 Dieses Dokument beschreibt, **wo** sich Komponenten und Arbeitspakete
 gegenseitig berühren. Jeder Task trägt seine Deltas hier nach.
 
-Stand: AP1.T1.3.
+Stand: AP1.T1.4.
 
 ---
 
@@ -14,7 +14,8 @@ Konstanten, Type-Guards), lebt in `packages/shared` und **nirgendwo sonst**.
 
 - Paketname: `@gto/shared`
 - Einstiegspunkt: `packages/shared/src/index.ts` (re-exportiert alle Verträge)
-- Konsumenten binden es als `"@gto/shared": "workspace:*"` ein.
+- Konsumenten binden es als `"@gto/shared": "workspace:*"` ein — seit T1.4
+  sowohl `apps/backend` als auch `apps/frontend`.
 
 **Regel:** Eine Änderung an einem geteilten Vertrag beginnt in
 `packages/shared`, nicht im Backend oder Frontend. Wer einen Typ dupliziert,
@@ -59,8 +60,9 @@ Weitere Endpunkte existieren nach T1.1 nicht.
 ## 2a. Auth-API (AP1.T1.3)
 
 Alle Auth-Endpunkte liegen unter `/api/auth/`. Antwort- und Fehlertypen kommen
-aus `@gto/shared` — das Frontend (T1.4) importiert sie von dort und definiert
-nichts nach.
+aus `@gto/shared`; das Frontend importiert sie seit T1.4 von dort und
+definiert nichts nach. Wie das Frontend die Endpunkte anspricht, steht in
+Abschnitt 2b.
 
 ### Endpunkte
 
@@ -159,6 +161,100 @@ Zum späteren Aktivieren sind drei Schritte nötig:
    `user.totp_secret` prüfen).
 2. Einen Weg schaffen, das Secret zu setzen (Erweiterung des Passwort-CLI).
 3. `TOTP_ENABLED=true` setzen.
+
+---
+
+## 2b. Frontend-Zugang zum Backend (AP1.T1.4)
+
+### Der API-Client ist die einzige Zugangsstelle
+
+Alle Backend-Aufrufe laufen über `apps/frontend/src/api/client.ts`. **Kein
+anderes Modul im Frontend verwendet `fetch`.** Dort sitzen an einem Ort:
+Basis-URL, `credentials: 'include'`, der CSRF-Ablauf und die Fehlerauswertung.
+
+Einen neuen Endpunkt anbinden:
+
+```ts
+// in src/api/client.ts
+export function ladeAufgaben(): Promise<AufgabenResponse> {
+  return request<AufgabenResponse>('/api/lernen/aufgaben');
+}
+```
+
+Die Antworttypen kommen aus `@gto/shared` — im Frontend wird **nichts
+nachdefiniert**, was dort bereits als Vertrag existiert.
+
+### Fehlerarten
+
+Der Client wirft ausschließlich `ApiError` mit einem typisierten `kind`:
+
+| `kind`            | Auslöser             | Umgang im UI                                |
+| ----------------- | -------------------- | ------------------------------------------- |
+| `unauthenticated` | HTTP 401             | Auth-Zustand leeren, Umleitung auf `/login` |
+| `rate_limited`    | HTTP 429             | Eigene Meldung („zu viele Fehlversuche")    |
+| `csrf_failed`     | HTTP 403             | Hinweis, die Seite neu zu laden             |
+| `client`          | sonstige 4xx         | Meldung des Backends anzeigen               |
+| `server`          | 5xx                  | allgemeine Fehlermeldung                    |
+| `network`         | `fetch` schlägt fehl | „Backend nicht erreichbar"                  |
+
+### Basis-URL
+
+`VITE_API_BASE_URL`, Default **leer** = gleiche Herkunft. Im Dev-Betrieb leitet
+der Vite-Proxy `/api` und `/healthz` an das Backend weiter, im Zielbetrieb
+(T1.5) der Host-Nginx. Deshalb ist kein CORS nötig
+([ADR-0015](./DECISIONS.md)).
+
+### Eine neue geschützte Seite ergänzen
+
+1. Komponente unter `src/pages/` anlegen.
+2. In `src/App.tsx` als `<Route>` **unterhalb von `<RequireAuth>`** eintragen —
+   der Schutz gilt damit automatisch, eine eigene Prüfung ist weder nötig noch
+   erwünscht.
+3. Für einen Eintrag in der Seitenleiste `NAV_ITEMS` in
+   `src/layout/AppLayout.tsx` ergänzen.
+
+```tsx
+<Route element={<RequireAuth />}>
+  <Route element={<AppLayout />}>
+    <Route path="/neue-seite" element={<NeueSeite />} />
+  </Route>
+</Route>
+```
+
+Öffentliche Seiten kommen **außerhalb** von `<RequireAuth>` — aktuell nur
+`/login`.
+
+### Design-Tokens verwenden
+
+Alle visuellen Werte stehen als CSS Custom Properties in
+`src/styles/tokens.css`, je einmal für hell und dunkel. **Komponenten
+verwenden ausschließlich diese Tokens; hartkodierte Farbwerte sind nicht
+zulässig.**
+
+```css
+.meine-komponente {
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: var(--border-width) solid var(--color-border);
+}
+```
+
+| Gruppe     | Beispiele                                                                                                 |
+| ---------- | --------------------------------------------------------------------------------------------------------- |
+| Farbe      | `--color-bg`, `--color-surface`, `--color-text`, `--color-text-muted`, `--color-accent`, `--color-danger` |
+| Abstand    | `--space-1` … `--space-8`                                                                                 |
+| Radius     | `--radius-sm/md/lg/full`                                                                                  |
+| Typografie | `--font-sans`, `--font-size-xs` … `--font-size-2xl`, `--font-weight-*`                                    |
+
+Wird eine neue Farbe gebraucht, wird sie in **beiden** Sets ergänzt. Für
+Wiederverwendbares gibt es fertige Klassen in `global.css`
+(`.button`, `.card`, `.field`, `.alert`, `.badge`, `.muted`).
+
+Der Modus hängt an `data-theme` am `<html>`-Element; Startwert ist
+`prefers-color-scheme`, eine manuelle Wahl liegt in `localStorage`
+(`gto.theme`) — die **einzige** erlaubte Verwendung von `localStorage`.
 
 ---
 
@@ -313,7 +409,5 @@ Details siehe [`data/book-source/README.md`](../data/book-source/README.md).
 
 | Schnittstelle                                 | Entsteht in |
 | --------------------------------------------- | ----------- |
-| Datenbankzugriff / Migrationen                | AP1.T1.2    |
-| Frontend-API-Client, Routing                  | AP1.T1.4    |
 | Nginx-Vhost, Compose-Netzwerk, Backup/Restore | AP1.T1.5    |
 | CI-Pipeline, E2E-Tests                        | AP1.T1.6    |

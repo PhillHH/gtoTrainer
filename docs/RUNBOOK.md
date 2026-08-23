@@ -1,7 +1,8 @@
 # Runbook — GTO Trainer
 
-Betriebshandbuch. Stand: AP1.T1.3 — lokales Setup, Datenbankbetrieb **und
-Zugangsverwaltung**. Deployment, Backup und Restore folgen in AP1.T1.5.
+Betriebshandbuch. Stand: AP1.T1.4 — lokales Setup, Datenbankbetrieb,
+Zugangsverwaltung **und Frontend**. Deployment, Backup und Restore folgen in
+AP1.T1.5.
 
 ---
 
@@ -254,6 +255,67 @@ periodischer Lauf kommt mit der Job-Queue in AP2.
 
 ---
 
+## 4c. Frontend lokal starten
+
+```bash
+pnpm --filter @gto/frontend dev
+```
+
+Der Dev-Server läuft auf **<http://localhost:5174>**. Vite bindet dabei auf
+`localhost` (IPv6 `[::1]`) — `curl http://127.0.0.1:5174` schlägt fehl,
+`curl http://localhost:5174` funktioniert.
+
+| Variable            | Default                 | Bedeutung                                      |
+| ------------------- | ----------------------- | ---------------------------------------------- |
+| `FRONTEND_PORT`     | `5174`                  | Port des Dev-Servers                           |
+| `BACKEND_URL`       | `http://127.0.0.1:3010` | Ziel des `/api`- und `/healthz`-Proxys         |
+| `VITE_API_BASE_URL` | leer (gleiche Herkunft) | Nur nötig, wenn **ohne** Proxy gearbeitet wird |
+
+### Warum ein Proxy und kein CORS
+
+Der Dev-Server reicht `/api` und `/healthz` an das Backend weiter. Für den
+Browser gibt es dadurch nur **eine** Herkunft: Session- und CSRF-Cookies
+funktionieren ohne Sonderregeln, und es entspricht dem Zielbetrieb, in dem der
+Host-Nginx dasselbe tut ([ADR-0015](./DECISIONS.md)).
+
+### Beide Teile zusammen starten
+
+```bash
+# Terminal 1 — Datenbank und Backend
+pnpm db:up
+PORT=3010 pnpm --filter @gto/backend dev
+
+# Terminal 2 — Frontend
+BACKEND_URL=http://127.0.0.1:3010 pnpm --filter @gto/frontend dev
+```
+
+> **Ports auf diesem Host prüfen.** 3000, 3001, 5173, 5432, 55432 und 55433
+> sind von fremden Diensten belegt. Vor dem Start:
+> `ss -ltn | grep <port>`. Belegung ändert sich — die Ports sind deshalb
+> überall über Variablen einstellbar und nirgends fest verdrahtet.
+
+### Ersten Benutzer anlegen
+
+Ohne Benutzer ist kein Login möglich (siehe Abschnitt 4b):
+
+```bash
+pnpm auth:set-password admin
+```
+
+### Typische Fehlerbilder
+
+| Symptom                                            | Ursache                                                       | Abhilfe                                                         |
+| -------------------------------------------------- | ------------------------------------------------------------- | --------------------------------------------------------------- |
+| Login meldet Erfolg, danach sofort wieder `/login` | Cookie kam nicht an — `COOKIE_SECURE=true` ohne HTTPS         | lokal `COOKIE_SECURE=false` setzen                              |
+| Alle Requests scheitern mit `403 csrf_failed`      | Frontend läuft **ohne** Proxy direkt gegen einen anderen Port | Proxy nutzen (Default) oder `ALLOWED_ORIGINS` am Backend setzen |
+| „Das Backend ist nicht erreichbar"                 | Backend läuft nicht oder `BACKEND_URL` zeigt woanders hin     | `curl http://127.0.0.1:3010/healthz` prüfen                     |
+| CORS-Fehler in der Browser-Konsole                 | `VITE_API_BASE_URL` auf eine fremde Herkunft gesetzt          | Variable leeren und den Proxy verwenden                         |
+| `curl http://127.0.0.1:5174` antwortet nicht       | Vite lauscht auf `[::1]`                                      | `http://localhost:5174` verwenden                               |
+| Port belegt beim Start                             | fremder Dienst                                                | `FRONTEND_PORT` bzw. `PORT` auf einen freien Wert setzen        |
+| Dunkler Modus bleibt trotz Systemeinstellung hell  | manuelle Wahl liegt in `localStorage`                         | im Browser `gto.theme` löschen oder den Umschalter benutzen     |
+
+---
+
 ## 5. Tests
 
 ```bash
@@ -269,6 +331,8 @@ Läuft rekursiv über alle Workspaces mit Test-Script:
 - `packages/shared` — Verträge und Type-Guards
 - `apps/backend` — Routen via `app.inject()`, Konfigurations-Validierung und
   DB-Integrationstests
+- `apps/frontend` — Komponenten- und Integrationstests (Vitest + Testing
+  Library, jsdom). Das Netzwerk ist gemockt — **kein laufendes Backend nötig**
 
 Die Testdatenbank (`TEST_DATABASE_URL`, Default `gto_test`) wird **automatisch**
 angelegt, geleert und migriert — kein manueller Schritt nötig. Sie liegt auf

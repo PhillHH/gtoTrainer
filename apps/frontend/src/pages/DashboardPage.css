@@ -1,0 +1,11 @@
+.dashboard__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: var(--space-4);
+  margin-top: var(--space-5);
+}
+
+.dashboard__card-title {
+  font-size: var(--font-size-md);
+  margin-bottom: var(--space-2);
+}

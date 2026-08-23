@@ -1,7 +1,7 @@
 # Architektur — GTO Trainer
 
-Stand: AP1.T1.3 (Auth & Single-User-Login). Dieses Dokument wird in jedem Task
-um die jeweiligen Deltas fortgeschrieben.
+Stand: AP1.T1.4 (Frontend-Shell). Dieses Dokument wird in jedem Task um die
+jeweiligen Deltas fortgeschrieben.
 
 ## 1. Systemübersicht (Zielarchitektur)
 
@@ -51,7 +51,13 @@ gtoTrainer/
 │   │   └── test/           Vitest (inkl. DB-Integrationstests)
 │   └── frontend/         @gto/frontend — React + Vite + TypeScript
 │       ├── index.html
-│       └── src/            Platzhalter-App (echtes Layout: T1.4)
+│       ├── src/api/        API-Client (EINZIGE Backend-Zugangsstelle)
+│       ├── src/auth/       AuthContext + RequireAuth-Guard
+│       ├── src/theme/      Hell/Dunkel-Umschaltung
+│       ├── src/layout/     Sidebar-Shell des geschuetzten Bereichs
+│       ├── src/pages/      Login, Dashboard, 5 Platzhalter, 404
+│       ├── src/styles/     tokens.css (Design-Tokens) + global.css
+│       └── test/           Vitest + Testing Library (jsdom)
 ├── packages/
 │   └── shared/           @gto/shared   — gemeinsame Typen/Verträge
 │       ├── src/health.ts   HealthResponse, isHealthResponse
@@ -82,7 +88,7 @@ gtoTrainer/
   Reihenfolge und erzeugt Deklarationen. Das Frontend ist ein Blatt und wird
   nur typgeprüft (`tsc --noEmit`), gebaut wird es von Vite.
 
-## 3. Laufzeit-Komponenten (Ist-Stand nach T1.3)
+## 3. Laufzeit-Komponenten (Ist-Stand nach T1.4)
 
 | Komponente | Technik                 | Zustand nach T1.3                               |
 | ---------- | ----------------------- | ----------------------------------------------- |
@@ -193,6 +199,75 @@ Begründungen: [ADR-0007](./DECISIONS.md) (argon2-Parameter),
 [ADR-0008](./DECISIONS.md) (Token-Hashing, Cookies),
 [ADR-0009](./DECISIONS.md) (CSRF), [ADR-0010](./DECISIONS.md) (Rate-Limit).
 
+## 3c. Frontend-Struktur (neu in T1.4)
+
+```
+main.tsx
+  └─ <BrowserRouter>
+       └─ <App>
+            ├─ <ThemeProvider>        data-theme am <html>, Tokens greifen
+            └─ <AuthProvider>         EINZIGE Quelle des Anmeldestatus
+                 └─ <AppRoutes>
+                      ├─ /login                      oeffentlich
+                      └─ <RequireAuth>               DIE Zugriffsentscheidung
+                           └─ <AppLayout>            Sidebar + Kopfzeile
+                                ├─ /                 Dashboard
+                                ├─ /lernen           Platzhalter (AP5)
+                                ├─ /drills           Platzhalter (AP6)
+                                ├─ /turniere         Platzhalter (AP7)
+                                ├─ /material         Platzhalter (AP8)
+                                └─ /einstellungen    Platzhalter (AP9)
+                      └─ *                           404
+```
+
+### Auth-Fluss im Frontend
+
+```
+App-Start
+   │
+   ├─ AuthProvider: GET /api/auth/me      Status = "checking"
+   │        │
+   │        ├─ 200 → Status "authenticated", Benutzer im Context
+   │        └─ 401 → Status "anonymous"
+   │
+   └─ RequireAuth
+          checking      → Ladeanzeige  (NIE Login-Screen — sonst blitzt er
+          anonymous     → /login          angemeldeten Nutzern kurz auf)
+          authenticated → Seite
+
+Login:  LoginPage → useAuth().login() → API-Client
+          → GET /api/auth/csrf (falls kein Cookie)  → POST /api/auth/login
+          → Status "authenticated" → zurueck zum urspruenglich angefragten Ziel
+
+Logout: AppLayout → useAuth().logout() → POST /api/auth/logout
+          → Status "anonymous" → /login
+```
+
+### Backend-Anbindung
+
+Der Browser sieht **eine einzige Herkunft**. Im Dev-Betrieb leitet der
+Vite-Proxy `/api` und `/healthz` an das Backend weiter, im Zielbetrieb (T1.5)
+macht der Host-Nginx dasselbe. Dadurch braucht es kein CORS, und
+`SameSite=Lax` bleibt wirksam ([ADR-0015](./DECISIONS.md)).
+
+```
+Browser ──► Vite-Dev-Server :5174 ──/api, /healthz──► Fastify :3010
+            (statische Assets)                        (T1.5: Host-Nginx)
+```
+
+| Baustein      | Datei                         | Aufgabe                                                    |
+| ------------- | ----------------------------- | ---------------------------------------------------------- |
+| API-Client    | `src/api/client.ts`           | **Einzige** Stelle mit `fetch`; CSRF, Cookies, Fehlerarten |
+| Auth-Zustand  | `src/auth/AuthContext.tsx`    | `checking`/`authenticated`/`anonymous`                     |
+| Route-Guard   | `src/auth/RequireAuth.tsx`    | Umleitung auf `/login`, merkt sich das Ziel                |
+| Layout        | `src/layout/AppLayout.tsx`    | Sidebar, Kopfzeile, Logout                                 |
+| Design-Tokens | `src/styles/tokens.css`       | Hell/Dunkel, alle visuellen Werte                          |
+| Theme         | `src/theme/ThemeProvider.tsx` | `data-theme`, Systemwahl + manuelle Wahl                   |
+
+Begründungen: [ADR-0011](./DECISIONS.md) (Router),
+[ADR-0012](./DECISIONS.md) (Context), [ADR-0013](./DECISIONS.md) (Tokens),
+[ADR-0014](./DECISIONS.md) (Tests), [ADR-0015](./DECISIONS.md) (Dev-Proxy).
+
 ## 4. Querschnitts-Entscheidungen
 
 - **Node 20.19.6**, fixiert in `.nvmrc`; `engines.node >= 20.19.0`.
@@ -206,6 +281,5 @@ Begründungen siehe [DECISIONS.md](./DECISIONS.md).
 
 ## 5. Offene Architektur-Punkte
 
-- API-Client, Login-Screen und Routing im Frontend (T1.4)
 - Container-Topologie, Nginx-Vhost, Backup/Restore (T1.5)
 - Ingestion-Pipeline für `data/book-source/` (AP3)

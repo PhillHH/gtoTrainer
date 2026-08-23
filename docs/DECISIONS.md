@@ -464,3 +464,202 @@ Konto existiert.
 
 Ein Neustart des Backends leert die Zähler. Für einen Angreifer ist das kein
 brauchbarer Hebel — er kann den Neustart nicht auslösen.
+
+---
+
+## ADR-0011 — React Router als Routing-Bibliothek
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** AP1.T1.4 braucht öffentliche und geschützte Routen, einen
+  Guard an genau einer Stelle und eine 404-Route.
+
+### Entscheidung
+
+**`react-router-dom` v7** im Deklarativ-Modus (`<BrowserRouter>` +
+`<Routes>`). Geschützte Seiten hängen als Kind-Routen unter einer einzigen
+`<RequireAuth>`-Route.
+
+### Begründung
+
+- Der Guard lässt sich als **Layout-Route** ausdrücken (`<Route element={<RequireAuth />}>`).
+  Damit gibt es genau eine Stelle, die über Zugriff entscheidet — neue Seiten
+  erben den Schutz automatisch, statt ihn selbst mitzubringen.
+- `<Navigate state={{ from }}>` und `useLocation()` liefern das Zurückspringen
+  auf das ursprünglich angefragte Ziel ohne Eigenbau.
+- `NavLink` bringt den Aktiv-Zustand der Seitenleiste mit.
+- De-facto-Standard im React-Umfeld; kein exotisches Wissen nötig.
+
+### Alternativen (verworfen)
+
+- **Eigenes Routing über `history`/`useState`** — für fünf Routen machbar, aber
+  Verschachtelung, Guard und „zurück zum Ziel" wären Eigenbau mit eigenen
+  Fehlern.
+- **TanStack Router** — stärkere Typisierung, aber deutlich mehr Konzept für
+  eine Shell dieser Größe.
+- **Data-Router (`createBrowserRouter` + Loader)** — Loader-basiertes Laden
+  lohnt erst, wenn Seiten echte Daten holen. Das kommt ab AP4; der Wechsel ist
+  dann lokal begrenzt möglich.
+
+---
+
+## ADR-0012 — Auth-Zustand über React Context statt State-Bibliothek
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** Der Anmeldestatus muss an genau einer Stelle liegen, ohne
+  Duplikate in einzelnen Komponenten.
+
+### Entscheidung
+
+Ein **React Context** (`AuthProvider` / `useAuth`) mit drei Zuständen:
+`checking` → `authenticated` | `anonymous`. Keine State-Bibliothek.
+
+### Begründung
+
+- Es gibt genau **einen** globalen Zustand (den angemeldeten Benutzer) und
+  kaum Schreibzugriffe. Redux, Zustand oder Jotai lösen Probleme, die hier
+  nicht existieren — das wäre der „UI-Framework-Wildwuchs", den die Leitplanke
+  ausschließt.
+- Der Zustand `checking` ist nicht kosmetisch, sondern notwendig: Ohne ihn
+  würde `RequireAuth` beim Neuladen sofort auf `/login` umleiten und
+  angemeldeten Nutzern kurz der Login-Screen aufblitzen.
+- **Nichts** davon liegt in `localStorage`. Die Session steckt ausschließlich
+  im HttpOnly-Cookie; der Frontend-Zustand ist nur dessen Spiegelung und wird
+  beim Start über `GET /api/auth/me` neu ermittelt.
+
+### Alternativen (verworfen)
+
+- **Zustand/Redux** — Zusatz-Dependency ohne Gegenwert bei einem Datum.
+- **TanStack Query** — sinnvoll, sobald es viele Server-Daten zu cachen gibt
+  (ab AP4 neu zu bewerten); für einen einzigen `/me`-Aufruf zu viel.
+- **Benutzer in `localStorage` spiegeln** — verstößt gegen die Leitplanke und
+  würde einen Zustand erzeugen, der nach Cookie-Ablauf falsch ist.
+
+---
+
+## ADR-0013 — Design-Tokens als CSS Custom Properties, Umschaltung per data-theme
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** Es braucht ein Dark-Mode-fähiges Token-Set; Komponenten dürfen
+  keine hartkodierten Farben enthalten.
+
+### Entscheidung
+
+Alle visuellen Werte (Farbe, Abstand, Radius, Typografie) sind **CSS Custom
+Properties** in `apps/frontend/src/styles/tokens.css`. Zwei Sets:
+`:root, [data-theme='light']` und `[data-theme='dark']`. Umgeschaltet wird über
+das Attribut `data-theme` am `<html>`-Element. Startwert = `prefers-color-scheme`,
+manuelle Wahl in `localStorage` (`gto.theme`).
+
+### Begründung
+
+- Custom Properties wechseln zur Laufzeit ohne Neuaufbau und ohne
+  JavaScript-in-CSS. Ein Attributwechsel am Wurzelelement schaltet das ganze
+  Set um.
+- Kein Build-Schritt, keine Dependency — plain CSS reicht.
+- `localStorage` ist hier ausdrücklich erlaubt: eine reine UI-Präferenz, kein
+  Anwendungszustand und keine Auth-Daten.
+- Der Aktiv-Zustand der Seitenleiste hängt **nicht allein an der Farbe**
+  (Fläche + linke Kante + Schriftstärke) und bleibt so in beiden Modi und bei
+  Farbfehlsichtigkeit erkennbar.
+
+### Alternativen (verworfen)
+
+- **Tailwind CSS** — mächtig, aber ein ganzes Utility-System für eine Shell mit
+  fünf Platzhalterseiten; zusätzlich Build-Konfiguration.
+- **CSS-in-JS (styled-components/emotion)** — Laufzeitkosten und eine weitere
+  Abstraktion ohne Nutzen hier.
+- **Zwei getrennte Stylesheets pro Modus** — doppelte Pflege, und beim
+  Umschalten müsste ein Stylesheet getauscht werden.
+
+---
+
+## ADR-0014 — Testing Library plus jsdom für Frontend-Tests
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** Die Frontend-Tests sollen echtes Komponentenverhalten prüfen
+  (Formular, Guard, Umleitung, Logout) — ohne laufendes Backend.
+
+### Entscheidung
+
+**Vitest** (bereits im Monorepo) mit **jsdom** als Umgebung, dazu
+`@testing-library/react`, `@testing-library/user-event` und
+`@testing-library/jest-dom`. Das Netzwerk wird über einen Stub von
+`globalThis.fetch` nachgebildet.
+
+Neue Dev-Dependencies in `apps/frontend`:
+
+| Paket                         | Zweck                                   |
+| ----------------------------- | --------------------------------------- |
+| `jsdom`                       | DOM-Umgebung für Vitest                 |
+| `@testing-library/react`      | Rendern und Abfragen von Komponenten    |
+| `@testing-library/user-event` | Realistische Eingaben (Tippen, Klicken) |
+| `@testing-library/jest-dom`   | Aussagekräftige DOM-Matcher             |
+
+### Begründung
+
+- Testing Library prüft über **Rollen und Beschriftungen** statt über
+  CSS-Klassen. Die Tests brechen dadurch nicht bei jeder Umgestaltung und
+  decken nebenbei die Zugänglichkeit mit ab.
+- `user-event` bildet echte Interaktion nach — nur so ließ sich prüfen, dass
+  **Enter** das Formular absendet.
+- Vitest war bereits gesetzt (ADR-0001); es kommt kein zweiter Test-Runner dazu.
+- Ein `fetch`-Stub genügt und hält die Tests unabhängig von Backend und
+  Datenbank. MSW wäre realistischer, aber eine weitere Dependency.
+
+### Versions-Einschränkungen (Node 20)
+
+Zwei Pakete mussten gepinnt werden, weil ihre neuesten Fassungen Node ≥ 22
+verlangen, das Projekt aber auf Node 20.19.6 festgelegt ist (`.nvmrc`):
+
+| Paket                       | Gewählt   | Grund                         |
+| --------------------------- | --------- | ----------------------------- |
+| `jsdom`                     | `^26.1.0` | `jsdom@30` verlangt Node ≥ 22 |
+| `@testing-library/jest-dom` | `^6.6.4`  | Version 7 verlangt Node ≥ 22  |
+
+Das ist dasselbe Muster wie beim Pin von `@fastify/cookie` in T1.3. Sammelt
+sich das weiter an, wird ein Node-Upgrade als eigene Entscheidung fällig.
+
+### Alternativen (verworfen)
+
+- **MSW (Mock Service Worker)** — realistischer, aber für vier Endpunkte
+  überdimensioniert.
+- **Playwright** — gehört laut Kanon in **T1.6** und braucht ein laufendes
+  Backend.
+- **happy-dom statt jsdom** — schneller, aber weniger vollständig.
+
+---
+
+## ADR-0015 — Vite-Dev-Proxy statt CORS im Backend
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** Im Dev-Betrieb laufen Frontend (Vite) und Backend (Fastify) auf
+  verschiedenen Ports. Cookie-gestützte Requests über Origin-Grenzen hinweg
+  brauchen sonst CORS mit `credentials`.
+
+### Entscheidung
+
+Der Vite-Dev-Server **proxyt `/api` und `/healthz`** an das Backend
+(`vite.config.ts`, Ziel über `BACKEND_URL`). Am Backend wurde **nichts**
+geändert — kein CORS-Plugin, keine neue Konfiguration.
+
+### Begründung
+
+- Für den Browser gibt es damit **eine einzige Herkunft**. Session- und
+  CSRF-Cookies funktionieren ohne Sonderregeln; `SameSite=Lax` bleibt wirksam.
+- Es entspricht exakt dem Zielbetrieb: Ab T1.5 macht der Host-Nginx dasselbe.
+  Dev und Produktion verhalten sich also gleich, statt sich nur im Dev-Fall auf
+  CORS zu stützen.
+- Die Leitplanke verlangt, Backend-Änderungen zu vermeiden. Diese Lösung
+  braucht gar keine.
+
+### Alternativen (verworfen)
+
+- **`@fastify/cors` mit `credentials: true`** — Backend-Änderung, zusätzliche
+  Dependency, und die Dev-Umgebung wiche von der Produktion ab.
+- **Frontend und Backend auf demselben Port** — hieße, die Vite-Assets vom
+  Fastify-Server auszuliefern; das verschiebt Dev-Komfort ohne Not.
