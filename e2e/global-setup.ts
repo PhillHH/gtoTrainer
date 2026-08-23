@@ -8,8 +8,11 @@ import { E2E_USERNAME, requirePassword } from './credentials.js';
  * aus den Vorgaenger-Tasks: `db:migrate` aus AP1.T1.2 und das Passwort-CLI aus
  * AP1.T1.3. Damit wird kein zweiter, abweichender Weg gepflegt.
  *
- * Laeuft VOR den `webServer`-Prozessen, deshalb ist die Datenbank hier bereits
- * auf dem aktuellen Migrationsstand, wenn das Backend startet.
+ * Hinweis zur Reihenfolge: Playwright startet die `webServer`-Prozesse VOR
+ * diesem globalSetup. Der Build von `@gto/shared` gehoert deshalb in das
+ * Script `test:e2e` und nicht hierher - das Backend braucht dessen `dist/`
+ * bereits beim Start. Migration und Benutzeranlage dagegen muessen nur vor dem
+ * ersten Test fertig sein.
  */
 export default function globalSetup(): void {
   const password = requirePassword();

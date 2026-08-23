@@ -22,7 +22,7 @@
     "db:seed": "pnpm --filter @gto/backend db:seed",
     "db:reset": "pnpm --filter @gto/backend db:reset",
     "auth:set-password": "pnpm --filter @gto/backend auth:set-password",
-    "test:e2e": "playwright test",
+    "test:e2e": "pnpm --filter @gto/shared build && playwright test",
     "test:e2e:install": "playwright install --with-deps chromium"
   },
   "devDependencies": {

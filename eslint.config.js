@@ -32,8 +32,9 @@ export default tseslint.config(
     },
   },
   {
-    // Konfigurationsdateien laufen in Node und duerfen die Konsole nutzen.
-    files: ['**/*.config.{js,ts}', '**/vite.config.ts', '**/vitest.config.ts'],
+    // Konfigurationsdateien und Setup-Skripte laufen in Node und duerfen die
+    // Konsole nutzen - dort ist die Ausgabe der Zweck.
+    files: ['**/*.config.{js,ts}', '**/vite.config.ts', '**/vitest.config.ts', 'e2e/**/*.ts'],
     rules: {
       'no-console': 'off',
     },
