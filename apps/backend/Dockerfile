@@ -46,6 +46,10 @@ WORKDIR /app
 COPY --from=build --chown=node:node /bundle /app
 # Migrationen liegen als SQL im Image, damit der Deploy sie einspielen kann.
 COPY --from=build --chown=node:node /repo/apps/backend/drizzle /app/drizzle
+# Prompt-Templates liegen als Dateien im Image (AP2.T2.4). `pnpm deploy` nimmt
+# sie ueber das "files"-Feld ohnehin mit; die explizite Kopie haelt es
+# sichtbar und folgt dem Muster der Migrationen.
+COPY --from=build --chown=node:node /repo/apps/backend/prompts /app/prompts
 USER node
 EXPOSE 3000
 CMD ["node", "dist/server.js"]

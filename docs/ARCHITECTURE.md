@@ -481,10 +481,44 @@ Die Tabelle wird bei jedem Aufruf gelesen: Eine Umschaltung wirkt ab dem
 nächsten Aufruf, ohne Neustart. Ein unbekannter Wert ist ein Fehler mit klarer
 Meldung, kein stiller Default.
 
-**Stand nach T2.3:** Beide Adapter sind gebaut, durch eine gemeinsame
-Paritätssuite abgesichert und über die Registry umschaltbar — aber noch
-**nicht** an Job-Verarbeitung, `llm_call_log` oder UI angebunden. Das folgt in
-T2.5/T2.6.
+### Prompt-Template-System (neu in T2.4)
+
+Prompts sind versionierte Dateien, keine Inline-Strings. Ablageort:
+**`apps/backend/prompts/`**, im Container über `PROMPTS_DIR` auf `/app/prompts`
+— dieselbe Mechanik wie bei den Migrationen.
+
+```
+apps/backend/prompts/
+  partial/    language · data-truth · json-output      ← wiederverwendbare Bausteine
+  persona/    teacher · grader · analyst                ← System-Prompts
+  task/       concept-explanation                       ← Aufgaben (Beispiel)
+```
+
+Ein Task verweist über `system` auf eine Persona; Partials werden **beim
+Laden** eingesetzt. Das Rendern ist danach ein einziger literaler Durchlauf:
+
+```
+TemplateRegistry.load()          liest Dateien, setzt Partials ein,
+        │                        prueft Platzhalter gegen die Deklaration
+        ▼
+registry.renderRequest(id, werte, {model, maxTokens})
+        │
+        ▼
+LlmRequest  { system aus der Persona, messages aus dem Aufgabenrumpf,
+              jsonSchema aus den Kopfdaten }
+        │
+        ▼
+LlmProviderRegistry.getActive().complete(request)
+```
+
+Der Aufrufer baut keine Strings mehr zusammen. Golden-Tests unter
+`apps/backend/test/prompts/golden/` halten jeden gerenderten Prompt fest;
+Details und Begründung in [ADR-0025](./DECISIONS.md).
+
+**Stand nach T2.4:** Beide Adapter, die Provider-Registry und die
+Template-Registry stehen und greifen ineinander — aber noch **nicht** an
+Job-Verarbeitung, `llm_call_log` oder UI angebunden. Das folgt in T2.5/T2.6.
+Die fachlichen Lern-Templates entstehen ab AP5.
 
 ## 4. Querschnitts-Entscheidungen
 

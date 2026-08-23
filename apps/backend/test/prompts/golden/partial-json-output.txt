@@ -1,0 +1,7 @@
+Ausgabeform:
+
+- Antworte ausschließlich als JSON gemäß dem vorgegebenen Schema.
+- Kein einleitender oder abschließender Fließtext, keine Code-Fences, keine
+  Kommentare. Das erste Zeichen deiner Antwort ist eine geschweifte Klammer.
+- Halte dich exakt an die Feldnamen des Schemas. Keine zusätzlichen Felder.
+- Fließtext gehört in die dafür vorgesehenen Felder, nicht daneben.

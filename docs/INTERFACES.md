@@ -3,7 +3,7 @@
 Dieses Dokument beschreibt, **wo** sich Komponenten und Arbeitspakete
 gegenseitig berühren. Jeder Task trägt seine Deltas hier nach.
 
-Stand: AP2.T2.3.
+Stand: AP2.T2.4.
 
 ---
 
@@ -666,3 +666,134 @@ reine API-Adapter).
 | `LLM_PROVIDER`                    | Startwert des aktiven Providers (`cli`/`api`)                                       |
 | `ANTHROPIC_API_KEY`               | Pflicht **nur** bei aktivem Adapter B; wird dem CLI-Prozess **nicht** durchgereicht |
 | `ANTHROPIC_BASE_URL`              | abweichende Basis-URL der API (Testserver, Gateway)                                 |
+
+---
+
+## 9. Prompt-Templates — so legt ein Folge-AP ein Template an (AP2.T2.4)
+
+Prompts sind versionierte Dateien, keine Inline-Strings. **Wer ab AP3 einen
+KI-Aufruf baut, legt zuerst ein Template an** und rendert es dann über die
+`TemplateRegistry` zu einem Provider-Request. Ein Prompt-String im
+Anwendungscode ist ein Fehler.
+
+### Schritt 1 — Datei anlegen
+
+Ablage unter `apps/backend/prompts/`, gegliedert nach Art:
+
+| Verzeichnis | Art       | Wofür                                                           |
+| ----------- | --------- | --------------------------------------------------------------- |
+| `partial/`  | `partial` | wiederverwendbarer Baustein, wird eingebunden                   |
+| `persona/`  | `persona` | System-Prompt: Rolle und Verhalten                              |
+| `task/`     | `task`    | konkrete Aufgabe; verweist auf eine Persona, wird zur Nachricht |
+
+Die Kennung spiegelt den Pfad ohne Endung: `apps/backend/prompts/task/foo.md`
+→ `task/foo`.
+
+### Schritt 2 — Kopfdaten und Rumpf schreiben
+
+```markdown
+---
+{
+  'id': 'task/chapter-quiz',
+  'version': 1,
+  'kind': 'task',
+  'description': 'Erzeugt Verstaendnisfragen zu einem Kapitelabschnitt.',
+  'system': 'persona/teacher',
+  'placeholders': ['abschnitt'],
+  'jsonSchema':
+    {
+      'type': 'object',
+      'properties': { 'fragen': { 'type': 'array', 'items': { 'type': 'string' } } },
+      'required': ['fragen'],
+      'additionalProperties': false,
+    },
+}
+---
+
+Formuliere Verstaendnisfragen zu diesem Abschnitt.
+
+{{abschnitt}}
+
+{{> partial/json-output}}
+```
+
+Regeln, die der Lader beim Start durchsetzt:
+
+| Regel                                                             | Verstoß führt zu                       |
+| ----------------------------------------------------------------- | -------------------------------------- |
+| `id` eindeutig über alle Dateien                                  | Abbruch mit Nennung **beider** Dateien |
+| `version` ganze Zahl ≥ 1, bei inhaltlichen Änderungen erhöhen     | Abbruch                                |
+| jeder verwendete `{{name}}` steht in `placeholders`               | Abbruch                                |
+| jeder deklarierte Platzhalter wird auch verwendet                 | Abbruch                                |
+| `kind: 'task'` verweist über `system` auf eine **Persona**        | Abbruch                                |
+| `{{> id}}` zeigt auf ein **Partial**, ohne Zyklus, max. 10 Ebenen | Abbruch                                |
+
+Ein Task muss die Platzhalter seiner Persona **nicht** mitdeklarieren — die
+Registry ergänzt sie im Pflichtset. Beim Rendern werden sie trotzdem verlangt.
+
+### Schritt 3 — rendern und aufrufen
+
+```ts
+import { TemplateRegistry } from '../prompts/index.js';
+import { LlmProviderRegistry } from '../llm/index.js';
+
+const templates = TemplateRegistry.load();
+
+const request = templates.renderRequest(
+  'task/chapter-quiz',
+  { abschnitt: textAusDerDatenbank, level: 'Fortgeschritten' },
+  { model: 'claude-sonnet-5', maxTokens: 2048 },
+);
+
+const response = await (await providers.getActive()).complete(request);
+```
+
+`renderRequest()` liefert einen **fertigen** `LlmRequest`: System-Prompt aus der
+Persona, Aufgabenrumpf als Benutzernachricht, `jsonSchema` aus den Kopfdaten.
+Für Partials und Personas einzeln gibt es `renderText(id, werte)`.
+
+**Strikt in beide Richtungen:** Ein fehlender Wert ist ein Fehler, ein Wert
+ohne passenden Platzhalter ebenso. Es gibt keinen leeren String und keine
+stehengebliebene `{{…}}`-Syntax in der Ausgabe. Eingesetzte Werte werden
+**literal** übernommen und nicht erneut als Template gelesen — Buchtext oder
+eine Nutzerantwort kann die Prompt-Struktur damit nicht verändern.
+
+### Schritt 4 — Golden-Test ergänzen
+
+Jedes Template braucht mindestens einen Golden-Fall, sonst wird die Suite rot
+(Abdeckungstest in `apps/backend/test/prompts/golden.test.ts`).
+
+1. Fall in `TEXT_CASES` (Partial/Persona) oder `REQUEST_CASES` (Task) eintragen,
+   mit Beispielwerten.
+2. `pnpm prompts:golden` — schreibt die erwarteten Dateien unter
+   `apps/backend/test/prompts/golden/`.
+3. Die erzeugte Datei **lesen** und mit committen. Sie ist der Beleg dafür, wie
+   der Prompt tatsächlich beim Modell ankommt.
+
+Bei jeder späteren Änderung am Template zeigt der Golden-Test den Unterschied
+im Diff. Nie blind `pnpm prompts:golden` laufen lassen, um einen roten Test
+grün zu bekommen — erst den Diff prüfen. In der CI ist der Update-Modus
+gesperrt.
+
+### Was **nicht** in ein Template gehört
+
+- **Keine Fachdaten aus dem Buch** — keine Frequenzen, keine Handbereiche,
+  keine Werte aus Tabellen. Die kommen zur Laufzeit als Platzhalterwerte aus
+  der Datenbank. Nur so bleibt die Wahrheit deterministisch
+  („deterministischer Kern, KI am Rand").
+- **Keine Zugangsdaten**, keine Pfade, keine Umgebungswerte.
+- **Keine Wiederholung** dessen, was schon in einem Partial steht — binde das
+  Partial ein. `partial/language`, `partial/data-truth` und
+  `partial/json-output` decken Ansprache, Datenwahrheit und Ausgabeform ab.
+
+### Exportierte Bausteine
+
+| Export                        | Bedeutung                                                |
+| ----------------------------- | -------------------------------------------------------- |
+| `TemplateRegistry.load(dir?)` | liest alle Templates; ohne Argument aus `PROMPTS_DIR`    |
+| `registry.ids()`              | alle Kennungen, sortiert                                 |
+| `registry.get(id)`            | geladenes Template samt Kopfdaten und Platzhaltern       |
+| `registry.renderText(id, …)`  | gerenderter Text eines Partials oder einer Persona       |
+| `registry.renderRequest(…)`   | fertiger `LlmRequest`                                    |
+| `TemplateError`               | Fehler beim Laden oder Rendern                           |
+| `PROMPTS_DIR`                 | Verzeichnis; im Container über die gleichnamige Variable |

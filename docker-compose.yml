@@ -43,6 +43,8 @@ services:
       # Im Compose-Netz wird der Service-Name aufgeloest - nicht der Host-Port.
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       MIGRATIONS_DIR: /app/drizzle
+      # Prompt-Templates im Image (AP2.T2.4) - im Repo waere es apps/backend/prompts.
+      PROMPTS_DIR: /app/prompts
       # Hinter TLS muss das Session-Cookie das Secure-Flag tragen (ADR-0008).
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       COOKIE_SAMESITE: ${COOKIE_SAMESITE:-lax}

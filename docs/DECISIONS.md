@@ -1339,3 +1339,116 @@ Servermeldung läuft vorher durch eine Ausschwärzung, die den Schlüsselwert
 durch `***` ersetzt. Der unveränderte Platzhalter aus `.env.example`
 (`__SET_…`) gilt als „nicht gesetzt", damit eine kopierte Vorlage in die
 verständliche Meldung läuft statt in einen 401.
+
+---
+
+## ADR-0025 — Prompt-Templates als Dateien mit JSON-Kopfdaten, eigene Mini-Ersetzung statt Template-Engine
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** AP2.T2.4 verlangt versionierte, testbare Prompt-Bausteine statt
+  verstreuter Inline-Strings. Offen waren Ablageort, Metadaten-Format,
+  Platzhalter-Mechanik und der Umgang mit Versionierung.
+
+### Entscheidung 1 — Dateien im Repo, nicht in der Datenbank
+
+Templates liegen unter **`apps/backend/prompts/`** als `.md`-Dateien, gegliedert
+in `partial/`, `persona/` und `task/`.
+
+Begründung: Prompts sind Code, kein Inhalt. Sie gehören in Review, Diff und
+Historie. Eine Änderung an der Lehrer-Persona verschiebt die Didaktik des
+ganzen Produkts — das darf nicht per `UPDATE` an der Datenbank passieren,
+sondern muss im Pull Request sichtbar sein. In der Datenbank landen später
+Lerndaten und Fachwissen, nicht die Anweisungen an das Modell.
+
+Der Weg ins Image folgt dem Muster der Migrationen: `PROMPTS_DIR` zeigt im
+Container auf `/app/prompts`, im Repo greift der Rückfall auf
+`apps/backend/prompts`. Das Verzeichnis steht zusätzlich im `files`-Feld von
+`apps/backend/package.json`, damit `pnpm deploy --prod` es mitnimmt.
+
+`.md` als Endung, weil der Rumpf Prosa ist und in jedem Editor lesbar bleibt.
+Das Verzeichnis steht in `.prettierignore`: Prettier würde die Absätze
+umbrechen und damit Golden-Tests unbemerkt rot färben.
+
+### Entscheidung 2 — Kopfdaten als JSON-Block, nicht YAML
+
+Jede Datei beginnt mit einem JSON-Objekt zwischen zwei `---`-Zeilen:
+
+```
+---
+{ "id": "persona/teacher", "version": 1, "kind": "persona",
+  "description": "…", "placeholders": ["level"] }
+---
+Rumpf …
+```
+
+Begründung:
+
+- **Ohne Dependency parsbar.** YAML-Frontmatter bräuchte einen Parser
+  (`js-yaml` o. ä.); JSON kann Node von Haus aus. Regel 5 des AGENT_GUIDE
+  spricht dagegen, für eine Kopfzeile eine Bibliothek zu ziehen.
+- **Das optionale `jsonSchema` passt unverändert hinein.** Ein JSON-Schema in
+  YAML zu pflegen und beim Laden zu konvertieren wäre eine Fehlerquelle ohne
+  Gegenwert — so steht im Template exakt das, was später an den Provider geht.
+- **Keine YAML-Fallen** (Norway-Problem, Einrückung, mehrdeutige Typen).
+
+Der Preis sind Anführungszeichen und Kommata beim Schreiben. Das ist
+vertretbar: Kopfdaten sind kurz, und ein Syntaxfehler fällt beim Laden mit
+Dateinamen und Ursache auf.
+
+**Verworfen:** Begleitdatei (`x.md` + `x.json`) — zwei Dateien, die
+auseinanderlaufen können; Metadaten im TypeScript-Code — dann wäre das
+Template wieder halb Inline-String.
+
+### Entscheidung 3 — eigene Platzhalter-Ersetzung statt Template-Engine
+
+Die Syntax kennt genau zwei Formen: `{{name}}` für Werte und `{{> partial/id}}`
+für Bausteine. Keine Bedingungen, keine Schleifen, keine Filter, keine
+Ausdrücke. Die Umsetzung sind ~90 Zeilen in `apps/backend/src/prompts/render.ts`.
+**Keine neue Dependency.**
+
+Gegen Handlebars/Nunjucks/Eta sprach nicht das Gewicht, sondern die
+Semantik:
+
+- **Strikt in beide Richtungen.** Ein fehlender Wert ist ein Fehler, und ein
+  übergebener Wert ohne passenden Platzhalter ebenso. Übliche Engines liefern
+  bei fehlenden Variablen einen leeren String — genau der stille Ausfall, den
+  ein Prompt-System nicht haben darf, weil eine halbe Anweisung schlimmer ist
+  als gar keine.
+- **Literale Einsetzung.** Der eingesetzte Wert wird nicht erneut nach
+  Platzhaltern durchsucht. Buchtext oder eine Nutzerantwort, in der zufällig
+  `{{…}}` steht, kann die Prompt-Struktur nicht verändern. Bei einer Engine
+  müsste man dieses Verhalten erst absichern.
+- **Prüfung beim Laden.** Weil die Syntax so klein ist, lässt sich beim Start
+  abgleichen, dass deklarierte und verwendete Platzhalter exakt übereinstimmen.
+  Ein Tippfehler fällt damit beim Start auf, nicht beim ersten Aufruf.
+
+Partials werden **beim Laden** eingesetzt, nicht beim Rendern. Danach enthält
+der Rumpf nur noch Wert-Platzhalter, und das Rendern ist ein einziger
+literaler Durchlauf. Verschachtelung ist erlaubt und gegen Zyklen sowie eine
+Tiefe über 10 Ebenen abgesichert.
+
+### Entscheidung 4 — Versionierung als Zähler, Verlauf über git
+
+Jedes Template trägt `version` als Ganzzahl. Sie wird bei inhaltlichen
+Änderungen erhöht und dient als Bezugspunkt für Logs und Auswertungen
+(„Bewertung erfolgte mit `persona/grader` v2"). Der eigentliche Verlauf steht
+in git; parallele Versionsstände derselben Kennung gibt es **nicht** — dafür
+fehlt der Anwendungsfall, und zwei gleichzeitig gültige Fassungen einer
+Bewertungs-Persona wären fachlich schwer zu verantworten.
+
+Die Kennung spiegelt konventionsgemäß den Dateipfad ohne Endung. Doppelte
+Kennungen brechen den Ladevorgang mit Nennung beider Dateien ab; es wird nichts
+stillschweigend überschrieben.
+
+### Entscheidung 5 — Golden-Tests mit gesperrtem Update-Modus
+
+Für jedes Template gibt es mindestens einen Golden-Fall unter
+`apps/backend/test/prompts/golden/`. `pnpm prompts:golden` schreibt die Dateien
+bewusst neu (`UPDATE_GOLDEN=1`). Läuft der Update-Modus in einer CI-Umgebung
+(`CI` gesetzt), bricht die Testdatei sofort mit einer Erklärung ab — sonst
+könnte ein Testlauf die Absicherung stillschweigend selbst erneuern.
+
+Ein Abdeckungstest stellt sicher, dass **jede** Template-Kennung in mindestens
+einem Golden-Fall vorkommt: Ein neues Template ohne Golden-Datei macht die
+Suite rot.

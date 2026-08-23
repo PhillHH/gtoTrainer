@@ -9,3 +9,9 @@ data/book-source/
 # Aenderung, auch reine Umformatierung durch Prettier.
 docs/ap/
 *.tsbuildinfo
+
+# Prompt-Templates und ihre Golden-Dateien (AP2.T2.4): Prettier wuerde Prosa
+# umbrechen und damit Golden-Tests unbemerkt rot faerben. Der Inhalt wird
+# stattdessen durch die Golden-Tests abgesichert.
+apps/backend/prompts/
+apps/backend/test/prompts/golden/

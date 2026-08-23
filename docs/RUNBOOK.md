@@ -820,6 +820,57 @@ Fehlerbilder des API-Adapters (Adapter B):
 
 Laufendes Protokoll des Runners: `tail -f /home/phillip/gto-llm-runner/runner.log`.
 
+### 9.8 Prompt-Templates: Golden-Dateien aktualisieren
+
+Prompts liegen unter `apps/backend/prompts/`. Jede Änderung an einem Template
+macht den zugehörigen Golden-Test rot — das ist beabsichtigt.
+
+```bash
+cd /home/phillip/gto
+
+# 1. Template ändern, dann sehen, was sich am gerenderten Prompt ändert:
+pnpm --filter @gto/backend exec vitest run test/prompts/golden.test.ts
+
+# 2. Diff prüfen. Erst wenn er der Absicht entspricht:
+pnpm prompts:golden
+
+# 3. Die geänderten Dateien unter apps/backend/test/prompts/golden/ mit committen.
+git diff apps/backend/test/prompts/golden/
+```
+
+**Nie** Schritt 2 ausführen, nur um einen roten Test grün zu bekommen — der
+Golden-Test ist die einzige Stelle, an der eine ungewollte Prompt-Änderung
+auffällt. In der CI ist `UPDATE_GOLDEN` gesperrt: Die Testdatei bricht ab,
+wenn beides zusammentrifft.
+
+Wird ein Template inhaltlich geändert, gehört die `version` in den Kopfdaten
+erhöht.
+
+### 9.9 Typische Fehlerbilder beim Rendern
+
+Alle Meldungen kommen als `TemplateError` und nennen Template und Datei.
+
+| Meldung                                                       | Ursache                                              | Abhilfe                                                           |
+| ------------------------------------------------------------- | ---------------------------------------------------- | ----------------------------------------------------------------- |
+| `Es fehlen Werte fuer die Platzhalter "x"`                    | Aufruf übergibt einen deklarierten Platzhalter nicht | Wert ergänzen — es gibt bewusst keinen leeren Rückfall            |
+| `Unbekannte Platzhalter "x" uebergeben`                       | Tippfehler im Namen oder Wert zu viel                | Namen gegen `placeholders` im Template abgleichen                 |
+| `verwendet die Platzhalter "x", deklariert sie aber nicht`    | `{{x}}` im Rumpf fehlt in den Kopfdaten              | in `placeholders` eintragen (auch die aus eingebundenen Partials) |
+| `deklariert die Platzhalter "x", verwendet sie aber nirgends` | Platzhalter aus dem Rumpf entfernt, Kopfdaten nicht  | aus `placeholders` streichen                                      |
+| `Doppelte Template-Kennung "…"`                               | zwei Dateien mit derselben `id`                      | eine umbenennen; die Kennung spiegelt den Pfad                    |
+| `Unbekanntes Template "…"`                                    | Tippfehler beim Abruf oder Datei fehlt im Image      | `PROMPTS_DIR` prüfen (im Container `/app/prompts`)                |
+| `bindet das unbekannte Partial "…" ein`                       | `{{> id}}` zeigt ins Leere                           | Kennung prüfen                                                    |
+| `Partial-Zyklus erkannt: a -> b -> a`                         | Bausteine binden sich gegenseitig ein                | Verschachtelung auflösen                                          |
+| `Kopfdaten fehlen` / `kein gueltiges JSON`                    | `---`-Block fehlt oder JSON ist kaputt               | Kopfdaten reparieren; Komma und Anführungszeichen prüfen          |
+| `Template-Verzeichnis "…" ist nicht lesbar`                   | `PROMPTS_DIR` falsch oder Verzeichnis nicht im Image | Compose-Variable und `Dockerfile`-Kopie prüfen                    |
+
+Templates im laufenden Container zählen:
+
+```bash
+docker exec gto-backend node -e '
+import("/app/dist/prompts/index.js").then(({ TemplateRegistry }) =>
+  console.log(TemplateRegistry.load().ids()));'
+```
+
 ## 10. Noch nicht abgedeckt
 
 - Der Host-Nginx-vhost und das TLS-Zertifikat sind vorbereitet, aber noch nicht
