@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build-Artefakte
+dist/
+build/
+*.tsbuildinfo
+
+# Test- / Coverage-Artefakte
+coverage/
+.vitest/
+*.lcov
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Buchdaten (AP3-Pflicht-Input) - Inhalt wird NICHT versioniert,
+# ausgenommen die erklaerende README.
+data/book-source/*
+!data/book-source/README.md
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
