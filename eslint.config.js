@@ -13,6 +13,8 @@ export default tseslint.config(
       '**/build/**',
       '**/coverage/**',
       'data/book-source/**',
+      // Kanon des Nutzers - siehe Regel 6 in docs/AGENT_GUIDE.md.
+      'docs/ap/**',
     ],
   },
   js.configs.recommended,

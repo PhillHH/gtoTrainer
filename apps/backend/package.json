@@ -10,14 +10,22 @@
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
     "typecheck": "tsc -b --pretty",
-    "test": "vitest run"
+    "test": "vitest run",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/db/cli-migrate.ts",
+    "db:seed": "tsx src/db/cli-seed.ts",
+    "db:reset": "tsx src/db/cli-reset.ts"
   },
   "dependencies": {
     "@gto/shared": "workspace:*",
-    "fastify": "^5.2.0"
+    "drizzle-orm": "^0.45.2",
+    "fastify": "^5.2.0",
+    "pg": "^8.23.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@types/pg": "^8.23.1",
+    "drizzle-kit": "^0.31.10",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"

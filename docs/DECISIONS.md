@@ -134,3 +134,134 @@ gesondert von Lint und Git ausgeschlossen werden müssten.
 
 - **`dist-tsc/` in `.eslintignore` und `.gitignore` aufnehmen** — hätte das
   Symptom kaschiert und totes Emit-Verzeichnis erhalten.
+
+---
+
+## ADR-0004 — Drizzle ORM als ORM- und Migrations-Werkzeug
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** AP1.T1.2 verlangt eine Entscheidung zwischen **Drizzle ORM** und
+  **Prisma** für Datenzugriff und Migrationen. Die Wahl ist laut Arbeitspaket
+  **bindend für alle Folge-APs**.
+
+### Entscheidung
+
+**Drizzle ORM** (`drizzle-orm`) mit `drizzle-kit` für die Migrations-Generierung
+und `pg` (node-postgres) als Treiber.
+
+Neue Dependencies in `apps/backend`:
+
+| Paket         | Art  | Zweck                                    |
+| ------------- | ---- | ---------------------------------------- |
+| `drizzle-orm` | prod | Schema-Definition und typisierte Queries |
+| `pg`          | prod | Postgres-Treiber inkl. Connection-Pool   |
+| `drizzle-kit` | dev  | Erzeugt SQL-Migrationen aus dem Schema   |
+| `@types/pg`   | dev  | Typen für `pg`                           |
+
+### Abwägung der geforderten Kriterien
+
+| Kriterium                    | Drizzle                                                                                     | Prisma                                                                                                      |
+| ---------------------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| **TypeScript-Integration**   | Schema **ist** TypeScript; Typen werden direkt daraus abgeleitet, kein Generierungsschritt  | Eigene DSL (`schema.prisma`); Typen entstehen erst durch `prisma generate` — ein Schritt, der veralten kann |
+| **Migrations-Handling**      | `drizzle-kit generate` schreibt lesbares SQL, das im Repo liegt und von Hand editierbar ist | Ebenfalls SQL-Dateien, aber eng an den Prisma-Migrations-Zustand gebunden                                   |
+| **Kontrolle über rohes SQL** | Erstklassig: `sql`-Template beliebig mit typisierten Queries mischbar                       | Nur über `$queryRaw`, außerhalb des Typsystems                                                              |
+| **Gewicht/Dependencies**     | Reine TS-Bibliothek, kein Binary                                                            | Lädt eine plattformspezifische Query-Engine (Binary, ~15–20 MB) — spürbar in Image und Install              |
+| **Single-User-Projekt**      | Passt: wenig Abstraktion, direkter SQL-Bezug, leicht zu überschauen                         | Bringt Studio, Client-Generierung und Engine-Lifecycle mit — Funktionsumfang, der hier ungenutzt bleibt     |
+
+### Begründung
+
+Ausschlaggebend war die Kombination aus **kein Generierungsschritt** und
+**voller SQL-Kontrolle**. Das Projekt braucht in späteren APs eigenes SQL
+(Job-Claiming mit `FOR UPDATE SKIP LOCKED`, JSONB-Abfragen, Volltextsuche über
+die Buchinhalte). Bei Drizzle bleibt das im selben Typsystem; bei Prisma fiele
+es in `$queryRaw` und damit aus der Typsicherheit heraus. Dazu kommt das
+geringere Gewicht: keine Query-Engine-Binary, die in T1.5 mit ins Container-Image
+müsste.
+
+### Alternative (verworfen)
+
+**Prisma** — ausgereiftes Tooling, sehr gute Developer Experience, Prisma Studio
+als Datenbrowser. Verworfen, weil die Engine-Binary das Deployment beschwert,
+die Schema-DSL einen zusätzlichen Generierungsschritt erzwingt und rohes SQL
+aus dem Typsystem herausfällt. Für ein Single-User-Projekt mit SQL-nahen
+Anforderungen überwiegt der Zusatzaufwand den Nutzen.
+
+### Konsequenzen
+
+- Das Schema lebt in `apps/backend/src/db/schema.ts` und ist die einzige Quelle
+  der Wahrheit.
+- Migrationen werden **zur Entwicklungszeit** mit `pnpm db:generate` erzeugt und
+  als SQL unter `apps/backend/drizzle/` versioniert. Zur Laufzeit wird nichts
+  generiert — `pnpm db:migrate` spielt nur vorhandene Dateien ein.
+- `pg.Pool` ist der Connection-Pool; Shutdown-Handling liegt in
+  `apps/backend/src/db/client.ts`.
+
+---
+
+## ADR-0005 — Postgres-Host-Port konfigurierbar, Default 55434
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** Auf dem Zielhost laufen bereits fremde Dienste. Port **5432 ist
+  belegt** (fremde Postgres-Instanz), ebenso **55432** und **55433** (weitere
+  Projekte). Port 3000 ist laut AP1.T1.1-Bericht ebenfalls belegt.
+
+### Entscheidung
+
+Der Host-Port des Postgres-Containers kommt aus **`POSTGRES_HOST_PORT`** und ist
+nirgends hart verdrahtet. Default ist **55434** (zum Zeitpunkt der Einrichtung
+nachweislich frei). Das Mapping bindet zusätzlich auf **`127.0.0.1`**, nicht auf
+`0.0.0.0`.
+
+### Begründung
+
+Ein fest verdrahteter Port würde beim Start entweder fehlschlagen oder — schlimmer
+— mit einer fremden Instanz kollidieren. Die Bindung an `127.0.0.1` verhindert,
+dass die Entwicklungsdatenbank vom Internet aus erreichbar ist; der Host ist
+öffentlich adressierbar. Auch das Backend läuft auf **3001** statt 3000, weil
+3000 belegt ist.
+
+### Alternative (verworfen)
+
+- **Fester Port 5432** — kollidiert sofort mit der vorhandenen Instanz.
+- **Ganz ohne Port-Mapping (nur Compose-intern)** — hätte in T1.2 funktioniert,
+  aber Migrationen, Seed und Tests laufen hier noch außerhalb von Compose auf dem
+  Host und brauchen einen erreichbaren Port.
+
+---
+
+## ADR-0006 — Explizites Docker-Subnetz für das Compose-Netzwerk
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** `docker compose up` scheiterte auf dem Zielhost mit
+  `all predefined address pools have been fully subnetted`. Die 33 bereits
+  vorhandenen Netzwerke fremder Projekte belegen Dockers vordefinierte Pools
+  (`172.17.0.0/16`–`172.31.0.0/16` sowie `192.168.0.0/16` in /20-Blöcken)
+  vollständig.
+
+### Entscheidung
+
+Das Compose-Netzwerk `gto-net` bekommt ein **explizites Subnetz** aus
+`DOCKER_SUBNET`, Default **`10.89.0.0/24`** — außerhalb der Docker-Standardpools
+und auf dem Host frei (geprüft via `ip route`).
+
+### Begründung
+
+Das Problem ließ sich nur an drei Stellen lösen: Daemon-Konfiguration,
+Aufräumen fremder Netzwerke, oder ein eigenes Subnetz. Die ersten beiden greifen
+in fremde Projekte ein — laut Leitplanke des Arbeitspakets ausgeschlossen. Ein
+explizites Subnetz betrifft ausschließlich dieses Projekt und ist zudem
+selbstdokumentierend.
+
+### Alternativen (verworfen)
+
+- **`default-address-pools` in `/etc/docker/daemon.json` erweitern** — wirkt
+  global, erfordert einen Daemon-Neustart und damit einen Neustart **aller**
+  fremden Container auf dem Host.
+- **`docker network prune`** — würde Netzwerke fremder, gestoppter Projekte
+  löschen.
+- **`network_mode: bridge`** — umgeht das Problem, verhindert aber die
+  Service-zu-Service-Auflösung per Name, die in T1.5 für Backend↔Postgres
+  gebraucht wird.

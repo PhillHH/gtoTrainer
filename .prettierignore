@@ -4,4 +4,8 @@ build/
 coverage/
 pnpm-lock.yaml
 data/book-source/
+
+# docs/ap/ ist Kanon des Nutzers - Regel 6 im AGENT_GUIDE verbietet jede
+# Aenderung, auch reine Umformatierung durch Prettier.
+docs/ap/
 *.tsbuildinfo

@@ -1,0 +1,45 @@
+# Entwicklungs-Stack. In AP1.T1.2 enthaelt er ausschliesslich die Datenbank;
+# Backend- und Frontend-Container folgen in AP1.T1.5.
+#
+# Der Host-Port ist bewusst NICHT auf 5432 verdrahtet: Auf dem Zielhost laufen
+# bereits fremde Postgres-Instanzen. Der Port kommt aus POSTGRES_HOST_PORT
+# (siehe .env.example) und ist auf 127.0.0.1 gebunden, damit die Datenbank
+# nicht oeffentlich erreichbar ist.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: gto-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER fehlt - .env aus .env.example anlegen}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD fehlt - .env aus .env.example anlegen}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB fehlt - .env aus .env.example anlegen}
+    ports:
+      - '127.0.0.1:${POSTGRES_HOST_PORT:?POSTGRES_HOST_PORT fehlt - .env aus .env.example anlegen}:5432'
+    volumes:
+      - gto-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  gto-pgdata:
+    name: gto-pgdata
+
+# Der Host hat Dockers vordefinierte Adress-Pools (172.17-172.31/16 und
+# 192.168.0.0/16 in /20-Bloecken) bereits vollstaendig durch fremde Projekte
+# belegt - ein Netzwerk ohne feste Angabe scheitert mit
+# "all predefined address pools have been fully subnetted".
+# Deshalb bekommt dieses Projekt ein explizites, freies Subnetz. Die
+# Daemon-Konfiguration bleibt unangetastet, damit fremde Projekte nicht
+# beeinflusst werden.
+networks:
+  default:
+    name: gto-net
+    ipam:
+      config:
+        - subnet: ${DOCKER_SUBNET:-10.89.0.0/24}

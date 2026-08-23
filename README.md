@@ -9,6 +9,9 @@ geteilter Vertragsort für Typen.
 nvm use              # Node-Version aus .nvmrc
 corepack enable
 pnpm install
+cp .env.example .env # Platzhalter ersetzen (siehe RUNBOOK)
+pnpm db:up           # Postgres-Container starten
+pnpm db:migrate      # Basisschema anlegen
 pnpm dev
 ```
 

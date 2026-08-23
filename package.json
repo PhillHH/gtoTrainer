@@ -14,7 +14,13 @@
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "test": "pnpm --recursive run test",
-    "typecheck": "pnpm --recursive run typecheck"
+    "typecheck": "pnpm --recursive run typecheck",
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down",
+    "db:generate": "pnpm --filter @gto/backend db:generate",
+    "db:migrate": "pnpm --filter @gto/backend db:migrate",
+    "db:seed": "pnpm --filter @gto/backend db:seed",
+    "db:reset": "pnpm --filter @gto/backend db:reset"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",

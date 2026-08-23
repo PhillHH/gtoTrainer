@@ -3,7 +3,7 @@
 Dieses Dokument beschreibt, **wo** sich Komponenten und Arbeitspakete
 gegenseitig berühren. Jeder Task trägt seine Deltas hier nach.
 
-Stand: AP1.T1.1.
+Stand: AP1.T1.2.
 
 ---
 
@@ -56,7 +56,115 @@ Weitere Endpunkte existieren nach T1.1 nicht.
 
 ---
 
-## 3. `data/book-source/` — Pflicht-Input für AP3
+## 3. Datenbankschema (Basisschema, AP1.T1.2)
+
+Quelle der Wahrheit ist `apps/backend/src/db/schema.ts`. Alles Weitere
+(Migrations-SQL, Typen) wird daraus abgeleitet — das Schema wird **nie** direkt
+in der Datenbank geändert.
+
+### Namens- und Typkonventionen
+
+| Regel                                             | Begründung                                                                                       |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Tabellennamen **Singular**, `snake_case`          | `user`, nicht `users` — konsistent mit dem Domänenbegriff je Zeile                               |
+| Primärschlüssel `uuid` mit `gen_random_uuid()`    | Keine erratbaren, fortlaufenden IDs; seit Postgres 13 ohne Extension verfügbar                   |
+| Zeitstempel durchgängig **`timestamptz`**         | `timestamp` ohne Zeitzone führt bei Zeitumstellung und Container-TZ zu falschen Werten           |
+| Statusfelder als `text` + **CHECK-Constraint**    | Ein pg-`ENUM` lässt sich nur umständlich erweitern; ein CHECK ändert sich per normaler Migration |
+| Strukturierte Werte als **`jsonb`**, nicht `json` | `jsonb` ist indizierbar und normalisiert die Darstellung                                         |
+
+> `user` ist in SQL ein reserviertes Wort. Drizzle quotet den Bezeichner
+> automatisch; in rohem SQL muss `"user"` geschrieben werden.
+
+### Die fünf Tabellen
+
+**`user`** — Single-User-Betrieb. In T1.2 nur Schema, **fachlich ungenutzt**;
+Login und Hashing folgen in T1.3.
+
+| Spalte          | Typ           | Hinweis                                         |
+| --------------- | ------------- | ----------------------------------------------- |
+| `id`            | `uuid` PK     | `gen_random_uuid()`                             |
+| `username`      | `text`        | eindeutig (`user_username_key`)                 |
+| `password_hash` | `text`        | Argon2-Hash; erzeugt wird er erst in T1.3       |
+| `totp_secret`   | `text` NULL   | Hook für den optionalen TOTP-Faktor (T1.3, aus) |
+| `created_at`    | `timestamptz` | Default `now()`                                 |
+| `updated_at`    | `timestamptz` | Default `now()`                                 |
+
+**`session`** — ebenfalls nur Schema in T1.2.
+
+| Spalte         | Typ                | Hinweis                                                                                                                  |
+| -------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| `id`           | `uuid` PK          | `gen_random_uuid()`                                                                                                      |
+| `token`        | `text`             | eindeutig; **der Cookie trägt den Token, nicht die `id`** — so lässt sich der Token rotieren, ohne die Zeile zu ersetzen |
+| `user_id`      | `uuid` FK → `user` | `ON DELETE CASCADE`                                                                                                      |
+| `expires_at`   | `timestamptz`      | Index `session_expires_at_idx` fürs Aufräumen                                                                            |
+| `last_seen_at` | `timestamptz` NULL |                                                                                                                          |
+| `created_at`   | `timestamptz`      | Index `session_user_id_idx` auf `user_id`                                                                                |
+
+**`config`** — Key/Value-Konfiguration zur Laufzeit.
+
+| Spalte       | Typ           | Hinweis                                                                          |
+| ------------ | ------------- | -------------------------------------------------------------------------------- |
+| `key`        | `text` PK     | z. B. `llm.provider`, `learning.mastery_threshold`                               |
+| `value`      | `jsonb`       | `NOT NULL`; „nicht gesetzt" wird als JSON-`null` gespeichert, nicht als SQL NULL |
+| `updated_at` | `timestamptz` | Default `now()`                                                                  |
+
+**`llm_call_log`** — Skelett, befüllt wird es in **AP2**.
+
+| Spalte                                               | Typ            | Hinweis                                  |
+| ---------------------------------------------------- | -------------- | ---------------------------------------- |
+| `id`                                                 | `uuid` PK      |                                          |
+| `provider`, `model`                                  | `text`         |                                          |
+| `prompt`                                             | `text`         | ohne Längenbegrenzung                    |
+| `response`                                           | `text` NULL    | leer, solange der Aufruf läuft           |
+| `duration_ms`                                        | `integer` NULL |                                          |
+| `prompt_tokens`, `completion_tokens`, `total_tokens` | `integer` NULL |                                          |
+| `status`                                             | `text`         | CHECK: `pending` \| `success` \| `error` |
+| `error`                                              | `text` NULL    |                                          |
+| `created_at`                                         | `timestamptz`  | Index `llm_call_log_created_at_idx`      |
+
+**`job_queue`** — asynchrone Arbeit, genutzt ab AP2.
+
+| Spalte         | Typ                | Hinweis                                                      |
+| -------------- | ------------------ | ------------------------------------------------------------ |
+| `id`           | `uuid` PK          |                                                              |
+| `job_type`     | `text`             |                                                              |
+| `payload`      | `jsonb`            | Default `'{}'::jsonb`                                        |
+| `status`       | `text`             | CHECK: `queued` \| `running` \| `done` \| `failed` \| `dead` |
+| `attempts`     | `integer`          | Default 0                                                    |
+| `max_attempts` | `integer`          | Default 3                                                    |
+| `available_at` | `timestamptz`      | Default `now()`; steuert Verzögerung und Backoff             |
+| `claimed_at`   | `timestamptz` NULL |                                                              |
+| `finished_at`  | `timestamptz` NULL |                                                              |
+| `last_error`   | `text` NULL        |                                                              |
+| `created_at`   | `timestamptz`      |                                                              |
+
+Der zusammengesetzte Index **`job_queue_claim_idx (status, available_at)`**
+bedient genau die Claiming-Abfrage
+`where status = 'queued' and available_at <= now()`.
+
+---
+
+## 4. Migrations-Workflow — so ergänzen Folge-APs das Schema
+
+1. Tabelle/Spalte in `apps/backend/src/db/schema.ts` ändern.
+2. `pnpm db:generate` — `drizzle-kit` schreibt eine **neue, nummerierte**
+   SQL-Datei nach `apps/backend/drizzle/`.
+3. Die erzeugte SQL-Datei lesen und **mit committen**. Sie ist ab dann
+   unveränderlich — Korrekturen erfolgen über eine **weitere** Migration, nie
+   durch Editieren einer bereits ausgelieferten Datei.
+4. `pnpm db:migrate` spielt offene Migrationen ein. Drizzle führt Buch in
+   `drizzle.__drizzle_migrations` und überspringt bereits Angewandtes.
+
+> **Regel:** Migrationen werden **zur Entwicklungszeit** erzeugt und
+> versioniert, **niemals zur Laufzeit generiert**. Der Produktivbetrieb spielt
+> ausschließlich vorhandene Dateien ein.
+
+Zugehörige Skripte (Root): `db:up`, `db:down`, `db:generate`, `db:migrate`,
+`db:seed`, `db:reset`.
+
+---
+
+## 5. `data/book-source/` — Pflicht-Input für AP3
 
 **Verbindlicher Andockpunkt zwischen Nutzer und Ingestion.**
 
@@ -85,7 +193,7 @@ Details siehe [`data/book-source/README.md`](../data/book-source/README.md).
 
 ---
 
-## 4. `docs/ap/` — Kanon der Arbeitspakete
+## 6. `docs/ap/` — Kanon der Arbeitspakete
 
 - **Wer schreibt:** ausschließlich der **Nutzer**.
 - **Wer liest:** der Coding-Agent, vor jedem Task.
@@ -95,7 +203,7 @@ Details siehe [`data/book-source/README.md`](../data/book-source/README.md).
 
 ---
 
-## 5. Noch nicht existierende Schnittstellen
+## 7. Noch nicht existierende Schnittstellen
 
 | Schnittstelle                                 | Entsteht in |
 | --------------------------------------------- | ----------- |
