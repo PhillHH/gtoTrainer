@@ -1,0 +1,141 @@
+# Qualitaetsschranke fuer den GTO Trainer (AP1.T1.6).
+#
+# Pflichtschritte: install -> lint -> test -> build. Jeder Fehlschlag bricht
+# den Lauf ab (GitHub Actions bricht bei Exit-Code != 0 von sich aus ab).
+#
+# Die Integrationstests aus T1.2/T1.3 laufen gegen eine ECHTE Postgres-Instanz,
+# deshalb der Service-Container. Alle hier gesetzten Zugangsdaten sind reine
+# Wegwerf-Testwerte fuer den Lauf - es gibt keine Produktions-Secrets in diesem
+# Repository.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Ein laufender Lauf pro Branch reicht; aeltere abbrechen.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Der Zielhost hat NODE_ENV=production gesetzt; auf dem Runner wird das
+  # bewusst explizit auf development gestellt, damit pnpm die devDependencies
+  # installiert (siehe docs/RUNBOOK.md, Fehlerbehebung).
+  NODE_ENV: development
+  # Reine Testwerte - passend zum Service-Container unten.
+  POSTGRES_USER: gto
+  POSTGRES_PASSWORD: ci-test-password
+  POSTGRES_DB: gto
+  DATABASE_URL: postgres://gto:ci-test-password@127.0.0.1:5432/gto
+  TEST_DATABASE_URL: postgres://gto:ci-test-password@127.0.0.1:5432/gto_test
+
+jobs:
+  quality:
+    name: Lint, Test, Build
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: gto
+          POSTGRES_PASSWORD: ci-test-password
+          POSTGRES_DB: gto
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gto -d gto"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm-Version kommt aus dem Feld "packageManager" in der package.json.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Migrate
+        run: pnpm db:migrate
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+  e2e:
+    name: Smoke-E2E (Login -> Dashboard)
+    runs-on: ubuntu-latest
+    needs: quality
+
+    env:
+      # Wegwerf-Zugangsdaten fuer den Testlauf gegen die CI-Datenbank.
+      # KEIN echtes Passwort - der Benutzer existiert nur in diesem Lauf.
+      E2E_USERNAME: e2e-smoke-user
+      E2E_PASSWORD: ci-e2e-smoke-password
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: gto
+          POSTGRES_PASSWORD: ci-test-password
+          POSTGRES_DB: gto
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gto -d gto"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # Browser-Binary zwischenspeichern - der Download dauert sonst jedes Mal.
+      # Der Lockfile-Hash aendert sich, sobald die Playwright-Version wechselt.
+      - name: Browser-Cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Chromium installieren
+        run: pnpm exec playwright install --with-deps chromium
+
+      # Migration und Testbenutzer erledigt e2e/global-setup.ts; der Lauf
+      # startet Backend und Frontend selbst (Playwright webServer).
+      - name: Smoke-E2E
+        run: pnpm test:e2e
+
+      - name: Bericht bei Fehlschlag sichern
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7

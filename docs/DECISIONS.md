@@ -219,8 +219,12 @@ nachweislich frei). Das Mapping bindet zusätzlich auf **`127.0.0.1`**, nicht au
 Ein fest verdrahteter Port würde beim Start entweder fehlschlagen oder — schlimmer
 — mit einer fremden Instanz kollidieren. Die Bindung an `127.0.0.1` verhindert,
 dass die Entwicklungsdatenbank vom Internet aus erreichbar ist; der Host ist
-öffentlich adressierbar. Auch das Backend läuft auf **3001** statt 3000, weil
-3000 belegt ist.
+öffentlich adressierbar. Auch das Backend läuft nicht auf 3000, weil dieser
+Port belegt ist.
+
+> **Nachtrag (T1.4/T1.5):** Der damals gewählte Backend-Port **3001** ist
+> inzwischen ebenfalls fremd belegt. Verbindlich ist seither **3010**; die
+> vollständige Portvergabe steht in [ADR-0018](#adr-0018--portvergabe-im-deployment-alles-über-variablen-nur-loopback).
 
 ### Alternative (verworfen)
 
@@ -803,3 +807,118 @@ erreichbar ist ausschließlich der Host-Nginx auf 80/443.
   außerhalb von Compose und braucht einen erreichbaren Port.
 - **Unix-Sockets statt TCP** — technisch reizvoll, aber Compose-Volumes für
   Sockets zwischen Host-Nginx und Container sind fehleranfällig.
+
+---
+
+## ADR-0019 — GitHub Actions als Qualitätsschranke
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** AP1.T1.6 verlangt eine automatisierte Schranke aus
+  lint + test + build. Der Kanon lässt GitHub Actions **oder** ein lokales
+  Pre-Push-Skript zu.
+
+### Entscheidung
+
+**GitHub Actions** (`.github/workflows/ci.yml`), zwei Jobs:
+
+| Job       | Inhalt                                              |
+| --------- | --------------------------------------------------- |
+| `quality` | install → lint → migrate → test → build             |
+| `e2e`     | Smoke-E2E (Login → Dashboard), läuft nach `quality` |
+
+Trigger: Push auf `main` und Pull Requests gegen `main`. Node-Version aus
+`.nvmrc`, pnpm-Version aus dem Feld `packageManager`, pnpm-Store und
+Playwright-Browser werden zwischengespeichert.
+
+### Begründung
+
+- Das Repo liegt auf GitHub und ist **öffentlich** — Actions-Minuten sind damit
+  kostenlos, und die Schranke greift auch bei Pull Requests, nicht nur lokal.
+- Ein Pre-Push-Hook lässt sich mit `--no-verify` umgehen und läuft nicht, wenn
+  von einer anderen Maschine gepusht wird. Eine serverseitige Prüfung ist die
+  belastbarere Schranke.
+- Die Integrationstests brauchen ein echtes Postgres. Actions bietet dafür
+  **Service-Container** — lokal müsste jeder Entwickler das selbst bereitstellen.
+- Der Runner ist eine frische Umgebung: Er deckt auf, wenn etwas nur auf diesem
+  Host funktioniert (belegte Ports, `NODE_ENV=production` in der Shell).
+
+### Datenbank in der CI
+
+Ein `postgres:16-alpine`-Service-Container mit `pg_isready`-Healthcheck. Die
+Zugangsdaten im Workflow sind **reine Wegwerf-Testwerte**
+(`gto` / `ci-test-password`) für eine Datenbank, die nach dem Lauf verschwindet.
+Es liegen **keine** Produktions-Secrets im Repository.
+
+`NODE_ENV: development` wird im Workflow explizit gesetzt — nicht, weil der
+Runner es bräuchte, sondern damit die auf dem Zielhost bekannte Falle
+(`NODE_ENV=production` lässt pnpm die devDependencies überspringen) hier
+dokumentiert und ausgeschlossen ist.
+
+**Kein Test wird in der CI ausgeklammert.** Die volle Suite läuft, inklusive
+der DB-Integrationstests und des Smoke-E2E.
+
+### Alternativen (verworfen)
+
+- **Lokales Pre-Push-Skript** — umgehbar, maschinenabhängig, keine
+  PR-Prüfung.
+- **Beides parallel** — zwei Wahrheiten, die auseinanderlaufen.
+- **E2E im selben Job wie `quality`** — ein Fehlschlag im E2E hätte dann kein
+  eigenes Signal; getrennte Jobs zeigen sofort, wo es klemmt.
+
+---
+
+## ADR-0020 — Playwright für den Smoke-E2E-Test
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** Der Kanon fordert für T1.6 genau **einen** durchgehenden
+  Browser-Test: Login → Dashboard.
+
+### Entscheidung
+
+**`@playwright/test`** als Root-Dev-Dependency, Konfiguration in
+`playwright.config.ts`, Test in `e2e/login.spec.ts`. **Nur Chromium.**
+
+Neue Dev-Dependency:
+
+| Paket              | Zweck                                   |
+| ------------------ | --------------------------------------- |
+| `@playwright/test` | Browser-Automatisierung und Test-Runner |
+
+### Begründung
+
+- **`webServer`** startet Backend und Frontend für den Lauf selbst — der Test
+  läuft ohne manuelle Vorbereitung, lokal wie in der CI. Genau das verlangt der
+  Task.
+- **Auto-Waiting** statt fester Wartezeiten: keine `sleep`-Flakiness.
+- Rollen- und Label-basierte Selektoren (`getByRole`, `getByLabel`) passen zu
+  den Frontend-Tests aus T1.4 und brechen nicht bei jeder Umgestaltung.
+- **Nur Chromium**, weil ein Smoke-Test die Funktion belegen soll, nicht
+  Browser-Kompatibilität. Drei Browser verdreifachen nur die Laufzeit.
+- Playwright 1.62 verlangt Node ≥ 20 und passt damit zur `.nvmrc` — anders als
+  drei Pakete aus T1.3/T1.4, die auf ältere Versionen gepinnt werden mussten.
+
+### Testdaten und Ports
+
+- Zugangsdaten kommen **ausschließlich aus Umgebungsvariablen**
+  (`E2E_USERNAME`, `E2E_PASSWORD`); im Test steht kein Passwort.
+- Der Benutzer wird in `e2e/global-setup.ts` reproduzierbar über **die
+  vorhandenen Werkzeuge** angelegt: `pnpm db:migrate` (T1.2) und
+  `pnpm auth:set-password` (T1.3) — kein zweiter, abweichender Weg.
+- Ports sind konfigurierbar (`E2E_BACKEND_PORT` = 3020,
+  `E2E_FRONTEND_PORT` = 5180). Bewusst **nicht** 3010/5174: Diese gehören dem
+  laufenden Deployment bzw. dem Dev-Server, und 3000/3001/5173 sind auf dem
+  Host fremd belegt.
+- Die Datenbank kommt aus `E2E_DATABASE_URL` (Rückfall auf `DATABASE_URL`).
+  Lokal empfiehlt sich eine eigene Datenbank (`gto_e2e`), in der CI ist es
+  ohnehin eine frische Instanz.
+
+### Alternativen (verworfen)
+
+- **Cypress** — vergleichbar tauglich, aber kein eingebautes Starten mehrerer
+  Server und schwergewichtiger in der CI.
+- **Selenium/WebDriver** — deutlich mehr Konfiguration für denselben Zweck.
+- **Kein E2E, nur die Komponententests aus T1.4** — die laufen gegen ein
+  gemocktes Netzwerk und würden einen echten Bruch zwischen Frontend, Proxy und
+  Backend nicht bemerken. Genau diesen Durchstich verlangt der Kanon.

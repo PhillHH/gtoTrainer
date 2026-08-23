@@ -1,7 +1,7 @@
 # Runbook — GTO Trainer
 
-Betriebshandbuch. Stand: AP1.T1.5 — lokales Setup, Datenbankbetrieb,
-Zugangsverwaltung, Frontend **und Deployment inkl. Backup/Restore**.
+Betriebshandbuch. Stand: AP1.T1.6 — lokales Setup, Datenbankbetrieb,
+Zugangsverwaltung, Frontend, Deployment inkl. Backup/Restore **und Tests/CI**.
 
 ---
 
@@ -211,15 +211,15 @@ Regeln:
 
 ```bash
 # 1. CSRF-Token holen (setzt zugleich das Cookie)
-CSRF=$(curl -s -c /tmp/c.txt http://127.0.0.1:3001/api/auth/csrf | jq -r .csrfToken)
+CSRF=$(curl -s -c /tmp/c.txt http://127.0.0.1:3010/api/auth/csrf | jq -r .csrfToken)
 
 # 2. Anmelden
-curl -i -b /tmp/c.txt -c /tmp/c.txt -X POST http://127.0.0.1:3001/api/auth/login \
+curl -i -b /tmp/c.txt -c /tmp/c.txt -X POST http://127.0.0.1:3010/api/auth/login \
   -H 'content-type: application/json' -H "x-csrf-token: $CSRF" \
   -d '{"username":"admin","password":"…"}'
 
 # 3. Geschützte Route
-curl -b /tmp/c.txt http://127.0.0.1:3001/api/auth/me
+curl -b /tmp/c.txt http://127.0.0.1:3010/api/auth/me
 ```
 
 ### Konfiguration
@@ -343,6 +343,66 @@ Die Backend-Tests lösen `@gto/shared` per Vitest-Alias auf die Quellen auf;
 
 ---
 
+### 5.1 Smoke-E2E (Browser)
+
+Ein einziger durchgehender Test: **Login → Dashboard**. Er startet Backend und
+Frontend selbst — es ist keine manuelle Vorbereitung nötig.
+
+```bash
+# einmalig: Browser-Binary holen
+pnpm test:e2e:install
+
+# Lauf (Passwort kommt aus der Umgebung, nie aus dem Code)
+E2E_PASSWORD='ein-langes-testpasswort' pnpm test:e2e
+```
+
+| Variable            | Default          | Bedeutung                               |
+| ------------------- | ---------------- | --------------------------------------- |
+| `E2E_USERNAME`      | `e2e-smoke-user` | Testbenutzer; wird automatisch angelegt |
+| `E2E_PASSWORD`      | — (**Pflicht**)  | Passwort des Testbenutzers              |
+| `E2E_DATABASE_URL`  | `DATABASE_URL`   | Datenbank für den Lauf                  |
+| `E2E_BACKEND_PORT`  | `3020`           | Backend für den Testlauf                |
+| `E2E_FRONTEND_PORT` | `5180`           | Frontend für den Testlauf               |
+
+Die Ports sind bewusst andere als 3010 (laufendes Deployment) und 5174
+(Dev-Server), damit ein E2E-Lauf nichts stört.
+
+**Empfehlung lokal:** eine eigene Datenbank verwenden, damit der Testbenutzer
+nicht in der Entwicklungsdatenbank landet:
+
+```bash
+docker exec gto-postgres psql -U gto -d postgres -c 'create database gto_e2e;'
+E2E_DATABASE_URL='postgres://gto:<passwort>@127.0.0.1:55434/gto_e2e' \
+E2E_PASSWORD='ein-langes-testpasswort' pnpm test:e2e
+```
+
+`e2e/global-setup.ts` migriert die Datenbank (`pnpm db:migrate`) und legt den
+Benutzer über das Passwort-CLI aus T1.3 an — dieselben Werkzeuge wie im
+Normalbetrieb, kein Sonderweg.
+
+### 5.2 Qualitätsschranke (CI)
+
+`.github/workflows/ci.yml` läuft bei **Push auf `main`** und bei **Pull
+Requests**:
+
+| Job       | Schritte                                            |
+| --------- | --------------------------------------------------- |
+| `quality` | install → **lint** → migrate → **test** → **build** |
+| `e2e`     | Chromium installieren → Smoke-E2E                   |
+
+Beide Jobs bekommen einen `postgres:16-alpine`-Service-Container, weil die
+Integrationstests gegen eine echte Datenbank laufen. Die dort gesetzten
+Zugangsdaten sind reine Wegwerf-Testwerte; im Repository liegen keine
+Produktions-Secrets.
+
+Lokal lässt sich dieselbe Kette nachstellen:
+
+```bash
+pnpm install && pnpm lint && pnpm test && pnpm build
+```
+
+---
+
 ## 6. Build-Artefakte
 
 | Workspace         | Ausgabe                                  | Erzeugt von  |
@@ -367,7 +427,7 @@ node apps/backend/dist/server.js
 | `Cannot find module '@gto/shared'`                                                    | Workspace-Links fehlen oder `dist` nicht gebaut                                  | `pnpm install && pnpm build`                                                                                    |
 | `tsc` meldet Fehler in `dist/`                                                        | veraltete Build-Info                                                             | `rm -rf **/dist **/*.tsbuildinfo && pnpm build`                                                                 |
 | `make: command not found`                                                             | GNU Make nicht installiert                                                       | die `pnpm`-Kommandos direkt verwenden                                                                           |
-| Port 3000 belegt                                                                      | anderer Prozess                                                                  | `PORT=3001 pnpm --filter @gto/backend dev`                                                                      |
+| Port belegt beim Backend-Start                                                        | 3000 und 3001 sind auf diesem Host fremd belegt                                  | freien Port wählen, z. B. `PORT=3010 pnpm --filter @gto/backend dev`                                            |
 | `all predefined address pools have been fully subnetted`                              | Dockers Standard-Subnetze sind auf dem Host durch fremde Projekte belegt         | `DOCKER_SUBNET` in der `.env` auf ein freies Subnetz setzen (ADR-0006); **nicht** fremde Netzwerke löschen      |
 | `bind: address already in use` bei `pnpm db:up`                                       | `POSTGRES_HOST_PORT` ist belegt                                                  | freien Port suchen (`ss -ltn`), dann `POSTGRES_HOST_PORT` **und** beide Verbindungs-URLs in der `.env` anpassen |
 | `DATABASE_URL enthaelt noch den Platzhalter aus .env.example`                         | `.env` kopiert, aber nicht bearbeitet                                            | Platzhalter an allen drei Stellen durch dasselbe Passwort ersetzen                                              |
@@ -601,7 +661,5 @@ Die produktive Datenbank war vorher und nachher unverändert
 
 ## 9. Noch nicht abgedeckt
 
-- **CI-Pipeline und Browser-E2E-Test (Playwright)** — beides kommt in
-  **AP1.T1.6**.
 - Der Host-Nginx-vhost und das TLS-Zertifikat sind vorbereitet, aber noch nicht
   eingespielt: Beides erfordert Root auf dem Host (Abschnitte 8.4 und 8.5).

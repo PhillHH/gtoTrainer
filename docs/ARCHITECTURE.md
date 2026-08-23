@@ -1,6 +1,6 @@
 # Architektur — GTO Trainer
 
-Stand: AP1.T1.5 (Deployment & HTTPS). Dieses Dokument wird in jedem Task um
+Stand: AP1.T1.6 (AP1 abgeschlossen). Dieses Dokument wird in jedem Task um
 die jeweiligen Deltas fortgeschrieben.
 
 ## 1. Systemübersicht (Zielarchitektur)
@@ -89,18 +89,18 @@ gtoTrainer/
   Reihenfolge und erzeugt Deklarationen. Das Frontend ist ein Blatt und wird
   nur typgeprüft (`tsc --noEmit`), gebaut wird es von Vite.
 
-## 3. Laufzeit-Komponenten (Ist-Stand nach T1.5)
+## 3. Laufzeit-Komponenten (Ist-Stand nach T1.6)
 
-| Komponente | Technik                 | Zustand nach T1.3                               |
-| ---------- | ----------------------- | ----------------------------------------------- |
-| Backend    | Fastify 5, Node 20, ESM | `GET /healthz` + Auth-API unter `/api/auth/`    |
-| Frontend   | React 18, Vite 6        | Baubar, Platzhalter-Inhalt                      |
-| Shared     | TypeScript              | Health- **und** Auth-Verträge                   |
-| Datenbank  | Postgres 16 (Compose)   | Läuft, Basisschema migriert (5 Tabellen)        |
-| DB-Zugriff | Drizzle ORM + `pg`-Pool | Schema, Migration, Seed, Reset                  |
-| Auth       | argon2id + DB-Sessions  | Login/Logout/me, CSRF, Rate-Limit, Passwort-CLI |
-| Deployment | —                       | folgt in T1.5                                   |
-| CI         | —                       | folgt in T1.6                                   |
+| Komponente | Technik                     | Zustand nach T1.6                                             |
+| ---------- | --------------------------- | ------------------------------------------------------------- |
+| Backend    | Fastify 5, Node 20, ESM     | `GET /healthz` + Auth-API unter `/api/auth/`, containerisiert |
+| Frontend   | React 18, Vite 6, Router 7  | Login, Routing, Sidebar-Shell, Dark Mode, API-Client          |
+| Shared     | TypeScript                  | Health- und Auth-Verträge, von beiden Apps genutzt            |
+| Datenbank  | Postgres 16 (Compose)       | Läuft, Basisschema migriert (5 Tabellen)                      |
+| DB-Zugriff | Drizzle ORM + `pg`-Pool     | Schema, Migration, Seed, Reset                                |
+| Auth       | argon2id + DB-Sessions      | Login/Logout/me, CSRF, Rate-Limit, Passwort-CLI               |
+| Deployment | Docker Compose + Host-Nginx | Container laufen; vhost/TLS offen (Root nötig)                |
+| CI         | GitHub Actions              | lint + test + build + Smoke-E2E                               |
 
 ## 3a. Datenbank-Komponente (neu in T1.2)
 
@@ -352,6 +352,30 @@ Zeitstempel in `BACKUP_DIR` (außerhalb des Repos), mit Rotation über
 `BACKUP_KEEP`. `deploy/restore.sh` spielt eine Sicherung standardmäßig in die
 **separate** Prüfdatenbank `gto_restore_check` ein — die produktive Datenbank
 wird nur mit ausdrücklichem `RESTORE_CONFIRM=yes` überschrieben.
+
+## 3e. Qualitätsschranke (neu in T1.6)
+
+```
+Push auf main / Pull Request
+        │
+        ▼
+GitHub Actions  .github/workflows/ci.yml
+  ┌──────────────────────────────────────────────┐
+  │ Job "quality"   (Service: postgres:16-alpine)│
+  │   install → lint → migrate → test → build    │
+  └───────────────────┬──────────────────────────┘
+                      │ needs
+  ┌───────────────────▼──────────────────────────┐
+  │ Job "e2e"       (Service: postgres:16-alpine)│
+  │   Playwright startet Backend + Frontend      │
+  │   selbst und prüft: Login → Dashboard        │
+  └──────────────────────────────────────────────┘
+```
+
+Der E2E-Lauf nutzt eigene Ports (`E2E_BACKEND_PORT` 3020,
+`E2E_FRONTEND_PORT` 5180), damit er weder das laufende Deployment (3010) noch
+den Dev-Server (5174) stört. Begründungen: [ADR-0019](./DECISIONS.md),
+[ADR-0020](./DECISIONS.md).
 
 ## 4. Querschnitts-Entscheidungen
 
