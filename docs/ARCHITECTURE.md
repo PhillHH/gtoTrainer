@@ -1,7 +1,7 @@
 # Architektur — GTO Trainer
 
-Stand: AP1.T1.4 (Frontend-Shell). Dieses Dokument wird in jedem Task um die
-jeweiligen Deltas fortgeschrieben.
+Stand: AP1.T1.5 (Deployment & HTTPS). Dieses Dokument wird in jedem Task um
+die jeweiligen Deltas fortgeschrieben.
 
 ## 1. Systemübersicht (Zielarchitektur)
 
@@ -67,7 +67,8 @@ gtoTrainer/
 ├── docs/
 │   ├── ap/               Kanonische Arbeitspakete (nur lesen!)
 │   └── status/           Statusberichte je AP
-├── docker-compose.yml    Entwicklungs-Stack (T1.2: nur Postgres)
+├── docker-compose.yml    Compose-Stack (postgres, backend)
+├── deploy/               Deploy-, Backup-, Restore-Skripte, Nginx-vhost
 ├── .env.example          Vorlage der Konfiguration (echte .env ignoriert)
 ├── pnpm-workspace.yaml
 ├── tsconfig.base.json    strikte TS-Basis, von Workspaces geerbt
@@ -88,7 +89,7 @@ gtoTrainer/
   Reihenfolge und erzeugt Deklarationen. Das Frontend ist ein Blatt und wird
   nur typgeprüft (`tsc --noEmit`), gebaut wird es von Vite.
 
-## 3. Laufzeit-Komponenten (Ist-Stand nach T1.4)
+## 3. Laufzeit-Komponenten (Ist-Stand nach T1.5)
 
 | Komponente | Technik                 | Zustand nach T1.3                               |
 | ---------- | ----------------------- | ----------------------------------------------- |
@@ -268,6 +269,90 @@ Begründungen: [ADR-0011](./DECISIONS.md) (Router),
 [ADR-0012](./DECISIONS.md) (Context), [ADR-0013](./DECISIONS.md) (Tokens),
 [ADR-0014](./DECISIONS.md) (Tests), [ADR-0015](./DECISIONS.md) (Dev-Proxy).
 
+## 3d. Deployment-Topologie (neu in T1.5)
+
+```
+                    Internet
+                       │  :80 / :443
+                       ▼
+        ┌──────────────────────────────────┐
+        │  Host-Nginx  (systemd, root)     │   vhost gto.growento.com
+        │  + Certbot                       │   TLS-Terminierung (Stufe B)
+        └───────┬───────────────┬──────────┘
+                │               │
+   statische    │               │  proxy_pass  /api/*, /healthz
+   Auslieferung │               ▼
+                │        127.0.0.1:3010  (BACKEND_HOST_PORT)
+                │               │
+                ▼               ▼
+   /home/phillip/gto-static   ┌──────────────────────────────┐
+   (FRONTEND_STATIC_DIR)      │  Compose-Netz  gto-net        │
+   index.html + assets/       │  10.89.0.0/24                 │
+   SPA-Fallback via try_files │                               │
+                              │  ┌────────────┐               │
+                              │  │ gto-backend│ :3000 intern  │
+                              │  │ Fastify    │               │
+                              │  └─────┬──────┘               │
+                              │        │ postgres:5432        │
+                              │  ┌─────▼──────┐               │
+                              │  │gto-postgres│               │
+                              │  └─────┬──────┘               │
+                              └────────┼──────────────────────┘
+                                       ▼
+                                 Volume gto-pgdata
+```
+
+### Tatsächlich verwendete Ports
+
+| Was                | Port                         | Bindung     | Öffentlich |
+| ------------------ | ---------------------------- | ----------- | ---------- |
+| Host-Nginx         | 80, 443                      | `0.0.0.0`   | **ja**     |
+| Backend-Container  | `BACKEND_HOST_PORT` = 3010   | `127.0.0.1` | nein       |
+| Backend intern     | 3000                         | Container   | nein       |
+| Postgres-Container | `POSTGRES_HOST_PORT` = 55434 | `127.0.0.1` | nein       |
+| Postgres intern    | 5432                         | Container   | nein       |
+
+Begründung der Portwahl und der Loopback-Bindung: [ADR-0018](./DECISIONS.md).
+
+### Was wo läuft
+
+| Bestandteil        | Form                                  | Datei                                  |
+| ------------------ | ------------------------------------- | -------------------------------------- |
+| Backend            | Container (`gto-backend`)             | `apps/backend/Dockerfile`              |
+| Datenbank          | Container (`gto-postgres`)            | `docker-compose.yml`                   |
+| Frontend           | **statische Dateien**, kein Container | `apps/frontend/Dockerfile` (nur Build) |
+| Reverse Proxy, TLS | Host-Nginx + Certbot                  | `deploy/nginx/gto.growento.com.conf`   |
+
+Das Frontend läuft bewusst **nicht** als Container: Der Host-Nginx liefert die
+gebauten Assets direkt aus, damit kein zweiter nginx bzw. Reverse Proxy
+entsteht ([ADR-0016](./DECISIONS.md)).
+
+### Deploy-Ablauf
+
+`deploy/deploy.sh` — idempotent, bricht bei jedem Fehler ab:
+
+```
+git pull --ff-only
+  → docker compose build backend
+  → Frontend-Assets bauen und exportieren
+  → docker compose up -d postgres   (auf healthy warten)
+  → Migrationen als EINMALIGER Schritt (ADR-0017)
+  → docker compose up -d --force-recreate backend
+  → Assets per Verzeichnistausch veröffentlichen
+  → Healthcheck gegen /healthz
+```
+
+Der Host-Nginx wird dabei **nicht** angefasst — sein vhost ist eine einmalige,
+root-pflichtige Einrichtung (siehe `docs/RUNBOOK.md`, Abschnitt 8).
+
+### Sicherung
+
+`deploy/backup.sh` erzeugt `pg_dump` (gzip) und ein Archiv von `data/` mit
+Zeitstempel in `BACKUP_DIR` (außerhalb des Repos), mit Rotation über
+`BACKUP_KEEP`. `deploy/restore.sh` spielt eine Sicherung standardmäßig in die
+**separate** Prüfdatenbank `gto_restore_check` ein — die produktive Datenbank
+wird nur mit ausdrücklichem `RESTORE_CONFIRM=yes` überschrieben.
+
 ## 4. Querschnitts-Entscheidungen
 
 - **Node 20.19.6**, fixiert in `.nvmrc`; `engines.node >= 20.19.0`.
@@ -281,5 +366,6 @@ Begründungen siehe [DECISIONS.md](./DECISIONS.md).
 
 ## 5. Offene Architektur-Punkte
 
-- Container-Topologie, Nginx-Vhost, Backup/Restore (T1.5)
+- Host-Nginx-vhost und TLS sind vorbereitet, aber noch nicht eingespielt —
+  beides erfordert Root auf dem Host (siehe `docs/status/AP01.md`).
 - Ingestion-Pipeline für `data/book-source/` (AP3)

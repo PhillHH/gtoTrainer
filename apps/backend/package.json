@@ -5,6 +5,9 @@
   "description": "Fastify-Backend des GTO Trainers",
   "type": "module",
   "main": "./dist/server.js",
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -b",
     "dev": "tsx watch src/server.ts",

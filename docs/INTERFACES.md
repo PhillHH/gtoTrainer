@@ -3,7 +3,7 @@
 Dieses Dokument beschreibt, **wo** sich Komponenten und Arbeitspakete
 gegenseitig berühren. Jeder Task trägt seine Deltas hier nach.
 
-Stand: AP1.T1.4.
+Stand: AP1.T1.5.
 
 ---
 
@@ -258,6 +258,71 @@ Der Modus hängt an `data-theme` am `<html>`-Element; Startwert ist
 
 ---
 
+## 2c. Deployment-Schnittstellen (AP1.T1.5)
+
+### Was nach außen liegt
+
+Öffentlich erreichbar ist **ausschließlich der Host-Nginx** auf 80/443. Alle
+Container-Ports sind an `127.0.0.1` gebunden.
+
+| Von außen (`https://gto.growento.com`) | Ziel                               | Session nötig |
+| -------------------------------------- | ---------------------------------- | ------------- |
+| `/api/*`                               | Backend-Container `127.0.0.1:3010` | je Endpunkt   |
+| `/healthz`                             | Backend-Container                  | **nein**      |
+| alles andere                           | statische Assets, SPA-Fallback     | nein          |
+
+| Nur lokal (nicht öffentlich) | Port                         |
+| ---------------------------- | ---------------------------- |
+| Backend-Container            | `BACKEND_HOST_PORT` (3010)   |
+| Postgres-Container           | `POSTGRES_HOST_PORT` (55434) |
+
+`/healthz` bleibt bewusst öffentlich und ohne Session — genau dafür wurde die
+Ausnahme in T1.3 festgelegt (siehe Abschnitt 2a). Der Host-Nginx und der
+Container-Healthcheck rufen ihn ohne Anmeldung auf.
+
+### Proxy-Vertrag (wichtig für das Secure-Cookie)
+
+Der vhost setzt `X-Forwarded-Proto $scheme`. Fehlt dieser Header, kann das
+Backend nicht erkennen, dass die Verbindung außen TLS-gesichert ist. Das
+`Secure`-Flag des Session-Cookies wird dennoch **nicht** daraus abgeleitet,
+sondern explizit über `COOKIE_SECURE` gesetzt (Container-Default `true`) —
+so ist das Verhalten unabhängig von der Proxy-Konfiguration eindeutig.
+
+| Header              | Wert                         | Zweck                       |
+| ------------------- | ---------------------------- | --------------------------- |
+| `Host`              | `$host`                      | Origin-Prüfung, Redirects   |
+| `X-Real-IP`         | `$remote_addr`               | Rate-Limit je Client (T1.3) |
+| `X-Forwarded-For`   | `$proxy_add_x_forwarded_for` | Nachvollziehbarkeit         |
+| `X-Forwarded-Proto` | `$scheme`                    | Schema-Erkennung hinter TLS |
+
+### Einen neuen Service in Compose ergänzen
+
+1. Service in `docker-compose.yml` anlegen.
+2. **Keinen Host-Port hart verdrahten.** Immer eine Pflichtvariable verwenden
+   und an Loopback binden:
+   ```yaml
+   ports:
+     - '127.0.0.1:${MEIN_SERVICE_PORT:?MEIN_SERVICE_PORT fehlt}:8080'
+   ```
+3. Variable mit Default und Prüfhinweis in `.env.example` dokumentieren; vorher
+   `ss -ltn | grep <port>` prüfen.
+4. `healthcheck` ergänzen und abhängige Services über
+   `depends_on: { condition: service_healthy }` verknüpfen.
+5. Soll der Service von außen erreichbar sein, den Pfad im vhost
+   `deploy/nginx/gto.growento.com.conf` ergänzen — **niemals** einen weiteren
+   Port direkt ins Internet öffnen.
+
+### Betriebs-Skripte
+
+| Skript                  | Zweck                                                   |
+| ----------------------- | ------------------------------------------------------- |
+| `deploy/deploy.sh`      | Build → Migration → Neustart → Healthcheck (idempotent) |
+| `deploy/backup.sh`      | `pg_dump` + `data/`-Archiv mit Rotation                 |
+| `deploy/restore.sh`     | Wiederherstellung, standardmäßig in eine Prüfdatenbank  |
+| `deploy/smoke-check.sh` | Erreichbarkeitsprüfung gegen eine laufende Instanz      |
+
+---
+
 ## 3. Datenbankschema (Basisschema, AP1.T1.2)
 
 Quelle der Wahrheit ist `apps/backend/src/db/schema.ts`. Alles Weitere
@@ -407,7 +472,6 @@ Details siehe [`data/book-source/README.md`](../data/book-source/README.md).
 
 ## 7. Noch nicht existierende Schnittstellen
 
-| Schnittstelle                                 | Entsteht in |
-| --------------------------------------------- | ----------- |
-| Nginx-Vhost, Compose-Netzwerk, Backup/Restore | AP1.T1.5    |
-| CI-Pipeline, E2E-Tests                        | AP1.T1.6    |
+| Schnittstelle          | Entsteht in |
+| ---------------------- | ----------- |
+| CI-Pipeline, E2E-Tests | AP1.T1.6    |

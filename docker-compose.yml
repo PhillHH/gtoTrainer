@@ -1,10 +1,12 @@
-# Entwicklungs-Stack. In AP1.T1.2 enthaelt er ausschliesslich die Datenbank;
-# Backend- und Frontend-Container folgen in AP1.T1.5.
+# Compose-Stack des GTO Trainers.
 #
-# Der Host-Port ist bewusst NICHT auf 5432 verdrahtet: Auf dem Zielhost laufen
-# bereits fremde Postgres-Instanzen. Der Port kommt aus POSTGRES_HOST_PORT
-# (siehe .env.example) und ist auf 127.0.0.1 gebunden, damit die Datenbank
-# nicht oeffentlich erreichbar ist.
+# Enthaelt Datenbank und Backend. Das Frontend wird NICHT containerisiert
+# betrieben: Der Host-Nginx liefert die statischen Assets direkt aus
+# (siehe ADR-0016) - so entsteht kein zweiter nginx bzw. Reverse Proxy.
+#
+# Alle nach aussen gemappten Host-Ports kommen aus Umgebungsvariablen und sind
+# an 127.0.0.1 gebunden. Oeffentlich erreichbar ist ausschliesslich der
+# Host-Nginx auf 80/443.
 
 services:
   postgres:
@@ -25,6 +27,43 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
+
+  backend:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    image: gto-backend:latest
+    container_name: gto-backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      # Container-interner Port; nach aussen gemappt ueber BACKEND_HOST_PORT.
+      PORT: '3000'
+      HOST: 0.0.0.0
+      # Im Compose-Netz wird der Service-Name aufgeloest - nicht der Host-Port.
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      MIGRATIONS_DIR: /app/drizzle
+      # Hinter TLS muss das Session-Cookie das Secure-Flag tragen (ADR-0008).
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      COOKIE_SAMESITE: ${COOKIE_SAMESITE:-lax}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-168}
+      LOGIN_RATE_LIMIT_MAX_ATTEMPTS: ${LOGIN_RATE_LIMIT_MAX_ATTEMPTS:-5}
+      LOGIN_RATE_LIMIT_WINDOW_MINUTES: ${LOGIN_RATE_LIMIT_WINDOW_MINUTES:-15}
+      TOTP_ENABLED: ${TOTP_ENABLED:-false}
+    ports:
+      - '127.0.0.1:${BACKEND_HOST_PORT:?BACKEND_HOST_PORT fehlt - .env aus .env.example anlegen}:3000'
+    depends_on:
+      postgres:
+        # Das Backend startet erst, wenn die Datenbank Anfragen annimmt.
+        condition: service_healthy
+    healthcheck:
+      # busybox-wget ist in node:alpine enthalten; kein curl noetig.
+      test: ['CMD-SHELL', 'wget -q -O- http://127.0.0.1:3000/healthz | grep -q ''"ok"''']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
 volumes:
   gto-pgdata:

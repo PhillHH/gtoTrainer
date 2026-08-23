@@ -1,8 +1,7 @@
 # Runbook — GTO Trainer
 
-Betriebshandbuch. Stand: AP1.T1.4 — lokales Setup, Datenbankbetrieb,
-Zugangsverwaltung **und Frontend**. Deployment, Backup und Restore folgen in
-AP1.T1.5.
+Betriebshandbuch. Stand: AP1.T1.5 — lokales Setup, Datenbankbetrieb,
+Zugangsverwaltung, Frontend **und Deployment inkl. Backup/Restore**.
 
 ---
 
@@ -394,14 +393,215 @@ pnpm install && pnpm build
 
 ---
 
-## 8. Noch nicht abgedeckt
+## 8. Deployment auf dem Server
 
-Die folgenden Abschnitte entstehen in **AP1.T1.5**:
+### 8.1 Überblick
 
-- Backend- und Frontend-Container im Compose-Stack (Postgres läuft seit T1.2)
-- Nginx-Vhost auf dem Host inkl. TLS via Certbot
-- Deploy-Ablauf und Rollback
-- Datenbank-Backup und Restore
-- Log- und Healthcheck-Betrieb
+| Bestandteil        | Läuft als                        | Wer richtet ein       |
+| ------------------ | -------------------------------- | --------------------- |
+| Postgres, Backend  | Docker-Compose-Container         | `deploy/deploy.sh`    |
+| Frontend           | statische Dateien im Dateisystem | `deploy/deploy.sh`    |
+| Reverse Proxy, TLS | Host-Nginx + Certbot             | **einmalig als root** |
 
-Login und Passwort-CLI sind seit **AP1.T1.3** vorhanden (Abschnitt 4b).
+### 8.2 Voraussetzungen (einmalig)
+
+```bash
+cp .env.example .env      # danach ausfüllen, siehe Abschnitt 2
+```
+
+Mindestens setzen: `POSTGRES_PASSWORD`, `DATABASE_URL`, `BACKEND_HOST_PORT`,
+`POSTGRES_HOST_PORT`, `FRONTEND_STATIC_DIR`, `BACKUP_DIR`.
+Für den TLS-Betrieb zusätzlich:
+
+```
+COOKIE_SECURE=true
+ALLOWED_ORIGINS=https://gto.growento.com
+```
+
+Vor dem ersten Start prüfen, dass die gewählten Ports frei sind:
+
+```bash
+ss -ltn | grep -E ':(3010|55434)' || echo "beide frei"
+```
+
+### 8.3 Deployen
+
+```bash
+./deploy/deploy.sh              # mit git pull
+./deploy/deploy.sh --no-pull    # ohne git pull
+```
+
+Das Skript ist **idempotent** und bricht bei jedem Fehler mit Exit-Code ≠ 0 ab.
+Ablauf: Sourcen → Images bauen → Datenbank hochfahren → **Migrationen als
+eigener Schritt** ([ADR-0017](./DECISIONS.md)) → Backend neu starten → Assets
+veröffentlichen → Healthcheck.
+
+Danach prüfen:
+
+```bash
+docker compose ps
+./deploy/smoke-check.sh
+```
+
+### 8.4 Host-Nginx-vhost einspielen (einmalig, **als root**)
+
+> Diese Schritte brauchen Root-Rechte auf dem Host. Sie sind **nicht** Teil
+> von `deploy.sh`, damit ein normaler Deploy keine Root-Rechte benötigt.
+
+```bash
+# 1. vhost kopieren
+sudo cp /home/phillip/gto/deploy/nginx/gto.growento.com.conf \
+        /etc/nginx/sites-available/gto.growento.com.conf
+
+# 2. aktivieren
+sudo ln -sfn /etc/nginx/sites-available/gto.growento.com.conf \
+             /etc/nginx/sites-enabled/gto.growento.com.conf
+
+# 3. Nginx-Worker muss die Assets lesen dürfen
+sudo chmod o+x /home/phillip
+sudo chmod -R a+rX /home/phillip/gto-static
+
+# 4. testen und übernehmen
+sudo nginx -t
+sudo systemctl reload nginx
+
+# 5. verifizieren
+curl -i http://gto.growento.com/healthz
+ls -l /etc/nginx/sites-enabled/ | grep gto
+```
+
+Passen `BACKEND_HOST_PORT` oder `FRONTEND_STATIC_DIR` nicht zu den Defaults,
+müssen `upstream gto_backend` bzw. `root` in der vhost-Datei angepasst werden.
+
+### 8.5 TLS mit Certbot (Stufe B, **als root**)
+
+Voraussetzung: Der A-Record der Domain zeigt auf die Server-IP.
+
+```bash
+# Vorher prüfen — beide Ausgaben müssen übereinstimmen:
+dig +short gto.growento.com
+curl -s -4 https://ifconfig.me; echo
+
+# Zertifikat ausstellen; certbot ergänzt HTTPS-Block und Redirect selbst
+sudo certbot --nginx -d gto.growento.com --redirect
+
+# Ergebnis prüfen
+curl -I http://gto.growento.com/          # erwartet: 301 nach https
+curl -I https://gto.growento.com/healthz  # erwartet: 200
+sudo certbot renew --dry-run              # automatische Erneuerung
+```
+
+Nach der Umstellung in der `.env` setzen und neu deployen, damit das
+Session-Cookie das `Secure`-Flag trägt:
+
+```
+COOKIE_SECURE=true
+ALLOWED_ORIGINS=https://gto.growento.com
+```
+
+```bash
+./deploy/deploy.sh --no-pull
+```
+
+> **Zertifikat nie „auf Verdacht" anfordern.** Zeigt die DNS noch nicht auf den
+> Server, schlägt die Anfrage fehl und zählt auf das Let's-Encrypt-Limit.
+
+### 8.6 Sicherung
+
+```bash
+./deploy/backup.sh
+```
+
+Erzeugt in `BACKUP_DIR` (Default `~/gto-backups`, **außerhalb des Repos**):
+
+- `gto-db-<zeitstempel>.sql.gz` — `pg_dump --clean --if-exists`
+- `gto-data-<zeitstempel>.tar.gz` — Inhalt von `data/`
+
+Es werden `BACKUP_KEEP` (Default 14) Sicherungen je Typ aufgehoben, ältere
+gelöscht. Für den regelmäßigen Lauf genügt ein Cron-Eintrag:
+
+```bash
+crontab -e
+# täglich 03:30
+30 3 * * * ./deploy/backup.sh >> /home/phillip/gto-backups/backup.log 2>&1
+```
+
+### 8.7 Wiederherstellung
+
+**Prüflauf** (empfohlen; die produktive Datenbank bleibt unberührt):
+
+```bash
+./deploy/restore.sh ~/gto-backups/gto-db-<zeitstempel>.sql.gz
+```
+
+Das Skript legt die separate Datenbank `gto_restore_check` an, spielt den Dump
+ein und prüft Tabellen und Zeilenzahlen. Weniger als fünf Tabellen ⇒ Abbruch
+mit Exit-Code ≠ 0.
+
+**Ernstfall** (überschreibt die produktive Datenbank):
+
+```bash
+docker compose stop backend
+RESTORE_CONFIRM=yes ./deploy/restore.sh ~/gto-backups/gto-db-<zeitstempel>.sql.gz gto
+docker compose start backend
+./deploy/smoke-check.sh
+```
+
+Prüfdatenbank hinterher entfernen:
+
+```bash
+docker exec gto-postgres psql -U gto -d postgres -c 'drop database "gto_restore_check";'
+```
+
+### 8.8 Restore-Protokoll (durchgeführt am 2026-08-23)
+
+Der Prüflauf wurde tatsächlich ausgeführt, nicht nur beschrieben:
+
+```
+$ ./deploy/backup.sh
+[backup] Sichere Datenbank 'gto' nach /home/phillip/gto-backups/gto-db-20260823-201652.sql.gz ...
+[backup] Sichere data/ nach /home/phillip/gto-backups/gto-data-20260823-201652.tar.gz ...
+-rw-r--r-- 1 phillip phillip 1,2K gto-data-20260823-201652.tar.gz
+-rw-r--r-- 1 phillip phillip 2,4K gto-db-20260823-201652.sql.gz
+[backup] ERFOLGREICH: Sicherung abgeschlossen.
+
+$ ./deploy/restore.sh /home/phillip/gto-backups/gto-db-20260823-201652.sql.gz
+[restore] Ziel-Datenbank: gto_restore_check
+[restore] Spiele Dump ein ...
+--- Tabellen in gto_restore_check ---
+config
+job_queue
+llm_call_log
+session
+user
+--- Zeilenzahlen ---
+config=4 user=1 session=1 job_queue=0 llm_call_log=0
+[restore] ERFOLGREICH: Wiederherstellung geprueft (5 Tabellen).
+```
+
+Die produktive Datenbank war vorher und nachher unverändert
+(`config=4 user=1`).
+
+### 8.9 Fehlerbehebung im Betrieb
+
+| Symptom                                                                  | Ursache                                                      | Abhilfe                                                                       |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------ | ----------------------------------------------------------------------------- |
+| `docker compose` meldet `BACKEND_HOST_PORT fehlt`                        | Variable nicht in der `.env`                                 | aus `.env.example` übernehmen                                                 |
+| `bind: address already in use`                                           | gewählter Host-Port inzwischen fremd belegt                  | freien Port suchen (`ss -ltn`), `.env` **und** `upstream` im vhost anpassen   |
+| Backend bleibt `health: starting`                                        | Datenbank nicht erreichbar oder Migration fehlt              | `docker compose logs backend`, dann `./deploy/deploy.sh --no-pull`            |
+| Login gelingt, Folge-Request ist 401 — **Cookie fehlt hinter dem Proxy** | `COOKIE_SECURE=true`, aber Zugriff über **http** statt https | entweder TLS aktivieren oder für HTTP-Betrieb `COOKIE_SECURE=false` setzen    |
+| Alle POSTs `403 csrf_failed`                                             | `ALLOWED_ORIGINS` gesetzt, aber Aufruf-Origin fehlt darin    | Origin ergänzen (`https://gto.growento.com`) oder Variable leeren             |
+| Nginx liefert `403 Forbidden` für `/`                                    | www-data darf `FRONTEND_STATIC_DIR` nicht lesen              | `sudo chmod o+x /home/phillip && sudo chmod -R a+rX /home/phillip/gto-static` |
+| Direktaufruf `/drills` liefert 404                                       | SPA-Fallback fehlt im vhost                                  | `try_files $uri $uri/ /index.html;` im `location /`-Block prüfen              |
+| `pnpm`-Befehle installieren keine devDependencies                        | `NODE_ENV=production` in der Shell                           | `NODE_ENV=development pnpm install`; die Dockerfiles setzen das selbst        |
+| `certbot` schlägt fehl                                                   | DNS zeigt nicht auf den Server                               | erst `dig +short gto.growento.com` prüfen, sonst nicht anfordern              |
+| Deploy meldet Erfolg, App ist alt                                        | Browser-Cache auf `index.html`                               | vhost setzt `Cache-Control: no-cache` für `index.html` — hart neu laden       |
+
+---
+
+## 9. Noch nicht abgedeckt
+
+- **CI-Pipeline und Browser-E2E-Test (Playwright)** — beides kommt in
+  **AP1.T1.6**.
+- Der Host-Nginx-vhost und das TLS-Zertifikat sind vorbereitet, aber noch nicht
+  eingespielt: Beides erfordert Root auf dem Host (Abschnitte 8.4 und 8.5).

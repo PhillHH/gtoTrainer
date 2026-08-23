@@ -1,10 +1,17 @@
 import { resolve } from 'node:path';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { createDb } from './client.js';
-import { findRepoRoot, loadConfig } from '../config/env.js';
+import { loadConfig, tryFindRepoRoot } from '../config/env.js';
 
-/** Verzeichnis der versionierten SQL-Migrationen (apps/backend/drizzle). */
-export const MIGRATIONS_FOLDER = resolve(findRepoRoot(), 'apps/backend/drizzle');
+/**
+ * Verzeichnis der versionierten SQL-Migrationen.
+ *
+ * Im Repo liegt es unter `apps/backend/drizzle`. Im Container gibt es keine
+ * Repo-Struktur; dort zeigt `MIGRATIONS_DIR` direkt auf das Verzeichnis.
+ */
+export const MIGRATIONS_FOLDER =
+  process.env['MIGRATIONS_DIR'] ??
+  resolve(tryFindRepoRoot() ?? process.cwd(), 'apps/backend/drizzle');
 
 /**
  * Spielt alle noch nicht angewandten Migrationen gegen die angegebene

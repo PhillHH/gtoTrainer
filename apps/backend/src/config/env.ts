@@ -22,21 +22,32 @@ export class ConfigError extends Error {
  * Sucht die Repo-Wurzel, indem vom Startverzeichnis aus nach oben gelaufen
  * wird, bis `pnpm-workspace.yaml` gefunden ist.
  *
+ * Gibt `undefined` zurueck, wenn keine gefunden wird - genau das ist der Fall
+ * im Container, wo nur das gebuendelte Paket liegt und die Konfiguration ueber
+ * echte Umgebungsvariablen kommt.
+ *
  * Bewusst nicht ueber `import.meta.dirname`: drizzle-kit laedt
  * `drizzle.config.ts` in einem Kontext, in dem das undefined ist.
  */
-export function findRepoRoot(startDir: string = process.cwd()): string {
+export function tryFindRepoRoot(startDir: string = process.cwd()): string | undefined {
   let current = resolve(startDir);
   for (;;) {
     if (existsSync(resolve(current, 'pnpm-workspace.yaml'))) return current;
     const parent = dirname(current);
-    if (parent === current) {
-      throw new ConfigError(
-        `Repo-Wurzel nicht gefunden (keine pnpm-workspace.yaml oberhalb von ${startDir}).`,
-      );
-    }
+    if (parent === current) return undefined;
     current = parent;
   }
+}
+
+/** Wie {@link tryFindRepoRoot}, wirft aber, wenn keine Wurzel gefunden wird. */
+export function findRepoRoot(startDir: string = process.cwd()): string {
+  const root = tryFindRepoRoot(startDir);
+  if (root === undefined) {
+    throw new ConfigError(
+      `Repo-Wurzel nicht gefunden (keine pnpm-workspace.yaml oberhalb von ${startDir}).`,
+    );
+  }
+  return root;
 }
 
 let envFileLoaded = false;
@@ -49,7 +60,12 @@ export function loadEnvFile(): void {
   if (envFileLoaded) return;
   envFileLoaded = true;
 
-  const envPath = resolve(findRepoRoot(), '.env');
+  // Im Container gibt es keine Repo-Wurzel und keine .env - die Konfiguration
+  // kommt dort direkt aus den Umgebungsvariablen von Compose.
+  const root = tryFindRepoRoot();
+  if (root === undefined) return;
+
+  const envPath = resolve(root, '.env');
   if (existsSync(envPath)) {
     process.loadEnvFile(envPath);
   }

@@ -663,3 +663,143 @@ geändert — kein CORS-Plugin, keine neue Konfiguration.
   Dependency, und die Dev-Umgebung wiche von der Produktion ab.
 - **Frontend und Backend auf demselben Port** — hieße, die Vite-Assets vom
   Fastify-Server auszuliefern; das verschiebt Dev-Komfort ohne Not.
+
+---
+
+## ADR-0016 — Frontend-Assets direkt vom Host-Nginx, kein Frontend-Container
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** AP1.T1.5 lässt offen, ob die gebauten Frontend-Assets von einem
+  schlanken Static-Server im Container oder direkt vom Host-Nginx ausgeliefert
+  werden. Die Umgebungs-Vorgabe ist eindeutig: **kein Reverse-Proxy-Container,
+  ausdrücklich auch kein nginx-Container.**
+
+### Entscheidung
+
+Die Assets werden **in einem Container gebaut**, aber **nicht aus einem
+Container ausgeliefert**:
+
+1. `apps/frontend/Dockerfile` baut sie in einer Build-Stage; die letzte Stage
+   (`assets`, auf `scratch`) enthält nur das fertige `dist/`.
+2. Der Deploy exportiert diese Stage per BuildKit
+   (`docker build --target assets --output type=local,…`).
+3. Das Ergebnis landet per Verzeichnistausch in `FRONTEND_STATIC_DIR`
+   (Default `/home/phillip/gto-static`), das der Host-Nginx als `root`
+   ausliefert.
+
+Im Compose-Stack laufen damit nur **zwei** Services: `postgres` und `backend`.
+
+### Begründung
+
+- Ein Static-Server-Container wäre entweder nginx (explizit ausgeschlossen)
+  oder ein weiterer Prozess, der genau das tut, was der Host-Nginx ohnehin
+  kann — ein zusätzlicher Netzwerk-Hop ohne Gegenwert.
+- Der Host-Nginx beherrscht `try_files` für den SPA-Fallback, `gzip` und
+  Cache-Header nativ. Vite versieht Assets mit Hash, deshalb `immutable` für
+  `/assets/` und `no-cache` für `index.html`.
+- Der Build bleibt trotzdem reproduzierbar und containerisiert — die
+  Node-/pnpm-Version ist im Dockerfile festgelegt, nicht die des Hosts.
+- Weniger laufende Container heißt weniger Speicher auf einem Host, der sich
+  bereits über 30 fremde Container teilt.
+
+### Abweichung vom Kanon
+
+`docs/ap/AP01.md` nennt unter T1.5 die Services „backend, frontend-static,
+postgres". Ein `frontend-static`-Service entsteht hier **nicht**. Das ist
+bewusst: Die Aufgabenstellung des Tasks erlaubt beide Wege ausdrücklich
+(„Static-Server im Container **ODER** Bind-Mount/Kopie in ein vom Host-Nginx
+direkt ausgeliefertes Verzeichnis"), und die härtere Vorgabe „kein
+nginx-Container" schließt die naheliegende Container-Variante aus. Funktional
+ist das Ergebnis identisch.
+
+### Alternativen (verworfen)
+
+- **`nginx:alpine` als `frontend-static`** — durch die Umgebungs-Vorgabe
+  ausgeschlossen.
+- **Node-basierter Static-Server (`serve`, `sirv`)** — neue Dependency und ein
+  weiterer Prozess für eine Aufgabe, die der Host-Nginx besser erledigt.
+- **Assets vom Backend ausliefern** — vermischt API und Auslieferung und
+  verschenkt Nginx' statisches Caching.
+
+---
+
+## ADR-0017 — Migrationen als eigener Schritt im Deploy, nicht beim Backend-Start
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** Beim Deploy muss das Schema aktuell sein. Möglich wären ein
+  Migrationslauf beim Start des Backends oder ein eigener Schritt im
+  Deploy-Skript.
+
+### Entscheidung
+
+Ein **einmaliger, eigener Schritt** im Deploy-Skript, **vor** dem Neustart des
+Backends:
+
+```bash
+docker compose run --rm --no-deps backend node dist/db/cli-migrate.js
+```
+
+### Begründung
+
+- **Fehler brechen den Deploy ab.** Schlägt die Migration fehl, endet
+  `deploy.sh` mit Exit-Code ≠ 0, und das alte Backend läuft unverändert
+  weiter. Beim Start-Ansatz würde der Container in eine Restart-Schleife
+  laufen, während der Deploy „erfolgreich" gemeldet hätte.
+- **Kein Wettlauf.** Bei mehreren Backend-Instanzen (heute eine, künftig
+  denkbar) würden alle gleichzeitig migrieren. Der eigene Schritt läuft
+  garantiert genau einmal.
+- **Idempotent.** Drizzle führt Buch in `drizzle.__drizzle_migrations` und
+  überspringt bereits eingespielte Dateien — wiederholte Deploys sind
+  unproblematisch.
+- `--no-deps` verhindert, dass Compose dafür weitere Services hochzieht;
+  Postgres wurde im Schritt davor bereits als `healthy` bestätigt.
+
+### Alternativen (verworfen)
+
+- **Migration beim Backend-Start** — bequem, aber verschleiert Fehler und
+  skaliert nicht.
+- **Migration von Hand** — vergisst man; Deploys wären nicht reproduzierbar.
+- **Init-Container** — dasselbe Ergebnis, aber mehr Compose-Mechanik als nötig.
+
+---
+
+## ADR-0018 — Portvergabe im Deployment: alles über Variablen, nur Loopback
+
+- **Datum:** 2026-08-23
+- **Status:** angenommen
+- **Kontext:** Der Host ist stark belegt. Im Verlauf von AP1 waren nacheinander
+  3000, 3001, 5173, 5432, 55432 und 55433 durch fremde Dienste besetzt — die
+  Belegung ändert sich also über die Zeit.
+
+### Entscheidung
+
+| Dienst   | Variable             | Default | Bindung     |
+| -------- | -------------------- | ------- | ----------- |
+| Backend  | `BACKEND_HOST_PORT`  | `3010`  | `127.0.0.1` |
+| Postgres | `POSTGRES_HOST_PORT` | `55434` | `127.0.0.1` |
+
+Kein Port ist in `docker-compose.yml` fest verdrahtet; fehlt eine Variable,
+bricht Compose mit einer erklärenden Meldung ab (`${VAR:?…}`). Öffentlich
+erreichbar ist ausschließlich der Host-Nginx auf 80/443.
+
+### Begründung
+
+- **Loopback-Bindung** verhindert, dass Backend oder Datenbank am Internet
+  hängen. Der Host hat eine öffentliche IP; ein `0.0.0.0`-Mapping wäre sofort
+  von außen erreichbar.
+- **Pflichtvariablen statt Defaults im Compose-File:** Ein stiller Default
+  würde bei Portwechsel unbemerkt auf einen belegten Port zeigen. Die
+  `:?`-Syntax erzwingt eine bewusste Angabe in der `.env`.
+- Der container-interne Port ist fest `3000` — im eigenen Namensraum gibt es
+  keinen Konflikt, und der Healthcheck kann ihn fest annehmen.
+
+### Alternativen (verworfen)
+
+- **Feste Ports** — kollidieren nachweislich; 3001 war bei T1.3 noch frei und
+  bei T1.4 belegt.
+- **Gar kein Port-Mapping (nur Compose-intern)** — der Host-Nginx läuft
+  außerhalb von Compose und braucht einen erreichbaren Port.
+- **Unix-Sockets statt TCP** — technisch reizvoll, aber Compose-Volumes für
+  Sockets zwischen Host-Nginx und Container sind fehleranfällig.

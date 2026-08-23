@@ -1,0 +1,28 @@
+# Build-Kontext klein und frei von Geheimnissen halten.
+.git
+.gitignore
+node_modules
+**/node_modules
+dist
+**/dist
+build
+**/build
+coverage
+**/coverage
+*.tsbuildinfo
+**/*.tsbuildinfo
+
+# Secrets - niemals ins Image
+.env
+.env.*
+!.env.example
+
+# Buchquellen (AP3) gehoeren nicht ins Image
+data/
+
+# Nicht benoetigt fuer den Build
+docs/
+deploy/backups/
+*.log
+.vscode
+.idea
