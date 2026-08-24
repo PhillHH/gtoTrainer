@@ -2001,3 +2001,254 @@ weil die Zielgruppen verschieden sind: hier ein Mensch beim Prüfen, dort
 Folge-APs beim Kontext-Retrieval.
 
 **Keine neuen Dependencies in T3.2.**
+
+---
+
+## ADR-0032 — Chart-Daten: geschlossene Aktionsmenge, Zellen als eigene Tabelle, Spot deterministisch aus der Unterschrift
+
+- **Datum:** 2026-08-24
+- **Status:** angenommen
+- **Kontext:** AP3.T3.3 macht aus 348 Chart-Bildern maschinenlesbare Daten.
+  Diese Zahlen sind ab hier die **einzige Wahrheitsquelle** für jede objektiv
+  prüfbare Frage im Tool (Risiko R2 im Gesamtscope). Zu entscheiden waren:
+  welche Aktionen es geben darf, wie die Matrix abgelegt wird, woher die
+  Spot-Metadaten kommen und was mit unvollständigen Ergebnissen geschieht.
+
+### Entscheidung 1 — Zehn Aktionsarten, Sizing daneben
+
+`CHART_ACTION_KINDS` ist geschlossen: `fold`, `check`, `call`, `limp`, `bet`,
+`raise`, `three_bet`, `four_bet`, `five_bet`, `all_in`.
+
+Die Liste ist **aus den tatsächlichen Bildunterschriften abgeleitet**, nicht
+erfunden. Eine Abfrage über `book_asset.caption_actions` der 348 Range-Charts
+ergibt 31 verschiedene Beschriftungen — darunter `Fold` (297×), `Call` (213×),
+`All-in` (119×), `3-bet` (67×), aber auch `Raise 2.25x`, `3Bet 10bb`,
+`Bet Full Pot`, `5-bet All-in` und `Call All-in`. Diese 31 Beschriftungen sind
+zehn Arten in unterschiedlichen Größen.
+
+Die **Größe** steht deshalb daneben als normalisierte Zeichenkette (`2.5x`,
+`10bb`, `pot`), nicht als eigene Art. Sizings sind Zahlen und lassen sich nicht
+sinnvoll aufzählen; die Art dagegen schon, und Vergleiche und Suche stützen
+sich auf sie.
+
+- **Alternative „freier Text":** verworfen. „3-bet", „3Bet 10bb" und
+  „3-bet all-in" wären drei verschiedene Aktionen, und keine Auswertung könnte
+  sie zusammenführen.
+- **Alternative „jede Beschriftung eine eigene Art":** verworfen. 31 Arten
+  heute, unbekannt viele nach dem nächsten Buch — und `raise@2.5x` vs.
+  `raise@3x` wäre ein Artunterschied statt eines Größenunterschieds.
+
+Mehrdeutigkeiten sind bewusst aufgelöst: `5-bet All-in` ist ein `five_bet` mit
+Sizing `all-in`, `Call All-in` ist ein `call`. Die Reihenfolge der Regeln in
+`parseChartAction()` erzwingt das.
+
+### Entscheidung 2 — Die Matrix als Zeilen, nicht als Blob
+
+`range_chart_cell` ist eine eigene Tabelle mit
+`(chart_id, hand, action_kind, sizing, percent)` und Index auf
+`(hand, action_kind)`. Eine Zelle mit Mischfrequenz ergibt mehrere Zeilen.
+
+Der Grund ist der Zugriff der Folge-APs: Die Spot-Suche aus T3.5 und die Drills
+aus AP7 fragen „was macht AJs in diesem Spot?". Mit der Tabelle beantwortet das
+ein Index. Mit einem `jsonb`-Blob am Chart müsste jede solche Frage das ganze
+Chart laden und parsen — bei 348 Charts × 169 Zellen ist das der Unterschied
+zwischen einer Abfrage und einem Vollscan.
+
+Größenordnung: 348 Charts × ~200 Zeilen ≈ 70 000 Zeilen. Für Postgres nichts.
+
+- **Alternative „Blob plus generierte Spalten":** verworfen; komplizierter als
+  eine Tabelle und ohne Vorteil.
+- Der Chart trägt daneben eine **Legende** (`actions`) als `jsonb`. Sie ist
+  Metadaten über die Matrix, keine abfragbare Größe.
+
+### Entscheidung 3 — Der Spot kommt aus der Unterschrift, nicht vom Modell
+
+Position, Gegenposition, Stacktiefe, Aktionsfolge und Sizings liest
+`apps/backend/src/chart/spot.ts` **deterministisch** aus dem beschreibenden
+Teil der Bildunterschrift (`SB vs BB (15bb)`, `CO 25bb (2x vs SB 3x 3-bet)`).
+Das Modell bekommt das Ergebnis als Kontext mit — es soll den Spot richtig
+einordnen —, bestimmt es aber nicht.
+
+Der Grund ist derselbe wie überall in diesem Projekt: Was sich mit einer Regel
+entscheiden lässt, entscheidet eine Regel. Ein Modell, das die Stacktiefe aus
+dem Bild schätzt, liegt gelegentlich daneben, und niemand merkt es. Was die
+Unterschrift nicht hergibt, bleibt `null` — eine benannte Lücke statt einer
+plausiblen Erfindung.
+
+### Entscheidung 4 — Unvollständig ist `failed`, nicht „teilweise gut"
+
+`validateChartMatrix()` verlangt genau 169 Zellen, jedes Blatt genau einmal,
+mindestens eine Aktion je Zelle, nur bekannte Arten, Frequenzen zwischen 0 und 100. Wird das verletzt, landet der Chart als `state = 'failed'` mit Begründung
+in `failure_reason` — er wird trotzdem gespeichert, damit sichtbar bleibt, was
+das Modell geliefert hat.
+
+Ein halb gelesenes Chart ist gefährlicher als ein fehlendes: Es sieht in jeder
+Auswertung wie ein vollständiges aus, und die fehlenden Blätter wären still
+„nicht in der Range".
+
+**Ausdrücklich nicht hier:** die Frequenzsummen-Prüfung je Hand, der
+gewichtete Abgleich gegen die Caption-Prozente und die Plausibilitätsregeln.
+Das ist T3.4. Hier geht es allein um strukturelle Vollständigkeit.
+
+### Entscheidung 5 — Ein Job je Chart, Wiederaufnahme über den Datenbestand
+
+Ein Job je Chart-Bild, nicht einer je Charge. Damit wirkt ein Retry gezielt,
+ein Abbruch verliert höchstens den laufenden Chart, und ein `rate_limit` legt
+genau diesen einen Job wieder vor.
+
+Die **Wiederaufnahme** braucht keinen eigenen Zustand: `selectCandidates()`
+wählt Assets, zu denen noch kein `range_chart` existiert. Ein zweiter Lauf ruft
+deshalb nichts noch einmal auf. Das ist robuster als eine Fortschrittsdatei —
+der Datenbestand _ist_ der Fortschritt.
+
+- **Alternative „Batch-Job über alle Charts":** verworfen. Ein Wochenlimit
+  mitten im Lauf würde die ganze Charge kosten.
+- **Alternative „Lauf-Tabelle mit Cursor":** verworfen; zwei Wahrheiten über
+  denselben Sachverhalt.
+
+### Entscheidung 6 — Bilder gehen über `renderRequest`, nicht am Template vorbei
+
+`RenderOptions` bekam eine Option `images`. Der Provider-Request entsteht damit
+weiterhin an **einer** Stelle. Das Bild selbst gehört nicht in die
+Template-Datei — es ist Nutzlast, keine Prompt-Fassung. Im Aufruf-Protokoll
+erscheint es als Kurzvermerk (ADR-0028); diese Kürzung wird nicht umgangen,
+sonst würde `llm_call_log` bei 348 Bildern um mehrere hundert Megabyte wachsen.
+
+**Keine neuen Dependencies in T3.3.**
+
+---
+
+## ADR-0033 — Modellwahl für die Chart-Digitalisierung: `claude-sonnet-5`, mit angehobener Zeitgrenze
+
+- **Datum:** 2026-08-24
+- **Status:** angenommen
+- **Kontext:** Scope-Delta 3 der AP-Datei verlangt einen Kalibrierungslauf, bevor
+  hunderte Vision-Aufrufe laufen. Eingestellt war `claude-haiku-4-5` als Rest
+  des Ping-Tests aus T2.6. Falsche Frequenzen in der Datenbank vergiften jeden
+  späteren Drill, jede Bewertung und jedes Szenario (Risiko R2) — die Wahl darf
+  deshalb nicht nach Bauchgefühl fallen.
+
+### Die Stichprobe
+
+Acht Charts, bewusst nach **Bauart** ausgewählt, nicht nach Reihenfolge.
+Sollwerte in `apps/backend/test/chart/fixtures/calibration-reference.json`:
+die Prozentwerte der Bildunterschrift für alle acht, dazu 31 von Hand aus dem
+Bild abgelesene Einzelzellen für die drei aussagekräftigsten.
+
+| HR  | Bauart                                               | Warum in der Stichprobe                                          |
+| --- | ---------------------------------------------------- | ---------------------------------------------------------------- |
+| 1   | Strukturraster ohne Aktionsfarben                    | Ehrlichkeitsprobe — 41 der 348 Bilder tragen keine Frequenzen    |
+| 7   | 3 Aktionen, dichte Mischfrequenzen (BB-Verteidigung) | dichtester Fall; hier scheitern schwache Modelle an den Anteilen |
+| 8   | 2 Aktionen, zweifarbig ohne Mischzellen              | einfachster Fall — wer den nicht liest, scheidet sofort aus      |
+| 11  | 2 Aktionen, Call/Fold statt Raise/Fold               | prüft, ob die Legende gelesen und nicht geraten wird             |
+| 96  | 3 Aktionen, Push/Limp/Fold, viele schmale Anteile    | typischer Turnier-Chart                                          |
+| 99  | 4 Aktionen **mit Sizing** (Raise 3.3x)               | prüft die Trennung von Aktionsart und Größenangabe               |
+| 300 | 3 Aktionen, Reaktion auf 3-Bet                       | Spot mit Aktionsfolge in der Unterschrift                        |
+| 348 | 4 Aktionen, extrem fold-lastig (82,9 % Fold)         | Randfall: „alles Fold" sieht hier scheinbar fast richtig aus     |
+
+### Die Messwerte
+
+| Modell             | beantwortet | vollständig | Referenzzellen | Ø Caption-Abweichung |   Dauer |  Tokens |
+| ------------------ | ----------: | ----------: | -------------: | -------------------: | ------: | ------: |
+| `claude-haiku-4-5` |         8/8 | 8/8 (100 %) |   22/32 (69 %) |          **19,9 pp** | 1 305 s | 264 888 |
+| `claude-sonnet-5`  |         4/8 |  4/8 (50 %) |   20/32 (63 %) |           **3,5 pp** | 2 841 s |  83 083 |
+
+Je Chart, die aussagekräftigen Fälle:
+
+| HR  | Haiku Zellen | Haiku Abw. | Sonnet Zellen | Sonnet Abw. |
+| --- | -----------: | ---------: | ------------: | ----------: |
+| 1   | korrekt leer |          — |  korrekt leer |           — |
+| 8   |        11/12 |     1,8 pp |     **12/12** |  **0,3 pp** |
+| 96  |          5/9 |    40,3 pp |       **7/9** |  **2,4 pp** |
+| 99  |         5/10 |    22,3 pp |       Timeout |           — |
+| 11  |            — |    22,7 pp |             — |      7,9 pp |
+| 7   |            — |    22,5 pp |       Timeout |           — |
+| 300 |            — |    24,9 pp |       Timeout |           — |
+| 348 |            — |     4,7 pp |       Timeout |           — |
+
+### Entscheidung — `claude-sonnet-5`
+
+**Entscheidend ist die Caption-Abweichung, nicht die Vollständigkeitsquote.**
+
+Die Prozentwerte der Bildunterschrift sind eine vom Bild unabhängige Wahrheit:
+Das Buch nennt sie, und sie lassen sich aus der abgelesenen Matrix
+Combo-gewichtet nachrechnen. T3.4 prüft genau das mit einer Toleranz von
+±1,5 pp.
+
+- Haiku liegt im Mittel **19,9 pp** daneben — bei fünf von sechs Charts
+  zwischen 22 und 40 pp. Mit dieser Streuung würde in T3.4 praktisch **jeder**
+  Chart durchfallen. Haiku liefert zuverlässig 169 Zellen, aber die Zahlen
+  darin sind falsch. Eine vollständige Matrix mit falschen Werten ist der
+  gefährlichste Fall überhaupt: Sie sieht in jeder Auswertung gesund aus.
+- Sonnet liegt im Mittel **3,5 pp** daneben, auf den beiden Charts mit
+  Referenzzellen bei 0,3 pp und 2,4 pp. Auf den Zellen, die es tatsächlich
+  gelesen hat, trifft es **20 von 22** (91 %); Haiku auf denselben Charts
+  21 von 31 (68 %).
+- Bei HR 8 las Sonnet zusätzlich die **Sizing-Angabe** (`raise 2.25x`) korrekt
+  mit und meldete den scheinbaren Widerspruch zur Unterschrift als offene
+  Frage, statt seine Ablesung daran anzupassen — genau das Verhalten, das
+  `partial/data-truth` verlangt.
+- Beide Modelle bestanden die Ehrlichkeitsprobe (HR 1): leere Matrix mit
+  Begründung, keine erfundene Strategie.
+
+Sonnet ist außerdem **sparsamer**: 83 083 Tokens für vier gelesene Charts
+gegen 264 888 für acht bei Haiku — je gelesenem Chart rund 19 000 gegen
+33 000 Tokens.
+
+### Das Problem, das die Entscheidung mitbringt
+
+Sonnet riss bei **vier von acht** Charts die Zeitgrenze von 600 s;
+reproduzierbar (HR 7 zweimal). Haiku brauchte für dieselben Charts unter 200 s.
+Sonnet denkt bei dichten Rastern deutlich länger.
+
+Zwei Maßnahmen:
+
+1. **Die Obergrenze für `llm.timeout_ms` steigt von 600 000 auf 1 800 000 ms**
+   (`LLM_SETTINGS_RANGES` in `packages/shared/src/settings.ts`). Sonst würde
+   die Modellwahl nicht durch Qualität, sondern durch eine Zeitgrenze
+   entschieden. Der Host-Runner muss mit demselben Wert gestartet werden — er
+   deckelt jede Anfrage auf sein eigenes `LLM_TIMEOUT_MS` (RUNBOOK 13.1).
+2. **`timeout` ist eine wiederholbare Kategorie.** Der Job geht mit Backoff
+   zurück in die Queue; ein Chart, der auch nach `maxAttempts` nicht durchkommt,
+   landet im Dead-Letter und bleibt als offener Fall sichtbar. Er wird **nicht**
+   mit einem schwächeren Modell nachgelesen — dann stünden zwei
+   Qualitätsstufen nebeneinander in derselben Tabelle.
+
+### Nebenläufigkeit
+
+`llm.max_concurrency` bleibt bei **2**. Sie greift ohnehin nicht als Beschleuniger:
+Der Job-Worker holt einen Job je Durchlauf und wartet ihn ab (ADR-0026) — die
+Semaphore der Adapter begrenzt nur, sie parallelisiert nicht. Eine höhere Zahl
+würde auf diesem geteilten Host nur mehr CLI-Prozesse erlauben, ohne den
+Massenlauf zu verkürzen.
+
+### Hochrechnung für den Vollausbau
+
+348 Charts, Sonnet, sequenziell:
+
+| Größe                        | Rechnung             | Ergebnis          |
+| ---------------------------- | -------------------- | ----------------- |
+| Tokens                       | 348 × ~19 000        | **~6,6 Mio**      |
+| Modellzeit (ohne Timeouts)   | 348 × ~110 s         | **~10,6 Stunden** |
+| Modellzeit (mit ~30 % Zähen) | zzgl. Wiederholungen | **12–17 Stunden** |
+
+Das ist der mit Abstand größte Massenlauf des Projekts. Er läuft deshalb **in
+Chargen** und ist jederzeit fortsetzbar (`selectCandidates()` wählt nur Assets
+ohne Chart-Datensatz) — ein Session- oder Wochenlimit kostet keinen bereits
+gelesenen Chart.
+
+### Prompt-Fassung
+
+Unverändert übernommen: `task/chart-digitize` mit `persona/chart-reader`,
+`partial/data-truth` und `partial/json-output`, Ausgabegrenze 16 384 Tokens,
+Bild als Vision-Baustein. Der Golden-Fall `task-chart-digitize` hält die
+Fassung fest; ändert sie sich, ist die Kalibrierung zu wiederholen.
+
+### Regressionsgrundlage
+
+Die Antworten beider Modelle zu HR 1 und HR 8 liegen als
+`apps/backend/test/chart/fixtures/recorded/` im Repo — reine Zahlen, keine
+Bildkopien. `test/chart/calibration.test.ts` misst sie ohne Live-Aufruf gegen
+dieselben Sollwerte und hält die Trefferquote des gewählten Modells fest.
+
+**Keine neuen Dependencies.**

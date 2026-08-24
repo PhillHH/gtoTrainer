@@ -694,6 +694,52 @@ Der Trennstrich zu T3.5: `/api/concepts` ist die **Prüfoberfläche** für die
 Vorschläge. Die Content-API für Folge-APs (gezielter Abruf, Spot-Suche,
 Asset-Auslieferung) entsteht in T3.5 unter `/api/content`.
 
+## 3i. Chart-Pipeline (neu in AP3.T3.3)
+
+Aus Bildern werden Zahlen. Ab hier sind diese Zahlen die **einzige
+Wahrheitsquelle** für jede objektiv prüfbare Frage im Tool — deshalb ist der
+Weg dorthin an jeder Stelle belegpflichtig.
+
+```
+book_asset  (asset_type = 'hand_range', confidence = 'certain')   ← T3.1
+   │  ein Job je Chart, Auswahl ueber selectCandidates()
+   ▼
+jobs/handlers/chart-digitize.ts            ← der EINZIGE KI-Anteil
+   │  Job-Queue (T2.5) → Provider-Registry (T2.3) → llm_call_log
+   │  Template task/chart-digitize (T2.4), Persona persona/chart-reader
+   │  Nachricht = Aufgabentext + Bildbaustein { type:'image', mediaType, data }
+   ├── chart/spot.ts        Caption → Spot und Legende (deterministisch)
+   └── chart/store.ts       Matrix pruefen, schreiben, Fortschritt zaehlen
+   ▼
+range_chart ──< range_chart_cell   (chart, hand, action_kind, sizing, percent)
+   │  state: raw
+   ▼
+T3.4  Validierung  →  validated  →  approved
+   ▼
+T3.5 Content-API / AP6 Renderer / AP7 Drills / AP8 Analyse
+     lesen ausschliesslich `approved`
+```
+
+Vier Eigenschaften, auf die sich Folge-APs verlassen können:
+
+- **Vollständigkeit ist erzwungen.** Eine Matrix mit weniger als 169 Zellen,
+  einer unbekannten Aktion oder einer Frequenz außerhalb 0–100 wird abgelehnt;
+  der Chart landet als `failed` mit Begründung, nicht als stiller Teilerfolg.
+- **Zellen sind einzeln abfragbar.** `range_chart_cell` ist eine eigene Tabelle
+  mit Index auf `(hand, action_kind)` — die Spot-Suche aus T3.5 und die Drills
+  aus AP7 fragen „was macht AJs hier?", ohne das ganze Chart zu laden.
+- **Der Spot kommt nicht vom Modell.** Position, Stacktiefe, Aktionsfolge und
+  Sizings liest `chart/spot.ts` deterministisch aus der Bildunterschrift. Das
+  Modell bekommt sie als Kontext und liest nur die Farben.
+- **Wiederaufnahme ist der Normalfall.** Ein zweiter Lauf wählt nur Assets ohne
+  Chart-Datensatz. Ein durch ein Wochenlimit gestoppter Lauf setzt fort, wo er
+  aufhörte, ohne Kontingent für Erledigtes zu verbrennen.
+
+Vor dem Massenlauf steht der **Kalibrierungslauf** (`pnpm charts:calibrate`,
+Scope-Delta 3): dieselbe Stichprobe mit mehreren Modellen, gemessen gegen von
+Hand geprüfte Sollwerte. Er schreibt nicht in `range_chart` — er entscheidet
+nur die Modellwahl ([ADR-0033](./DECISIONS.md)).
+
 ## 4. Querschnitts-Entscheidungen
 
 - **Node 20.19.6**, fixiert in `.nvmrc`; `engines.node >= 20.19.0`.

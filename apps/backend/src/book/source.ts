@@ -26,6 +26,19 @@ export class BookSourceError extends Error {
 /** Verzeichnisname der Buchquellen, relativ zur Repo-Wurzel. */
 export const BOOK_SOURCE_DIR = 'data/book-source';
 
+/**
+ * Absoluter Pfad der Buchquellen, wenn er nicht aus der Repo-Wurzel folgt.
+ *
+ * Im Container gibt es keine Repo-Wurzel; die Buchbilder werden dort
+ * read-only unter `/app/data/book-source` eingehaengt (siehe
+ * docker-compose.yml). Ohne diese Variable koennte der Job-Worker die
+ * Chart-Bilder aus T3.3 nicht lesen.
+ */
+export function configuredBookSourceDir(): string | undefined {
+  const raw = process.env['BOOK_SOURCE_DIR'];
+  return raw === undefined || raw.trim() === '' ? undefined : raw.trim();
+}
+
 /** Dateiendungen, die als Buchbild gelten. */
 const IMAGE_EXTENSIONS = ['.jpeg', '.jpg', '.png'] as const;
 
@@ -68,9 +81,12 @@ function hint(rootDir: string): string {
  * Wirft {@link BookSourceError}, sobald etwas fehlt.
  */
 export function resolveBookSource(sourceDir?: string): BookSource {
+  const configured = configuredBookSourceDir();
   const rootDir = sourceDir
     ? resolve(sourceDir)
-    : resolve(findRepoRoot(), ...BOOK_SOURCE_DIR.split('/'));
+    : configured
+      ? resolve(configured)
+      : resolve(findRepoRoot(), ...BOOK_SOURCE_DIR.split('/'));
 
   let entries: string[];
   try {

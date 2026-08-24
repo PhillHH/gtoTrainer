@@ -6,6 +6,7 @@ import { LlmProviderRegistry } from '../llm/registry.js';
 import { createSettingsReader } from '../llm/settings.js';
 import { TemplateRegistry } from '../prompts/registry.js';
 import { JobEventBus } from './events.js';
+import { createChartDigitizeJob } from './handlers/chart-digitize.js';
 import { createConceptExtractJob } from './handlers/concept-extract.js';
 import { createLlmCompleteJob } from './handlers/llm-complete.js';
 import { JobHandlerRegistry } from './types.js';
@@ -84,6 +85,15 @@ export function createLlmRuntime(options: CreateRuntimeOptions): LlmRuntime {
     // Konzept-Taxonomie (AP3.T3.2): ein Job je Kapitelteil.
     .register(
       createConceptExtractJob({
+        providers,
+        templates,
+        defaultModel: llmConfig.model,
+        settings,
+      }),
+    )
+    // Chart-Digitalisierung (AP3.T3.3): ein Job je Chart-Bild.
+    .register(
+      createChartDigitizeJob({
         providers,
         templates,
         defaultModel: llmConfig.model,

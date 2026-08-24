@@ -1,0 +1,16 @@
+{
+  "model": "claude-sonnet-5",
+  "handRange": 1,
+  "zellen": [],
+  "unsicher": [
+    "Das Bild zeigt kein Aktions-Chart (fold/call/raise/etc.), sondern eine reine Struktur-Illustration des 13x13 Hand-Grids. Die Legende ordnet die drei Graustufen den Kategorien 'Suited' (23.53%), 'Pocket Pair' (5.88%) und 'Offsuit' (70.59%) zu \u2013 das sind Handtyp-Klassifizierungen, keine Poker-Aktionen im Sinne des Schemas (fold, call, raise usw.). Die Bildunterschrift 'Hand Range 1: The Basic Hand Grid' best\u00e4tigt, dass es sich um eine Grundlagen-Darstellung des Grid-Aufbaus handelt, nicht um eine strategische Range mit Handlungsentscheidungen. Da keine der verf\u00fcgbaren Aktions-Kennungen (fold, check, call, limp, bet, raise, three_bet, four_bet, five_bet, all_in) zu 'Suited'/'Pocket Pair'/'Offsuit' passt, kann ich die Zellen nicht bef\u00fcllen, ohne Werte zu erfinden. Daher bleibt 'zellen' leer."
+  ],
+  "legende": [
+    "Legende im Bild: grau (mittel) = Suited (23.53% Fl\u00e4chenanteil im Gesamtgrid)",
+    "Legende im Bild: hellgrau = Pocket Pair (5.88% Fl\u00e4chenanteil im Gesamtgrid)",
+    "Legende im Bild: schwarz = Offsuit (70.59% Fl\u00e4chenanteil im Gesamtgrid)",
+    "Diese drei Kategorien sind keine Poker-Aktionen (fold/call/raise/etc.) und lassen sich nicht auf das vorgegebene Aktions-Schema abbilden."
+  ],
+  "durationMs": 15000,
+  "totalTokens": 6833
+}

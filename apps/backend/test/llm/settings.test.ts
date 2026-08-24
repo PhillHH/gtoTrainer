@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { CSRF_COOKIE_NAME } from '@gto/shared';
+import { CSRF_COOKIE_NAME, LLM_SETTINGS_RANGES } from '@gto/shared';
 import type { LLMProvider, LlmRequest, LlmResponse, LlmSettingsResponse } from '@gto/shared';
 import { buildApp } from '../../src/app.js';
 import { createDb } from '../../src/db/client.js';
@@ -239,7 +239,11 @@ describe('Serverseitige Validierung', () => {
     expect(status).toBe(400);
     const fields = (body as { fields: { field: string; message: string }[] }).fields;
     expect(fields[0]?.field).toBe('timeoutMs');
-    expect(fields[0]?.message).toContain('zwischen 5000 und 600000 liegen, ist: 1000');
+    // Die Grenzen kommen aus dem Vertrag, damit der Test bei einer bewussten
+    // Aenderung (T3.3: Vision braucht mehr Zeit) nicht falsch rot wird.
+    expect(fields[0]?.message).toContain(
+      `zwischen ${LLM_SETTINGS_RANGES.timeoutMs.min} und ${LLM_SETTINGS_RANGES.timeoutMs.max} liegen, ist: 1000`,
+    );
   });
 
   it('meldet mehrere ungueltige Felder einzeln', async () => {

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, checkDatabaseConnection } from '../../src/db/client.js';
 import type { DbHandle } from '../../src/db/client.js';
-import { BASE_TABLES, BOOK_TABLES, CONCEPT_TABLES } from '../../src/db/schema.js';
+import { BASE_TABLES, BOOK_TABLES, CHART_TABLES, CONCEPT_TABLES } from '../../src/db/schema.js';
 import { TEST_DATABASE_URL } from './setup.js';
 
 /**
@@ -29,8 +29,8 @@ describe('Migration und Verbindung', () => {
 
     const tables = result.rows.map((row) => row.table_name);
     // Basisschema aus T1.2, Buch-Wissensbasis aus AP3.T3.1, Konzept-Graph aus
-    // AP3.T3.2.
-    const expected = [...BASE_TABLES, ...BOOK_TABLES, ...CONCEPT_TABLES];
+    // AP3.T3.2, Chart-Daten aus AP3.T3.3.
+    const expected = [...BASE_TABLES, ...BOOK_TABLES, ...CONCEPT_TABLES, ...CHART_TABLES];
     expect(tables).toEqual([...expected].sort());
     expect(tables).toHaveLength(expected.length);
   });

@@ -39,9 +39,11 @@ describe('Laden aus Dateien', () => {
       'partial/json-output',
       'partial/language',
       'persona/analyst',
+      'persona/chart-reader',
       'persona/grader',
       'persona/taxonomist',
       'persona/teacher',
+      'task/chart-digitize',
       'task/concept-explanation',
       'task/concept-taxonomy',
     ]);

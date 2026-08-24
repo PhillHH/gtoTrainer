@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
-import type { LlmRequest } from '@gto/shared';
+import type { LlmContent, LlmImageContent, LlmRequest } from '@gto/shared';
 import { tryFindRepoRoot } from '../config/env.js';
 import { assertValuesMatch, findTokens, findValuePlaceholders, renderBody } from './render.js';
 import { TEMPLATE_KINDS, TemplateError } from './types.js';
@@ -41,6 +41,17 @@ export interface RenderOptions {
   readonly model: string;
   readonly maxTokens: number;
   readonly timeoutMs?: number;
+  /**
+   * Bildbausteine, die hinter dem Aufgabentext an die Nachricht gehaengt
+   * werden (AP3.T3.3, Vision).
+   *
+   * Der Request wird bewusst auch fuer Vision **hier** gebaut und nicht beim
+   * Aufrufer zusammengesteckt: Sonst gaebe es zwei Stellen, an denen ein
+   * Provider-Request entsteht, und die Regel "Prompts sind Dateien" haette ein
+   * Schlupfloch. Das Bild selbst ist keine Prompt-Fassung, sondern Nutzlast -
+   * es gehoert nicht in die Template-Datei.
+   */
+  readonly images?: readonly LlmImageContent[];
 }
 
 export class TemplateRegistry {
@@ -114,9 +125,12 @@ export class TemplateRegistry {
       pick(values, template.bodyPlaceholders),
     );
 
+    const content: LlmContent[] = [{ type: 'text', text }];
+    for (const image of options.images ?? []) content.push(image);
+
     const request: LlmRequest = {
       system,
-      messages: [{ role: 'user', content: [{ type: 'text', text }] }],
+      messages: [{ role: 'user', content }],
       model: options.model,
       maxTokens: options.maxTokens,
       ...(template.meta.jsonSchema === undefined ? {} : { jsonSchema: template.meta.jsonSchema }),

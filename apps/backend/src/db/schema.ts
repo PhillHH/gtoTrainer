@@ -1,6 +1,7 @@
 import {
   boolean,
   check,
+  doublePrecision,
   index,
   integer,
   jsonb,
@@ -500,3 +501,122 @@ export const CONCEPT_TABLES = [
   'concept_section',
   'concept_chart',
 ] as const;
+
+/* -------------------------------------------------------------------------
+ * Chart-Daten (AP3.T3.3)
+ *
+ * Zwei Tabellen: der Chart-Datensatz und seine Zellen.
+ *
+ * Warum die Zellen eine eigene Tabelle bekommen und nicht als ein JSON-Blob am
+ * Chart haengen: Die Spot-Suche aus T3.5 und die Drills aus AP7 fragen gezielt
+ * nach einzelnen Blaettern ("was macht AJs hier?"). Mit einer eigenen Tabelle
+ * beantwortet das ein Index; mit einem Blob muesste jedes Mal das ganze Chart
+ * geladen und geparst werden.
+ *
+ * Die zulaessigen Werte sind - wie bei den Buch- und Konzepttabellen -
+ * dupliziert, weil drizzle-kit das Workspace-Paket beim Buendeln nicht
+ * aufloest; `test/chart/schema.test.ts` haelt sie mit `packages/shared`
+ * deckungsgleich.
+ * ---------------------------------------------------------------------- */
+
+export const CHART_STATES = ['raw', 'validated', 'approved', 'failed'] as const;
+
+export const CHART_ACTION_KINDS = [
+  'fold',
+  'check',
+  'call',
+  'limp',
+  'bet',
+  'raise',
+  'three_bet',
+  'four_bet',
+  'five_bet',
+  'all_in',
+] as const;
+
+/**
+ * Ein digitalisiertes Range-Chart.
+ *
+ * Genau eines je `book_asset` - deshalb ist `asset_id` eindeutig. Ein erneuter
+ * Lauf ueberschreibt den Datensatz, statt einen zweiten anzulegen; die
+ * Wiederaufnahme ueberspringt vorhandene Charts ganz.
+ */
+export const rangeChart = pgTable(
+  'range_chart',
+  {
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    assetId: uuid('asset_id')
+      .notNull()
+      .references(() => bookAsset.id, { onDelete: 'cascade' }),
+    /** `raw` bis T3.4 die Pruefungen gefahren hat. Nur `approved` ist ab T3.5 sichtbar. */
+    state: text('state').notNull().default('raw'),
+    /** Modell, das die Matrix gelesen hat - Herkunftsnachweis. */
+    model: text('model').notNull(),
+    /** Kennung des Laufs, in dem der Datensatz entstand. */
+    runId: text('run_id').notNull(),
+    /** Legende: die Aktionen, die in diesem Chart vorkommen. */
+    actions: jsonb('actions')
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    /** Deterministisch aus der Bildunterschrift gelesener Spot. */
+    spot: jsonb('spot')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    /** Vom Modell gemeldete unsichere Bereiche - ehrliche Luecken. */
+    uncertain: jsonb('uncertain')
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    /** Anzahl gelesener Zellen. 169 = vollstaendig. */
+    cellCount: integer('cell_count').notNull().default(0),
+    /** Grund, wenn `state = 'failed'`. */
+    failureReason: text('failure_reason'),
+    durationMs: integer('duration_ms'),
+    promptTokens: integer('prompt_tokens'),
+    completionTokens: integer('completion_tokens'),
+    totalTokens: integer('total_tokens'),
+    createdAt,
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('range_chart_asset_key').on(table.assetId),
+    index('range_chart_state_idx').on(table.state),
+    index('range_chart_run_idx').on(table.runId),
+    check('range_chart_state_check', sql.raw(`state in (${sqlList(CHART_STATES)})`)),
+  ],
+);
+
+/**
+ * Eine Zelle der 13x13-Matrix: ein Blatt, eine Aktion, ein Prozentwert.
+ *
+ * Eine Zelle mit Mischfrequenz erzeugt mehrere Zeilen - je Aktion eine. Der
+ * Primaerschluessel schliesst dieselbe Aktion zweimal am selben Blatt aus.
+ */
+export const rangeChartCell = pgTable(
+  'range_chart_cell',
+  {
+    chartId: uuid('chart_id')
+      .notNull()
+      .references(() => rangeChart.id, { onDelete: 'cascade' }),
+    /** Blatt in ueblicher Notation: `AA`, `AKs`, `AKo`. */
+    hand: text('hand').notNull(),
+    actionKind: text('action_kind').notNull(),
+    /** Groessenangabe, leer wenn ohne. Teil des Schluessels, deshalb nicht NULL. */
+    sizing: text('sizing').notNull().default(''),
+    /** Anteil in Prozent, 0-100. */
+    percent: doublePrecision('percent').notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.chartId, table.hand, table.actionKind, table.sizing] }),
+    index('range_chart_cell_hand_idx').on(table.hand, table.actionKind),
+    check(
+      'range_chart_cell_kind_check',
+      sql.raw(`action_kind in (${sqlList(CHART_ACTION_KINDS)})`),
+    ),
+    check('range_chart_cell_percent_check', sql`${table.percent} >= 0 and ${table.percent} <= 100`),
+  ],
+);
+
+/** Tabellen der Chart-Digitalisierung (AP3.T3.3). */
+export const CHART_TABLES = ['range_chart', 'range_chart_cell'] as const;

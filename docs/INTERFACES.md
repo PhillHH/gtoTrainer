@@ -1347,3 +1347,185 @@ Befundarten in `GET /api/concepts` (`ConceptIssueKind`):
 `pnpm concepts:generate [--plan] [--chapter <n>] [--charts] [--report]`.
 Ein Job je Kapitelteil (Zeichenbudget 15 000) über die Queue; Betrieb siehe
 RUNBOOK 12.
+
+---
+
+## 14. Chart-Daten — Schema, Zustandsmodell und Zugriff (AP3.T3.3)
+
+Quelle der Wahrheit ist `apps/backend/src/db/schema.ts`; Migration
+`0004_milky_living_lightning.sql`. Vertragskonstanten in
+`packages/shared/src/chart.ts`.
+
+> **Die wichtigste Regel dieses Abschnitts:** Folge-APs lesen **ausschließlich
+> Charts im Zustand `approved`**. `raw` ist ungeprüfte Modellausgabe,
+> `validated` hat nur die automatischen Prüfungen aus T3.4 bestanden. Wer
+> `raw` verwendet, baut auf Zahlen, die niemand geprüft hat.
+
+### Das 13×13-Raster
+
+`CHART_HANDS` enthält die 169 Blätter in Rasterreihenfolge: Diagonale = Paare
+(`AA`), oberhalb = suited (`AKs`), unterhalb = offsuit (`AKo`). Die Reihenfolge
+ist die Lesereihenfolge des Charts. `handComboWeight(hand)` liefert das
+Combo-Gewicht (Paare 6, suited 4, offsuit 12) — dieselbe Gewichtung, mit der
+das Buch seine Caption-Prozente bildet, und die Grundlage der gewichteten
+Gegenprobe in T3.4.
+
+### Aktionen
+
+`CHART_ACTION_KINDS` ist eine **geschlossene Menge**:
+`fold`, `check`, `call`, `limp`, `bet`, `raise`, `three_bet`, `four_bet`,
+`five_bet`, `all_in`. Die Größenangabe steht daneben als normalisierte
+Zeichenkette (`2.5x`, `10bb`, `pot`) und ist `null`, wenn das Chart keine
+nennt. Begründung und Herleitung aus den tatsächlichen Bildunterschriften:
+[ADR-0032](./DECISIONS.md).
+
+### `range_chart`
+
+| Spalte                    | Typ                      | Hinweis                                                  |
+| ------------------------- | ------------------------ | -------------------------------------------------------- |
+| `id`                      | `uuid` PK                |                                                          |
+| `asset_id`                | `uuid` FK → `book_asset` | **eindeutig** — genau ein Chart je Bild                  |
+| `state`                   | `text`                   | CHECK: `raw` \| `validated` \| `approved` \| `failed`    |
+| `model`                   | `text`                   | Modell, das die Matrix gelesen hat (Herkunft)            |
+| `run_id`                  | `text`                   | Lauf, in dem der Datensatz entstand                      |
+| `actions`                 | `jsonb`                  | Legende: `[{ kind, sizing }]`                            |
+| `spot`                    | `jsonb`                  | deterministisch aus der Unterschrift, siehe unten        |
+| `uncertain`               | `jsonb`                  | vom Modell gemeldete Lücken plus seine Legendenzuordnung |
+| `cell_count`              | `integer`                | 169 = vollständig                                        |
+| `failure_reason`          | `text` NULL              | gesetzt, wenn `state = 'failed'`                         |
+| `duration_ms`, `*_tokens` | `integer` NULL           | Verbrauch des Aufrufs                                    |
+
+### `range_chart_cell`
+
+| Spalte        | Typ                       | Hinweis                                    |
+| ------------- | ------------------------- | ------------------------------------------ |
+| `chart_id`    | `uuid` FK → `range_chart` | `ON DELETE CASCADE`                        |
+| `hand`        | `text`                    | `AA`, `AKs`, `AKo`                         |
+| `action_kind` | `text`                    | CHECK gegen die geschlossene Menge         |
+| `sizing`      | `text`                    | `''` wenn ohne — Teil des Primärschlüssels |
+| `percent`     | `double precision`        | CHECK `>= 0 and <= 100`                    |
+
+Primärschlüssel `(chart_id, hand, action_kind, sizing)`, Index
+`range_chart_cell_hand_idx (hand, action_kind)`.
+
+**Warum eine eigene Tabelle und kein JSON-Blob:** Die Spot-Suche aus T3.5 und
+die Drills aus AP7 fragen gezielt nach einzelnen Blättern. Mit der Tabelle
+beantwortet das ein Index; mit einem Blob müsste jedes Mal das ganze Chart
+geladen und geparst werden.
+
+### Spot-Metadaten
+
+`ChartSpot` in `packages/shared/src/chart.ts`: `format`, `heroPosition`,
+`villainPosition`, `stackDepthBb`, `actionSequence`, `sizings`. Alles
+**deterministisch** aus der Bildunterschrift gelesen
+(`apps/backend/src/chart/spot.ts`) — das Modell bekommt die Angaben als
+Kontext, bestimmt sie aber nicht. Was die Unterschrift nicht hergibt, bleibt
+`null`.
+
+### Zustandsmodell
+
+| Zustand     | Bedeutung                                              | Entsteht in |
+| ----------- | ------------------------------------------------------ | ----------- |
+| `raw`       | vom Modell gelesen, strukturell vollständig, ungeprüft | T3.3        |
+| `validated` | automatische Prüfungen bestanden                       | T3.4        |
+| `approved`  | menschlich freigegeben — **nur das ist sichtbar**      | T3.4        |
+| `failed`    | nicht verwertbar; `failure_reason` nennt den Grund     | T3.3/T3.4   |
+
+Übergänge nur vorwärts und nur durch den jeweils zuständigen Task. T3.3 setzt
+ausschließlich `raw` und `failed`.
+
+### Wie T3.4 die Rohdaten abholt
+
+```ts
+import { and, asc, eq } from 'drizzle-orm';
+import { rangeChart, rangeChartCell } from '../db/schema.js';
+
+// Alle ungeprueften Charts eines Laufs.
+const offen = await db
+  .select()
+  .from(rangeChart)
+  .where(eq(rangeChart.state, 'raw'))
+  .orderBy(asc(rangeChart.createdAt));
+
+// Die Matrix eines Charts.
+const zellen = await db.select().from(rangeChartCell).where(eq(rangeChartCell.chartId, chartId));
+```
+
+Für die gewichtete Gegenprobe stehen die Caption-Prozente unverändert in
+`book_asset.caption_actions` (T3.1) und das Combo-Gewicht in
+`handComboWeight()`. Die Prüfregeln selbst — Frequenzsumme je Hand, Toleranz
+gegen die Caption, Plausibilität — entstehen in T3.4 und **nicht** hier.
+
+### Wie Folge-APs Charts abfragen
+
+```ts
+// Alle freigegebenen Charts eines Spots.
+const charts = await db
+  .select()
+  .from(rangeChart)
+  .where(
+    and(
+      eq(rangeChart.state, 'approved'), // ← Pflicht
+      sql`${rangeChart.spot}->>'heroPosition' = 'SB'`,
+      sql`(${rangeChart.spot}->>'stackDepthBb')::int = 15`,
+    ),
+  );
+
+// Was macht ein bestimmtes Blatt in diesem Chart?
+const aktion = await db
+  .select({
+    kind: rangeChartCell.actionKind,
+    sizing: rangeChartCell.sizing,
+    percent: rangeChartCell.percent,
+  })
+  .from(rangeChartCell)
+  .where(and(eq(rangeChartCell.chartId, chartId), eq(rangeChartCell.hand, 'AJs')));
+```
+
+**`eq(rangeChart.state, 'approved')` ist nicht optional.** Die Content-API aus
+T3.5 setzt diesen Filter als Standard; wer die Tabellen direkt liest, setzt ihn
+selbst.
+
+### Vision-Requests über die Template-Registry
+
+`renderRequest()` nimmt seit T3.3 eine Option `images`:
+
+```ts
+const request = templates.renderRequest('task/chart-digitize', werte, {
+  model,
+  maxTokens: 16384,
+  images: [{ type: 'image', mediaType: 'image/jpeg', data: base64OhnePraefix }],
+});
+```
+
+Der Request entsteht damit weiterhin **an einer Stelle** — das Bild ist
+Nutzlast, keine Prompt-Fassung, und gehört nicht in die Template-Datei. Im
+Aufruf-Protokoll erscheint es als Kurzvermerk (ADR-0028), nicht im Klartext.
+
+### Läufe steuern
+
+`pnpm charts:digitize [--dry-run] [--status] [--limit n] [--chapter n]
+[--asset uuid] [--model id] [--redo]` und
+`pnpm charts:calibrate --model a --model b`. Betrieb: RUNBOOK 13.
+
+### Buchbilder im Container
+
+Der Job-Worker läuft im Backend-Container (ADR-0026), die Bilder liegen auf dem
+Host. Compose hängt `data/book-source/` **read-only** nach
+`/app/data/book-source` ein und setzt `BOOK_SOURCE_DIR` darauf;
+`resolveBookSource()` bevorzugt diese Variable vor der Repo-Wurzel. Auf dem
+Host bleibt sie leer — dort wird die Wurzel gefunden.
+
+| Umgebungsvariable      | Wo             | Bedeutung                             |
+| ---------------------- | -------------- | ------------------------------------- |
+| `BOOK_SOURCE_HOST_DIR` | Host / Compose | Quellverzeichnis, das eingehängt wird |
+| `BOOK_SOURCE_DIR`      | Container      | absoluter Pfad im Container           |
+
+### Zustände unterscheiden: `failed` ist nicht gleich `failed`
+
+`cell_count = 0` mit `failure_reason` „Kein Aktionsraster im Bild erkannt"
+heißt: Das Bild trägt gar keine Strategie (41 der 348 Bilder sind
+Struktur- oder Beispielraster). Das ist **kein** Modellfehler und braucht keine
+Wiederholung. `cell_count` zwischen 1 und 168 heißt dagegen: Das Modell hat die
+Matrix nicht zu Ende gelesen — dieser Fall gehört in einen zweiten Durchlauf.
+`pnpm charts:digitize --status` weist beides getrennt aus.

@@ -1192,6 +1192,9 @@ output token maximum`). Für die Konzept-Extraktion reicht das nicht — Modelle
 > Ohne das landen die Jobs mit Kategorie `invalid` im Dead-Letter — `invalid`
 > ist nicht wiederholbar, es hilft also kein Retry.
 >
+> Für die Chart-Digitalisierung aus T3.3 sind **1 800 000 ms** nötig, nicht
+> 600 000 (ADR-0033).
+>
 > **Reihenfolge beachten:** Den Runner _vor_ dem Einplanen der Jobs neu
 > starten. Wer ihn mittendrin neu startet, macht das Socket kurz unerreichbar —
 > das ergibt Kategorie `auth`, und `auth` ist nicht wiederholbar: Alle
@@ -1301,7 +1304,167 @@ docker exec -i gto-postgres psql -U gto -d gto -c \
 | Gesamtzahl deutlich unter 120               | Zerlegung zu grob                             | Zielanzahl im Template schärfen, Kapitel neu laufen lassen     |
 | `Die Antwort war kein JSON`                 | Antwort abgeschnitten (`maxTokens` zu knapp)  | `maxTokens` im Job-Typ erhöhen                                 |
 
-## 13. Noch nicht abgedeckt
+## 13. Chart-Digitalisierung (AP3.T3.3)
+
+### 13.1 Voraussetzungen
+
+Dieselben drei Zeitgrenzen wie bei der Konzept-Generierung (Abschnitt 12.1) —
+ein Vision-Aufruf über ein 13×13-Raster dauert **1 bis 3 Minuten** und
+erzeugt bis zu 50 000 Tokens:
+
+```bash
+# 1. Zeitgrenze in der Datenbank
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "update config set value='1800000'::jsonb where key='llm.timeout_ms'"
+
+# 2. Host-Runner mit derselben Grenze UND hoher Ausgabegrenze neu starten
+LLM_TIMEOUT_MS=1800000 CLAUDE_CODE_MAX_OUTPUT_TOKENS=32000 pnpm llm:runner
+
+# 3. WORKER_STALE_AFTER_MS in der .env deutlich darüber, dann Backend erneuern
+docker compose up -d backend
+```
+
+> **Reihenfolge:** erst Runner, dann Jobs einplanen. Ein Runner-Neustart
+> mitten im Lauf macht das Socket kurz unerreichbar; das ergibt Kategorie
+> `auth`, und `auth` ist nicht wiederholbar — alle wartenden Jobs landen sofort
+> im Dead-Letter.
+
+Außerdem muss der Buchimport gelaufen sein (Abschnitt 11) — die Chart-Bilder
+kommen aus `data/book-source/`, die Auswahl aus `book_asset`.
+
+> **Der Container braucht die Buchbilder.** Der Job-Worker läuft im
+> Backend-Container (ADR-0026), die Bilder liegen auf dem Host. Compose hängt
+> `data/book-source/` deshalb **read-only** nach `/app/data/book-source` ein und
+> setzt `BOOK_SOURCE_DIR` darauf. Fehlt das, landen alle Chart-Jobs mit
+> `ConfigError: Repo-Wurzel nicht gefunden` im Dead-Letter. Nach einer Änderung
+> an `docker-compose.yml` den Container neu erzeugen:
+>
+> ```bash
+> docker compose up -d backend
+> docker exec gto-backend ls /app/data/book-source | head -3   # muss Bilder zeigen
+> ```
+
+### 13.2 Trockenlauf und Kostenschätzung
+
+```bash
+pnpm charts:digitize --dry-run
+# hand_range-Assets gesamt / bereits digitalisiert / unsicher übersprungen
+# in diesem Lauf: N
+# Schätzung: ~N×12 000 Tokens, ~N×1,5 Minuten
+```
+
+Der Trockenlauf setzt **keinen** Aufruf ab und plant nichts ein. Er ist vor
+jedem größeren Lauf Pflicht — 348 Charts sind der größte Massenlauf des
+Projekts.
+
+### 13.3 Kalibrierung — verbindlich vor dem Massenlauf
+
+```bash
+pnpm charts:calibrate --model claude-haiku-4-5 --model claude-sonnet-5
+```
+
+Digitalisiert die Stichprobe aus
+`apps/backend/test/chart/fixtures/calibration-reference.json` mit **jedem**
+Modell und misst gegen von Hand geprüfte Sollwerte: Vollständigkeitsquote,
+Trefferquote der Referenzzellen, Abweichung gegen die Caption-Prozente, Dauer,
+Tokens.
+
+Der Lauf schreibt **nicht** in `range_chart` — er entscheidet nur die
+Modellwahl. Ergebnis unter `data/reports/chart-calibration/ergebnis.md`
+(git-ignoriert). Die getroffene Wahl steht als [ADR-0033](./DECISIONS.md).
+
+**Ein Massenlauf ohne vorherige Kalibrierung ist ein Fehler**, auch wenn er
+technisch durchläuft: Ein falsches Modell schreibt falsche Frequenzen in die
+Datenbank, und die gelten ab da als Wahrheit.
+
+### 13.4 Massenlauf in Chargen
+
+```bash
+pnpm charts:digitize --limit 10            # erste Charge, Ergebnis sichten
+pnpm charts:digitize --status
+pnpm charts:digitize --limit 50            # hochfahren
+pnpm charts:digitize                       # Rest
+```
+
+Weitere Eingrenzungen: `--chapter <n>`, `--asset <uuid>` (mehrfach),
+`--model <id>` (überschreibt die Einstellung für diesen Lauf).
+
+Der Worker arbeitet die Jobs **nacheinander** ab (ADR-0026); bei 1–3 Minuten je
+Chart dauert der Vollausbau entsprechend lange. Das ist gewollt: Ein Job je
+Chart heißt, dass ein Abbruch höchstens den laufenden Chart verliert.
+
+Fortschritt beobachten:
+
+```bash
+docker logs -f gto-backend | grep Chart
+# Chart Hand Range 96 (p0307_01.jpeg): 169/169 Zellen, vollstaendig, 0 unsichere Stellen …
+pnpm charts:digitize --status
+```
+
+Im Frontend läuft der Fortschritt über den SSE-Kanal aus T2.5
+(`GET /api/jobs/events`, Abschnitt 10.4).
+
+### 13.5 Fortsetzen nach Abbruch oder Kontingentgrenze
+
+**Nichts weiter zu tun als den Lauf erneut zu starten.**
+
+```bash
+pnpm charts:digitize
+```
+
+`selectCandidates()` wählt nur Assets **ohne** Chart-Datensatz. Ein durch ein
+Session- oder Wochenlimit gestoppter Lauf setzt damit genau dort fort, wo er
+aufhörte; für bereits Erledigtes wird kein Kontingent verbrannt.
+
+Ein `rate_limit`-Fehler beendet die Charge **nicht**: Der betroffene Job geht
+mit Backoff zurück in die Queue (Abschnitt 10). Wer die Charge wirklich
+anhalten will, stoppt den Worker:
+
+```bash
+docker compose stop backend      # Jobs bleiben in der Queue liegen
+docker compose start backend     # macht weiter
+```
+
+Einen einzelnen Chart neu lesen lassen:
+
+```bash
+pnpm charts:digitize --asset <uuid> --redo
+```
+
+### 13.6 Ergebnis lesen
+
+```bash
+# Zustandsverteilung - in T3.3 gibt es nur raw und failed
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select state, count(*) from range_chart group by state"
+
+# Unvollstaendige Matrizen mit Grund
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select a.file_name, c.cell_count, left(c.failure_reason, 80)
+   from range_chart c join book_asset a on a.id = c.asset_id
+   where c.state = 'failed' order by a.ordinal"
+
+# Ein Chart im Detail
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select hand, action_kind, sizing, percent from range_chart_cell
+   where chart_id = '<uuid>' and hand in ('AA','AJs','72o') order by hand"
+```
+
+**In diesem Task steht kein Chart auf `approved`.** Die Freigabe hängt an der
+Validierung aus T3.4 — vorher sind die Zahlen ungeprüfte Modellausgabe.
+
+### 13.7 Typische Fehlerbilder
+
+| Symptom                                                | Ursache                                        | Abhilfe                                                        |
+| ------------------------------------------------------ | ---------------------------------------------- | -------------------------------------------------------------- |
+| Alle Jobs `dead`, Kategorie `invalid`, „8192 output"   | CLI-Ausgabegrenze zu niedrig                   | Runner mit `CLAUDE_CODE_MAX_OUTPUT_TOKENS=32000` neu starten   |
+| Jobs `dead` mit `kein verarbeitbares hand_range`       | Asset ist `table`/`diagram` oder unsicher      | richtig so — nur `hand_range`/`certain` wird verarbeitet       |
+| Viele Charts `failed`, `cell_count` < 169              | Modell liest die Matrix nicht vollständig      | Modell wechseln (`--model`), Kalibrierung wiederholen          |
+| Charts mit `cell_count = 0` und Hinweis in `uncertain` | Bild ist ein Strukturraster ohne Aktionsfarben | korrekt — 41 der 348 Bilder tragen keine Frequenzen            |
+| Lauf bricht mit `rate_limit` ab                        | Session- oder Wochenlimit                      | nichts tun; Queue legt wieder vor, sonst später erneut starten |
+| `llm_call_log` wächst stark                            | Bilder werden **nicht** protokolliert          | Prompt-Kürzung greift (ADR-0028); nur Textteil wächst          |
+
+## 14. Noch nicht abgedeckt
 
 - Der Host-Nginx-vhost und das TLS-Zertifikat sind vorbereitet, aber noch nicht
   eingespielt: Beides erfordert Root auf dem Host (Abschnitte 8.4 und 8.5).

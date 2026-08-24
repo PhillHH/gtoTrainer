@@ -67,6 +67,10 @@ services:
       LLM_RETRY_TOTAL_BUDGET_MS: ${LLM_RETRY_TOTAL_BUDGET_MS:-300000}
       # Job-Worker im selben Prozess (ADR-0026) und Aufruf-Protokoll.
       PROMPTS_DIR: /app/prompts
+      # Buchquellen (AP3): Der Chart-Job aus T3.3 liest die Bilder als
+      # Vision-Input. Sie werden read-only eingehaengt - der Container
+      # schreibt dort nie.
+      BOOK_SOURCE_DIR: /app/data/book-source
       WORKER_ENABLED: ${WORKER_ENABLED:-true}
       WORKER_POLL_INTERVAL_MS: ${WORKER_POLL_INTERVAL_MS:-2000}
       WORKER_STALE_AFTER_MS: ${WORKER_STALE_AFTER_MS:-300000}
@@ -78,6 +82,9 @@ services:
       # Profil-B-Verzeichnis wird bewusst NICHT eingehaengt - der Container
       # sieht die Subscription-Zugangsdaten nie (ADR-0022).
       - ${LLM_RUNNER_SOCKET_DIR:?LLM_RUNNER_SOCKET_DIR fehlt - .env aus .env.example anlegen}:/run/gto-llm:ro
+      # Buchquellen read-only (AP3.T3.3). Git-ignorierter Pflicht-Input des
+      # Nutzers; der Container liest ausschliesslich.
+      - ${BOOK_SOURCE_HOST_DIR:-./data/book-source}:/app/data/book-source:ro
     depends_on:
       postgres:
         # Das Backend startet erst, wenn die Datenbank Anfragen annimmt.

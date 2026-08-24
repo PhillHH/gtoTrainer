@@ -1,0 +1,11 @@
+{
+  "model": "claude-haiku-4-5",
+  "handRange": 1,
+  "zellen": [],
+  "unsicher": [
+    "Das Bild zeigt nur eine kategorische Einteilung der 169 H\u00e4nde (Suited/Pocket Pair/Offsuit), keine Aktionsfrequenzen (fold/check/call/raise etc.). Eine Aktionslegende fehlt vollst\u00e4ndig."
+  ],
+  "legende": [],
+  "durationMs": 16000,
+  "totalTokens": 6298
+}

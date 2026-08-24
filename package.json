@@ -28,7 +28,9 @@
     "test:e2e": "pnpm --filter @gto/shared build && playwright test",
     "test:e2e:install": "playwright install --with-deps chromium",
     "book:import": "pnpm --filter @gto/backend book:import",
-    "concepts:generate": "pnpm --filter @gto/backend concepts:generate"
+    "concepts:generate": "pnpm --filter @gto/backend concepts:generate",
+    "charts:digitize": "pnpm --filter @gto/backend charts:digitize",
+    "charts:calibrate": "pnpm --filter @gto/backend charts:calibrate"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",

@@ -56,6 +56,7 @@ const TEXT_CASES: readonly TextCase[] = [
   { name: 'persona-grader', templateId: 'persona/grader' },
   { name: 'persona-analyst', templateId: 'persona/analyst' },
   { name: 'persona-taxonomist', templateId: 'persona/taxonomist' },
+  { name: 'persona-chart-reader', templateId: 'persona/chart-reader' },
 ];
 
 interface RequestCase {
@@ -65,6 +66,19 @@ interface RequestCase {
 }
 
 const REQUEST_CASES: readonly RequestCase[] = [
+  {
+    // Chart-Digitalisierung (AP3.T3.3). Bewusst ohne Bild: Das Bild ist
+    // Nutzlast, keine Prompt-Fassung - der Golden-Fall sichert den Text.
+    name: 'task-chart-digitize',
+    templateId: 'task/chart-digitize',
+    values: {
+      unterschrift:
+        '*Hand Range 96: SB vs BB (15bb)*\n*• All-in 23.7% / • Limp 61.5% / • Fold 14.8%*',
+      spot: ['- Position: SB', '- Gegenposition: BB', '- Stacktiefe: 15bb'].join('\n'),
+      aktionen: ['- `all_in` — All-in', '- `limp` — Limp', '- `fold` — Fold'].join('\n'),
+      blattliste: 'AA AKs AQs …\nAKo KK KQs …',
+    },
+  },
   {
     // Konzept-Taxonomie (AP3.T3.2). Die Werte sind bewusst erfunden und kurz -
     // Buchtext gehoert nicht in eine versionierte Golden-Datei.

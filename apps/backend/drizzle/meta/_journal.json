@@ -29,6 +29,13 @@
       "when": 1787559183485,
       "tag": "0003_lively_lilith",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1787567088445,
+      "tag": "0004_milky_living_lightning",
+      "breakpoints": true
     }
   ]
 }
