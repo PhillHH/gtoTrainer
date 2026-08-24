@@ -80,6 +80,16 @@ const REQUEST_CASES: readonly RequestCase[] = [
     },
   },
   {
+    // Reiner Legenden-Nachzug (AP3.T3.6-fix). Bewusst schmal: kein Raster,
+    // keine Blattliste - der Aufruf soll wenig kosten.
+    name: 'task-chart-legend',
+    templateId: 'task/chart-legend',
+    values: {
+      unterschrift: '*Hand Range 16: A Capped Range*',
+      aktionen: ['- `call` — Call', '- `fold` — Off Range'].join('\n'),
+    },
+  },
+  {
     // Gezielter Zweitdurchlauf (AP3.T3.4). Derselbe Spot wie oben, zusaetzlich
     // die Beanstandung - so ist im Golden-Fall sichtbar, dass der geschaerfte
     // Prompt auf konkrete Blaetter hinweist, ohne eine Zahl vorzugeben.

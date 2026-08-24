@@ -350,6 +350,22 @@ export function isValidChartMatrix(matrix: unknown): matrix is ChartMatrix {
  * Spot-Metadaten kommen **nicht** von hier, sondern deterministisch aus der
  * Bildunterschrift.
  */
+/** Die Bausteine der gedruckten Legende: Aktionsbezeichnung und Prozentwert. */
+const CHART_LEGEND_VALUES_SCHEMA = {
+  type: 'array',
+  items: {
+    type: 'object',
+    properties: {
+      art: { type: 'string', enum: [...CHART_ACTION_KINDS] },
+      sizing: { type: 'string' },
+      prozent: { type: 'number' },
+      beschriftung: { type: 'string' },
+    },
+    required: ['art', 'prozent', 'beschriftung'],
+    additionalProperties: false,
+  },
+} as const;
+
 export const CHART_EXTRACTION_SCHEMA = {
   type: 'object',
   properties: {
@@ -379,8 +395,27 @@ export const CHART_EXTRACTION_SCHEMA = {
     },
     unsicher: { type: 'array', items: { type: 'string' } },
     legende: { type: 'array', items: { type: 'string' } },
+    // Die im Bild **gedruckte** Legende mit ihren Prozentwerten. Unabhaengige
+    // Beobachtung: Sie wird abgelesen, nicht aus der Matrix hergeleitet.
+    legendenwerte: { ...CHART_LEGEND_VALUES_SCHEMA },
+    legendenwerte_vorhanden: { type: 'boolean' },
   },
-  required: ['zellen', 'unsicher', 'legende'],
+  required: ['zellen', 'unsicher', 'legende', 'legendenwerte', 'legendenwerte_vorhanden'],
+  additionalProperties: false,
+} as const;
+
+/**
+ * Schema der gedruckten Legendenwerte — eigenständig, weil der reine
+ * Legenden-Nachzug (AP3.T3.6-fix) dasselbe Format ohne Matrix verwendet.
+ */
+export const CHART_LEGEND_ONLY_SCHEMA = {
+  type: 'object',
+  properties: {
+    legendenwerte: { ...CHART_LEGEND_VALUES_SCHEMA },
+    legendenwerte_vorhanden: { type: 'boolean' },
+    unsicher: { type: 'array', items: { type: 'string' } },
+  },
+  required: ['legendenwerte', 'legendenwerte_vorhanden', 'unsicher'],
   additionalProperties: false,
 } as const;
 

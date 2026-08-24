@@ -4,6 +4,7 @@ import type { ChartMatrix } from '@gto/shared';
 import {
   aggression,
   checkCaptionMatch,
+  checkLegendMatch,
   checkCompleteness,
   checkFrequencySum,
   checkMonotonicity,
@@ -110,6 +111,121 @@ describe('Prüfung 2 — Combo-gewichteter Abgleich gegen die Bildunterschrift',
     expect(findings).toHaveLength(1);
     expect(findings[0]?.kind).toBe('caption-not-checkable');
     expect(findings[0]?.severity).toBe('info');
+  });
+});
+
+describe('Prüfung 4 — Abgleich gegen die im Bild gedruckte Legende', () => {
+  it('nimmt eine Matrix an, die zur gedruckten Legende passt', () => {
+    expect(checkLegendMatch(pairsRaise(), { raise: 5.9, fold: 94.1 })).toEqual([]);
+  });
+
+  it('beanstandet eine Abweichung jenseits der Toleranz', () => {
+    const findings = checkLegendMatch(pairsRaise(), { raise: 20, fold: 80 });
+    expect(findings.map((entry) => entry.kind)).toEqual(['legend-mismatch', 'legend-mismatch']);
+    expect(findings[0]?.severity).toBe('error');
+    expect(findings[0]?.check).toBe('legend-match');
+    expect(findings[0]?.detail).toContain('Legende im Bild');
+    expect(findings[0]?.detail).toContain(`Toleranz ±${CHART_TOLERANCES.legendMatchPp} pp`);
+  });
+
+  it('meldet eine Aktion, die in der Matrix gar nicht vorkommt', () => {
+    // Legende summiert auf 100 - sie ist also ein gueltiger Bezugswert -, und
+    // trotzdem fehlt `all_in` in der Matrix vollstaendig.
+    const findings = checkLegendMatch(allFold(), { fold: 88, all_in: 12 });
+    expect(findings.map((entry) => entry.kind)).toContain('legend-missing-action');
+  });
+
+  it('meldet ein Chart ohne gedruckte Legende als nicht prüfbar statt als Fehler', () => {
+    const findings = checkLegendMatch(allFold(), {});
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.kind).toBe('legend-not-checkable');
+    expect(findings[0]?.severity).toBe('info');
+  });
+
+  it('verwirft eine Legende, deren Anteile nicht auf 100 % summieren', () => {
+    // Der reale Fall HR 5: Das Buch druckt "2.5x 23.08 %" und daneben
+    // "Fold 0 %", obwohl 77 % des Rasters grau sind. Die Null ist ein
+    // Platzhalter fuer "nicht Teil der Auswahl", keine Messung - gegen sie zu
+    // pruefen wuerde jedes Auswahl-Chart zu Unrecht beanstanden.
+    const findings = checkLegendMatch(pairsRaise(), { raise: 23.08, fold: 0 });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.kind).toBe('legend-not-checkable');
+    expect(findings[0]?.severity).toBe('info');
+    expect(findings[0]?.detail).toContain('23.08 % statt 100 %');
+  });
+
+  it('haelt an einer Legende fest, die auf 100 % summiert', () => {
+    // Die Gegenprobe: Dieselbe Abweichung bei vollstaendiger Legende bleibt
+    // ein Fehler. Die Gueltigkeitsbedingung entschaerft die Pruefung nicht.
+    const findings = checkLegendMatch(pairsRaise(), { raise: 23.08, fold: 76.92 });
+    expect(findings.some((entry) => entry.severity === 'error')).toBe(true);
+  });
+
+  it('bleibt unabhaengig vom Caption-Abgleich', () => {
+    // Ein Chart, dessen Unterschrift keine Prozente nennt, faellt beim
+    // Caption-Abgleich nicht durch - beim Legenden-Abgleich schon. Genau das
+    // ist der Grund fuer die vierte Pruefung.
+    const matrix = pairsRaise();
+    expect(checkCaptionMatch(matrix, {}).every((entry) => entry.severity === 'info')).toBe(true);
+    expect(
+      checkLegendMatch(matrix, { raise: 20, fold: 80 }).some((e) => e.severity === 'error'),
+    ).toBe(true);
+  });
+
+  it('erkennt die fuenf in T3.6 gefundenen Problemfaelle', () => {
+    // Regressionsanker aus dem Abnahme-Report: Diese Charts hatten die drei
+    // urspruenglichen Pruefungen bestanden, waren aber nachweislich falsch
+    // gelesen - sichtbar nur an der Legende im Bild.
+    const faelle = [
+      { hr: 3, art: 'limp', gedruckt: 8.6, gelesen: 5.28 },
+      { hr: 6, art: 'all_in', gedruckt: 36.35, gelesen: 31.83 },
+      { hr: 16, art: 'call', gedruckt: 59.65, gelesen: 71.04 },
+      { hr: 17, art: 'raise', gedruckt: 44.19, gelesen: 39.67 },
+      { hr: 27, art: 'raise', gedruckt: 17.65, gelesen: 15.84 },
+    ] as const;
+
+    for (const fall of faelle) {
+      // Eine Matrix bauen, die genau den gelesenen Gesamtanteil traegt: jede
+      // Zelle mischt die Aktion mit fold im gewuenschten Verhaeltnis.
+      const matrix = matrixOf(() => [
+        { kind: fall.art, percent: fall.gelesen },
+        { kind: 'fold', percent: 100 - fall.gelesen },
+      ]);
+      const findings = checkLegendMatch(matrix, {
+        [fall.art]: fall.gedruckt,
+        fold: 100 - fall.gedruckt,
+      });
+
+      const treffer = findings.find((entry) => entry.actionKind === fall.art);
+      expect(treffer, `HR ${fall.hr}`).toBeDefined();
+      expect(treffer?.kind, `HR ${fall.hr}`).toBe('legend-mismatch');
+      expect(treffer?.severity, `HR ${fall.hr}`).toBe('error');
+      expect(treffer?.measured, `HR ${fall.hr}`).toBeCloseTo(fall.gelesen, 1);
+      expect(treffer?.expected, `HR ${fall.hr}`).toBe(fall.gedruckt);
+    }
+  });
+
+  it('laesst den kleinsten der fuenf Faelle nicht knapp durchrutschen', () => {
+    // HR 27 liegt mit 1,81 pp am dichtesten an der Toleranz. Bei 2,0 pp waere
+    // es durchgerutscht - deshalb steht die Toleranz bei 1,5 pp, denselben,
+    // die T3.4 fuer denselben Messfehler begruendet hat.
+    const matrix = matrixOf(() => [
+      { kind: 'raise', percent: 15.84 },
+      { kind: 'fold', percent: 84.16 },
+    ]);
+    const findings = checkLegendMatch(matrix, { raise: 17.65, fold: 82.35 });
+    expect(findings.length).toBeGreaterThan(0);
+    expect(findings.every((entry) => entry.severity === 'error')).toBe(true);
+  });
+
+  it('beanstandet ein korrekt gelesenes Chart nicht, auch nicht mit Mischzellen', () => {
+    // Die Gegenprobe zur Schaerfe: 0,53 pp Rest aus Dreieck-Mischzellen - so
+    // stand HR 16 nach der Korrektur da - bleiben unbeanstandet.
+    const matrix = matrixOf(() => [
+      { kind: 'call', percent: 60.18 },
+      { kind: 'fold', percent: 39.82 },
+    ]);
+    expect(checkLegendMatch(matrix, { call: 59.65, fold: 40.35 })).toEqual([]);
   });
 });
 

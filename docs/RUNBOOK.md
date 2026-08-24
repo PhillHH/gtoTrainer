@@ -1482,9 +1482,15 @@ Runner, keine Wartezeit**. Sie laufen auf dem Host gegen die Datenbank:
 ```bash
 cd apps/backend
 pnpm charts:validate              # alle raw/validated Charts pruefen
+pnpm charts:validate --alle       # freigegebene mitpruefen (Befunde nachziehen)
 pnpm charts:validate --status     # nur Zaehlstaende, ohne zu schreiben
 pnpm charts:validate --limit 20   # Teillauf
 ```
+
+> **`--alle` braucht man, sobald eine Prüfung hinzukommt.** Freigegebene Charts
+> werden im Normallauf nicht angefasst; ihre Befunde stammen dann noch aus der
+> Zeit vor der neuen Prüfung. Der Zustand ändert sich dadurch nicht — eine
+> Freigabe wird nie zurückgenommen —, nur die Befundliste wird aktuell.
 
 Der Lauf ist wiederholbar. `approved`, `unusable` und `failed` bleiben
 unangetastet — eine Freigabe wird nicht zurückgenommen.
@@ -1492,13 +1498,48 @@ unangetastet — eine Freigabe wird nicht zurückgenommen.
 Einzelne Heuristiken abschalten (etwa, um die Warnungslage zu vergleichen):
 
 ```bash
-pnpm charts:validate --no-monotonie --no-ausreisser
+pnpm charts:validate --no-monotonie --no-ausreisser --no-legende
 ```
 
 Das ändert nur, was gemeldet wird. Ob ein Chart als bestanden gilt, hängt
 ausschließlich an `error`-Befunden.
 
-### 14.2 Zweitdurchlauf auslösen
+### 14.2 Legende nachziehen (einmalig, AP3.T3.6-fix)
+
+Charts, die **vor** Fassung 2 des Digitalisierungs-Templates entstanden sind,
+tragen keine gelesene Legende. Neue Charts bekommen sie im selben Vision-Aufruf
+wie die Matrix; für die alten gibt es einen schmalen Nachzug:
+
+```bash
+cd apps/backend
+pnpm charts:validate --legende-nachziehen        # alle offenen
+pnpm charts:validate --legende-nachziehen 10     # hoechstens 10
+```
+
+Der Aufruf ist klein: kein Raster, keine Blattliste, Ausgabegrenze 2 048 statt
+32 768 Token. Gemessen am ersten Lauf: **6 663 Tokens und 8 Sekunden je Chart**
+gegen 22 586 Tokens und 122 Sekunden für eine volle Digitalisierung. 25 Charts
+liefen in fünf Minuten durch.
+
+Der Job schreibt nur `legend_totals`, `legend_present` und `legend_labels` und
+stößt danach die Validierung an. **Die Matrix bleibt unangetastet.** Charts, die
+bereits eine Legende haben, lehnt er ab — Kontingent geht nur in Offenes.
+
+Was danach in der Datenbank steht:
+
+```bash
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select a.caption_number, c.legend_present, c.legend_labels
+     from range_chart c join book_asset a on a.id = c.asset_id
+    order by 1"
+```
+
+> **Eine Legende, die nicht auf 100 % summiert, ist als Bezugswert unbrauchbar**
+> und wird als `legend-not-checkable` geführt. Realer Fall: HR 5 druckt
+> „2.5x 23.08 %" und „Fold 0 %" neben einem zu 77 % grauen Raster. Das ist kein
+> Lesefehler, sondern eine Eigenheit des Buchs.
+
+### 14.2a Zweitdurchlauf auslösen
 
 Verarbeitet **ausschließlich** Charts mit mindestens einem `error`-Befund. Der
 Job prüft das selbst noch einmal und verweigert sich sonst — ein Tippfehler im

@@ -238,6 +238,118 @@ export function checkCaptionMatch(
 }
 
 /* -------------------------------------------------------------------------
+ * Prüfung 4 — Abgleich gegen die im Bild gedruckte Legende
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Hält die Matrix gegen die **im Bild gedruckte** Legende (AP3.T3.6-fix).
+ *
+ * Das ist die wirksamste der vier Prüfungen — nicht, weil sie schärfer wäre,
+ * sondern weil sie fast immer greift: Die Bildunterschrift des Buchs nennt nur
+ * bei etwa einem Viertel der Charts Prozentwerte, die Legende im Bild bei
+ * nahezu allen.
+ *
+ * Sie prüft dasselbe wie `checkCaptionMatch` und ist trotzdem keine Dublette:
+ * Die Caption-Werte stammen aus dem gesetzten Buchtext (T3.1), die
+ * Legendenwerte aus einer eigenen Ablesung des Bildes. Zwei Quellen, zwei
+ * Fehlermöglichkeiten — und ein Chart, das gegen beide besteht, ist zweifach
+ * belegt.
+ *
+ * **Die Legendenwerte werden nie aus der Matrix hergeleitet.** Täten sie es,
+ * prüfte sich die Matrix gegen sich selbst, und der Befund aus T3.6 (fünf
+ * automatisch bestandene Charts mit Abweichungen bis 11,4 pp) wiederholte sich
+ * unbemerkt.
+ */
+/**
+ * Wie weit darf die Summe der Legendenwerte von 100 % abweichen, bevor die
+ * Legende als Bezugswert ausscheidet? Zwei Prozentpunkte decken die Rundung
+ * zweier Nachkommastellen über eine Handvoll Zeilen ab.
+ */
+const LEGEND_SUM_TOLERANCE_PP = 2;
+
+export function checkLegendMatch(
+  matrix: ChartMatrix,
+  legendTotals: Readonly<Record<string, number>>,
+): ChartFinding[] {
+  const kinds = Object.keys(legendTotals);
+  if (kinds.length === 0) {
+    return [
+      finding(
+        'legend-not-checkable',
+        'info',
+        'Im Bild steht keine Legende mit Prozentwerten; dieser Abgleich ist für ' +
+          'das Chart nicht möglich.',
+      ),
+    ];
+  }
+
+  // Gültigkeitsbedingung an den **Bezugswert**: Eine Legende beschreibt die
+  // ganze Range, ihre Anteile ergeben also zusammen 100 %. Tut sie das nicht,
+  // ist sie unvollständig gelesen oder im Buch selbst widersprüchlich — und
+  // ein Vergleich einzelner Aktionen dagegen erzeugt Rauschen statt Belegen.
+  //
+  // Am Bestand: 17 von 18 gelesenen Legenden summieren auf exakt 100,00. Die
+  // eine Ausnahme druckt „Fold 0 %" neben einem Raster, das zu 77 % grau ist —
+  // dort ist die Null ein Platzhalter für „nicht Teil der Auswahl", keine
+  // Messung. Gegen so eine Zahl zu prüfen, würde jedes Auswahl-Chart zu
+  // Unrecht beanstanden.
+  const legendSum = kinds.reduce((sum, kind) => sum + (legendTotals[kind] as number), 0);
+  if (Math.abs(legendSum - 100) > LEGEND_SUM_TOLERANCE_PP) {
+    return [
+      finding(
+        'legend-not-checkable',
+        'info',
+        `Die Legende im Bild ergibt zusammen ${legendSum.toFixed(2)} % statt 100 % ` +
+          `(${kinds.map((kind) => `${kind} ${(legendTotals[kind] as number).toFixed(2)} %`).join(', ')}). ` +
+          `Als Bezugswert für einen Gesamtabgleich ist sie damit unbrauchbar; das Chart ` +
+          `braucht eine manuelle Sichtung.`,
+      ),
+    ];
+  }
+
+  const totals = weightedTotals(matrix);
+  const tolerance = CHART_TOLERANCES.legendMatchPp;
+  const findings: ChartFinding[] = [];
+
+  for (const kind of kinds) {
+    const expected = legendTotals[kind] as number;
+    const measured = totals[kind];
+
+    if (measured === undefined) {
+      findings.push(
+        finding(
+          'legend-missing-action',
+          'error',
+          `Die Legende im Bild nennt "${kind}" mit ${expected.toFixed(1)} %, in der ` +
+            `Matrix kommt diese Aktion überhaupt nicht vor.`,
+          { actionKind: kind, measured: 0, expected },
+        ),
+      );
+      continue;
+    }
+
+    const deviation = Math.abs(measured - expected);
+    if (deviation <= tolerance) continue;
+    findings.push(
+      finding(
+        'legend-mismatch',
+        'error',
+        `Legende im Bild: "${kind}" ${expected.toFixed(2)} %, gelesen ` +
+          `${measured.toFixed(2)} % — Abweichung ${deviation.toFixed(2)} pp ` +
+          `(Toleranz ±${tolerance} pp).`,
+        {
+          actionKind: kind,
+          measured: Number(measured.toFixed(2)),
+          expected,
+        },
+      ),
+    );
+  }
+
+  return findings;
+}
+
+/* -------------------------------------------------------------------------
  * Prüfung 3 — Plausibilität
  * ---------------------------------------------------------------------- */
 
@@ -443,12 +555,14 @@ export function validateChart(
   matrix: ChartMatrix,
   captionTotals: Readonly<Record<string, number>>,
   options: ChartCheckOptions = ALL_CHECKS,
+  legendTotals: Readonly<Record<string, number>> = {},
 ): ChartValidationResult {
   const enabled = { ...ALL_CHECKS, ...options };
   const findings: ChartFinding[] = [];
 
   if (enabled.frequencySum) findings.push(...checkFrequencySum(matrix));
   if (enabled.captionMatch) findings.push(...checkCaptionMatch(matrix, captionTotals));
+  if (enabled.legendMatch) findings.push(...checkLegendMatch(matrix, legendTotals));
   if (enabled.completeness) findings.push(...checkCompleteness(matrix));
   if (enabled.monotonicity) findings.push(...checkMonotonicity(matrix));
   if (enabled.outlier) findings.push(...checkOutliers(matrix));
@@ -457,6 +571,7 @@ export function validateChart(
     findings,
     weightedTotals: weightedTotals(matrix),
     captionTotals,
+    legendTotals,
     passed: !findings.some((entry) => entry.severity === 'error'),
   };
 }

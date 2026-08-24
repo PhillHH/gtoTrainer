@@ -753,12 +753,14 @@ Chart, das unbemerkt zur Grundlage von Drills und Analysen wird.
 range_chart (state = 'raw')
    │
    ▼
-chart/validate.ts            DREI UNABHAENGIGE PRUEFUNGEN, ohne KI
+chart/validate.ts            VIER UNABHAENGIGE PRUEFUNGEN, ohne KI
    ├── frequency-sum   Summe je Zelle ~ 100 %        (rechnet IN der Matrix)
    ├── caption-match   combo-gewichtet 6/4/12 gegen  (externe Wahrheit aus
-   │                   die Caption-Prozente aus T3.1   T3.1, nie modellberuehrt)
+   │                   die Caption-Prozente aus T3.1   T3.1; 6 von 25 Charts)
+   ├── legend-match    dieselbe Rechnung gegen die   (zweite externe Wahrheit,
+   │                   im BILD gedruckte Legende       abgelesen; 18 von 25)
    └── plausibility    Vollstaendigkeit / Monotonie / (Pokerwissen, unabhaengig
-                       Ausreisser                       von beidem)
+                       Ausreisser                       von allem anderen)
    │
    ▼
 chart/validation-store.ts    Befunde persistieren, Zustand setzen
@@ -800,12 +802,16 @@ Zwei Eigenschaften, die für Folge-APs zählen:
   `corrected_at` je Zelle; der Zweitdurchlauf überspringt sie, ein erneuter
   Validierungslauf überschreibt sie nicht.
 
-**Grenze der automatischen Prüfung, gemessen am echten Bestand:** `caption-match`
-ist die einzige Prüfung mit externer Gegenprobe — aber nur 6 der 25 lesbaren
-Charts haben überhaupt Prozentwerte in der Buch-Unterschrift. Ein Chart auf
-`validated` heißt deshalb „nichts spricht dagegen", nicht „extern bestätigt".
-Die Review-Ansicht ist damit kein Restposten, sondern der Regelweg nach
-`approved` (siehe `docs/status/AP03.md`, Abschnitt T3.4).
+**Zwei externe Gegenproben, nicht eine.** Die Buch-Unterschrift nennt nur bei 6
+von 25 Charts Prozentwerte; die im Bild gedruckte Legende bei 18. Zusammen
+decken sie **24 von 25** ab. Bis T3.6 gab es nur die erste — und die Sichtung
+fand fünf automatisch bestandene Charts mit Abweichungen bis 11,4 pp. Die
+vierte Prüfung schließt genau diese Lücke ([ADR-0036](./DECISIONS.md)).
+
+Die Legendenwerte werden **abgelesen, nie hergeleitet**: eigenes Feld im
+Vision-Aufruf, eigene Spalten (`legend_totals`, `legend_present`,
+`legend_labels`). Würden sie aus der Matrix berechnet, prüfte sich die Matrix
+gegen sich selbst.
 
 ## 3k. Content-Service (neu in AP3.T3.5)
 

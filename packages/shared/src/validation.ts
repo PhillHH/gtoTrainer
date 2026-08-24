@@ -16,7 +16,12 @@
  * ---------------------------------------------------------------------- */
 
 /** Die drei Prüfarten. */
-export const CHART_CHECKS = ['frequency-sum', 'caption-match', 'plausibility'] as const;
+export const CHART_CHECKS = [
+  'frequency-sum',
+  'caption-match',
+  'legend-match',
+  'plausibility',
+] as const;
 export type ChartCheck = (typeof CHART_CHECKS)[number];
 
 export function isChartCheck(value: unknown): value is ChartCheck {
@@ -42,6 +47,9 @@ export const CHART_FINDING_KINDS = [
   'caption-mismatch',
   'caption-missing-action',
   'caption-not-checkable',
+  'legend-mismatch',
+  'legend-missing-action',
+  'legend-not-checkable',
   // Prüfung 3
   'incomplete-matrix',
   'empty-cell',
@@ -56,6 +64,9 @@ export const FINDING_CHECK: Readonly<Record<ChartFindingKind, ChartCheck>> = {
   'caption-mismatch': 'caption-match',
   'caption-missing-action': 'caption-match',
   'caption-not-checkable': 'caption-match',
+  'legend-mismatch': 'legend-match',
+  'legend-missing-action': 'legend-match',
+  'legend-not-checkable': 'legend-match',
   'incomplete-matrix': 'plausibility',
   'empty-cell': 'plausibility',
   monotonicity: 'plausibility',
@@ -104,6 +115,23 @@ export const CHART_TOLERANCES = {
    */
   captionMatchPp: 1.5,
   /**
+   * Combo-gewichteter Abgleich gegen die **im Bild gedruckte Legende** in
+   * Prozentpunkten (AP3.T3.6-fix).
+   *
+   * Derselbe Wert wie beim Caption-Abgleich, und aus demselben Grund: Der
+   * Messfehler sitzt nicht im Vergleichswert, sondern in der Matrix. Die
+   * gedruckte Legende ist gesetzter Text mit zwei Nachkommastellen
+   * (`59.65 %`) — Ziffern abzulesen ist etwas anderes, als einen Farbanteil zu
+   * schätzen. Die Unsicherheit stammt also allein aus der combo-gewichteten
+   * Summe über 169 Zellen, und für die hat T3.4 bereits 1,5 pp begründet.
+   *
+   * Am Bestand geprüft: 15 der 21 automatisch bestandenen Charts trafen ihren
+   * gedruckten Wert auf ≤ 0,09 pp, HR 16 nach der Korrektur auf 0,53 pp — alle
+   * weit innerhalb. Die fünf nachweislich falsch gelesenen Charts lagen
+   * zwischen 1,81 und 11,39 pp und werden damit alle erkannt.
+   */
+  legendMatchPp: 1.5,
+  /**
    * Monotonie: Um wie viele Prozentpunkte darf eine **dominierte** Hand
    * aggressiver gespielt werden als die dominierende, bevor es auffällt.
    * Großzügig, weil echte Strategien lokale Ausnahmen kennen (Blocker,
@@ -128,6 +156,8 @@ export interface ChartValidationResult {
   readonly weightedTotals: Readonly<Record<string, number>>;
   /** Die Caption-Prozente, gegen die geprüft wurde. */
   readonly captionTotals: Readonly<Record<string, number>>;
+  /** Die gedruckten Legendenwerte, gegen die geprüft wurde. */
+  readonly legendTotals: Readonly<Record<string, number>>;
   /** `true`, wenn kein Befund mit Schweregrad `error` vorliegt. */
   readonly passed: boolean;
 }
@@ -136,6 +166,8 @@ export interface ChartValidationResult {
 export interface ChartCheckOptions {
   readonly frequencySum?: boolean;
   readonly captionMatch?: boolean;
+  /** Abgleich gegen die im Bild gedruckte Legende (AP3.T3.6-fix). */
+  readonly legendMatch?: boolean;
   readonly completeness?: boolean;
   readonly monotonicity?: boolean;
   readonly outlier?: boolean;
@@ -145,6 +177,7 @@ export interface ChartCheckOptions {
 export const ALL_CHECKS: Required<ChartCheckOptions> = {
   frequencySum: true,
   captionMatch: true,
+  legendMatch: true,
   completeness: true,
   monotonicity: true,
   outlier: true,

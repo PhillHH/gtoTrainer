@@ -182,6 +182,15 @@ export interface PersistChartInput {
   readonly actions: readonly ChartAction[];
   readonly matrix: ChartMatrix;
   readonly uncertain: readonly string[];
+  /**
+   * Die im Bild gedruckte Legende als `{ aktionsart: prozent }`
+   * (AP3.T3.6-fix). Sie wird **abgelesen** uebergeben, nie aus `matrix`
+   * berechnet - sonst pruefte sich die Matrix spaeter gegen sich selbst.
+   */
+  readonly legendTotals?: Readonly<Record<string, number>>;
+  readonly legendPresent?: boolean;
+  /** Die Beschriftungen im Wortlaut des Bildes. */
+  readonly legendLabels?: readonly string[];
   readonly durationMs?: number;
   readonly promptTokens?: number | null;
   readonly completionTokens?: number | null;
@@ -209,6 +218,9 @@ export async function persistChart(db: Database, input: PersistChartInput): Prom
     spot: input.spot,
     uncertain: input.uncertain,
     cellCount: input.matrix.length,
+    legendTotals: input.legendTotals ?? {},
+    legendPresent: input.legendPresent ?? false,
+    legendLabels: input.legendLabels ?? [],
     failureReason: input.failureReason ?? null,
     durationMs: input.durationMs ?? null,
     promptTokens: input.promptTokens ?? null,

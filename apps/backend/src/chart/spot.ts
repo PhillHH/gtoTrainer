@@ -259,3 +259,40 @@ export function toChartMatrix(cells: unknown): {
 export function renderPositions(): string {
   return CHART_POSITIONS.join(', ');
 }
+
+/* -------------------------------------------------------------------------
+ * Gedruckte Legende (AP3.T3.6-fix)
+ * ---------------------------------------------------------------------- */
+
+/** Ein Eintrag der im Bild gedruckten Legende, wie das Modell ihn liefert. */
+export interface LegendValue {
+  readonly art: string;
+  readonly sizing?: string | null;
+  readonly prozent: number;
+  readonly beschriftung: string;
+}
+
+/**
+ * Fasst die gedruckten Legendenwerte zu `{ aktionsart: prozent }` zusammen.
+ *
+ * **Reine Umformung.** Hier wird nichts gerechnet, ergänzt oder plausibilisiert
+ * — die Werte sind eine unabhängige Beobachtung und müssen es bleiben. Was
+ * sich keiner Aktionsart zuordnen lässt, fällt heraus und taucht in den
+ * Beschriftungen auf, damit die Lücke sichtbar bleibt.
+ */
+export function legendTotalsOf(values: readonly LegendValue[]): {
+  totals: Record<string, number>;
+  labels: string[];
+} {
+  const totals: Record<string, number> = {};
+  const labels: string[] = [];
+
+  for (const entry of values) {
+    if (typeof entry?.prozent !== 'number' || !Number.isFinite(entry.prozent)) continue;
+    labels.push(`${entry.beschriftung} = ${entry.prozent} %`);
+    if (!isChartActionKind(entry.art)) continue;
+    totals[entry.art] = (totals[entry.art] ?? 0) + entry.prozent;
+  }
+
+  return { totals, labels };
+}

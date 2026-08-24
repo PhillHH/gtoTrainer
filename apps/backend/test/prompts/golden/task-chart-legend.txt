@@ -48,69 +48,44 @@ Sprache und Ansprache:
   erkläre sie beim ersten Auftreten in einem Halbsatz.
 - Keine Emojis, keine Ausrufezeichen als Betonungsmittel.
 === message (user) ===
-Lies das beigefügte Range-Chart ab.
+Im beigefügten Bild steht ein Range-Chart. **Du liest heute nicht das Raster.**
 
-Bildunterschrift aus dem Buch:
+Deine einzige Aufgabe ist die **Legende**: der Kasten unter oder neben dem
+Raster, der jede Farbe benennt und ihren Gesamtanteil in Prozent nennt. Typisch
+sieht er so aus:
 
-*Hand Range 96: SB vs BB (15bb)*
-*• All-in 23.7% / • Limp 61.5% / • Fold 14.8%*
+    ▉  Call        59.65%
+    □  Off Range   40.35%
 
-Was aus der Unterschrift bereits bekannt ist (du musst es nicht ableiten):
+Bildunterschrift aus dem Buch (nur zur Einordnung — die Zahlen dort sind
+**nicht** gemeint):
 
-- Position: SB
-- Gegenposition: BB
-- Stacktiefe: 15bb
+*Hand Range 16: A Capped Range*
 
 Aktionen, die dieses Chart laut Unterschrift verwendet:
 
-- `all_in` — All-in
-- `limp` — Limp
-- `fold` — Fold
+- `call` — Call
+- `fold` — Off Range
 
 Aufgabe:
 
-1. Gib in `zellen` **alle 169 Blätter** zurück — auch die, die zu 100 % gefoldet
-   werden. Eine fehlende Zelle ist ein Fehler, kein zulässiges Ergebnis.
-   Die gültigen Blattbezeichnungen sind exakt diese, in dieser Schreibweise:
+1. Gib je Legendenzeile mit Prozentwert einen Eintrag in `legendenwerte`:
+   - `beschriftung` ist der Text **wörtlich so, wie er im Bild steht**
+     (`Off Range`, `2.5x`, `3-bet all-in`).
+   - `art` ist die passende Kennung aus dem Schema. Alles, was nicht gespielt
+     wird — `Fold`, `Off Range`, `Unselected` —, ist `fold`.
+   - `sizing` nur, wenn die Beschriftung eine Größe nennt (`2.5x`, `10bb`).
+   - `prozent` ist die gedruckte Zahl, unverändert und ungerundet.
+2. Setze `legendenwerte_vorhanden` auf `true`, wenn du mindestens einen
+   Prozentwert **im Bild** gefunden hast, sonst auf `false`.
+3. Steht im Bild keine Legende, oder nennt sie nur Farben ohne Prozente, dann
+   ist `false` mit leerer Liste die richtige Antwort. Schreibe den Grund nach
+   `unsicher`.
 
-   AA AKs AQs …
-AKo KK KQs …
-
-2. Je Zelle die Aktionsverteilung in `aktionen`:
-   - `art` ist eine der Kennungen aus dem Schema (`fold`, `check`, `call`,
-     `limp`, `bet`, `raise`, `three_bet`, `four_bet`, `five_bet`, `all_in`).
-   - `sizing` nur, wenn das Chart eine Größe nennt (`2.5x`, `10bb`, `pot`).
-     Sonst weglassen.
-   - `prozent` ist der Flächenanteil dieser Aktion in der Zelle. Die Werte
-     einer Zelle ergeben zusammen 100.
-   - Einfarbige Zelle: genau eine Aktion mit 100.
-3. In `legende` schreibst du, welche Farbe du welcher Aktion zugeordnet hast —
-   eine Zeile je Farbe, zum Beispiel `grün = raise 2.5x`. Das ist der Beleg
-   dafür, dass du die Legende des Bildes gelesen hast und nicht geraten.
-4. In `legendenwerte` gibst du die **im Bild gedruckte Legende** wieder — den
-   Kasten unter oder neben dem Raster, der jede Farbe benennt und ihren
-   Gesamtanteil in Prozent nennt (etwa `Call 59.65 %` / `Off Range 40.35 %`).
-   - Je Eintrag: `beschriftung` ist der Text **wörtlich so, wie er im Bild
-     steht**; `art` ist die passende Kennung aus dem Schema; `prozent` ist die
-     gedruckte Zahl.
-   - **Lies diese Zahlen ab. Rechne sie nicht aus.** Sie sind eine von deiner
-     Matrix unabhängige Beobachtung und werden später genau dagegen gehalten.
-     Eine aus der Matrix hergeleitete Zahl macht diese Prüfung wertlos.
-   - Steht im Bild **keine** Legende mit Prozentwerten, setzt du
-     `legendenwerte_vorhanden` auf `false` und `legendenwerte` auf eine leere
-     Liste. Das ist ein gültiges Ergebnis; eine geschätzte Zahl wäre es nicht.
-   - Nennt die Legende nur Farben ohne Prozente, gilt dasselbe: keine Prozente,
-     also `false` und leere Liste.
-5. In `unsicher` listest du jede Stelle, die du nicht zweifelsfrei lesen
-   konntest, mit Blattbezeichnung und Grund. Ist alles klar lesbar, bleibt die
-   Liste leer. **Rate nicht** — eine Zelle, bei der du dir unsicher bist,
-   gehört mit deinem besten Wert **und** einem Eintrag in `unsicher` in die
-   Antwort.
-
-Zeigt das Bild kein Raster mit Aktionsfarben, sondern etwa nur die
-Blattbezeichnungen oder eine reine Beispiel-Illustration, dann gib `zellen`
-leer zurück und schreibe den Grund in `unsicher`. Das ist ein gültiges
-Ergebnis; eine erfundene Matrix wäre es nicht.
+**Diese Zahlen werden gleich gegen eine unabhängig davon abgelesene Matrix
+gehalten.** Deshalb: Du liest ab, was gedruckt ist. Du rechnest nichts aus, du
+schätzt nichts, und du ergänzt keinen fehlenden Wert aus den anderen. Eine
+geratene Zahl macht die Prüfung wertlos — eine ehrliche Lücke nicht.
 
 Umgang mit Daten:
 
@@ -137,68 +112,6 @@ Ausgabeform:
 {
   "type": "object",
   "properties": {
-    "zellen": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "hand": {
-            "type": "string"
-          },
-          "aktionen": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "art": {
-                  "type": "string",
-                  "enum": [
-                    "fold",
-                    "check",
-                    "call",
-                    "limp",
-                    "bet",
-                    "raise",
-                    "three_bet",
-                    "four_bet",
-                    "five_bet",
-                    "all_in"
-                  ]
-                },
-                "sizing": {
-                  "type": "string"
-                },
-                "prozent": {
-                  "type": "number"
-                }
-              },
-              "required": [
-                "art",
-                "prozent"
-              ],
-              "additionalProperties": false
-            }
-          }
-        },
-        "required": [
-          "hand",
-          "aktionen"
-        ],
-        "additionalProperties": false
-      }
-    },
-    "unsicher": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
-    },
-    "legende": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
-    },
     "legendenwerte": {
       "type": "array",
       "items": {
@@ -239,14 +152,18 @@ Ausgabeform:
     },
     "legendenwerte_vorhanden": {
       "type": "boolean"
+    },
+    "unsicher": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     }
   },
   "required": [
-    "zellen",
-    "unsicher",
-    "legende",
     "legendenwerte",
-    "legendenwerte_vorhanden"
+    "legendenwerte_vorhanden",
+    "unsicher"
   ],
   "additionalProperties": false
 }

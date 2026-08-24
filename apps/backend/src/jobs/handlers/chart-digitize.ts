@@ -3,7 +3,13 @@ import type { ChartAction, ChartSpot } from '@gto/shared';
 import type { LlmProviderRegistry } from '../../llm/registry.js';
 import type { LlmSettingsReader } from '../../llm/settings.js';
 import type { TemplateRegistry } from '../../prompts/registry.js';
-import { captionActionsToLegend, parseChartSpot, toChartMatrix } from '../../chart/spot.js';
+import {
+  captionActionsToLegend,
+  legendTotalsOf,
+  parseChartSpot,
+  toChartMatrix,
+} from '../../chart/spot.js';
+import type { LegendValue } from '../../chart/spot.js';
 import {
   isComplete,
   legendOf,
@@ -182,6 +188,9 @@ export function createChartDigitizeJob(
 
       const parsed = readExtraction(response.json ?? response.text);
       const matrix = toChartMatrix(parsed.zellen);
+      // Die gedruckte Legende wird nur umgeformt, nie aus der Matrix
+      // hergeleitet - sie ist die unabhaengige Gegenprobe (AP3.T3.6-fix).
+      const printedLegend = legendTotalsOf(parsed.legendenwerte);
       const issues = matrixIssues(matrix);
       const complete = isComplete(matrix);
 
@@ -207,6 +216,9 @@ export function createChartDigitizeJob(
         // Die Legendenzuordnung des Modells wird mitgeschrieben: Sie ist der
         // Beleg, welche Farbe als welche Aktion gelesen wurde.
         uncertain: [...parsed.unsicher, ...parsed.legende.map((line) => `Legende: ${line}`)],
+        legendTotals: printedLegend.totals,
+        legendPresent: parsed.legendenwerteVorhanden,
+        legendLabels: printedLegend.labels,
         durationMs: response.meta.durationMs,
         promptTokens: response.meta.promptTokens,
         completionTokens: response.meta.completionTokens,
@@ -218,7 +230,8 @@ export function createChartDigitizeJob(
       context.log(
         `Chart ${describe(asset)}: ${matrix.length}/169 Zellen, ` +
           `${complete ? 'vollstaendig' : matrix.length === 0 ? 'KEIN AKTIONSRASTER' : 'UNVOLLSTAENDIG'}, ` +
-          `${parsed.unsicher.length} unsichere Stellen ` +
+          `${parsed.unsicher.length} unsichere Stellen, ` +
+          `Legende ${parsed.legendenwerteVorhanden ? printedLegend.labels.join(' / ') : 'nicht im Bild'} ` +
           `(${response.meta.provider}/${response.meta.model}, ${response.meta.durationMs} ms, ` +
           `${response.meta.totalTokens ?? '?'} Tokens).`,
       );
@@ -237,6 +250,8 @@ export function readExtraction(source: unknown): {
   zellen: unknown;
   unsicher: string[];
   legende: string[];
+  legendenwerte: LegendValue[];
+  legendenwerteVorhanden: boolean;
 } {
   let value = source;
 
@@ -251,16 +266,53 @@ export function readExtraction(source: unknown): {
     throw new JobPayloadError('Die Antwort war kein Objekt.');
   }
 
-  const record = value as { zellen?: unknown; unsicher?: unknown; legende?: unknown };
+  const record = value as {
+    zellen?: unknown;
+    unsicher?: unknown;
+    legende?: unknown;
+    legendenwerte?: unknown;
+    legendenwerte_vorhanden?: unknown;
+  };
   if (!Array.isArray(record.zellen)) {
     throw new JobPayloadError('Feld "zellen" fehlt oder ist keine Liste.');
   }
 
+  const legendenwerte = readLegendValues(record.legendenwerte);
   return {
     zellen: record.zellen,
     unsicher: asStrings(record.unsicher),
     legende: asStrings(record.legende),
+    legendenwerte,
+    // Das Modell sagt es ausdruecklich; eine leere Liste zaehlt ebenfalls als
+    // "keine Legende" - ein `true` ohne Werte waere ein Widerspruch.
+    legendenwerteVorhanden: record.legendenwerte_vorhanden === true && legendenwerte.length > 0,
   };
+}
+
+/**
+ * Liest die gedruckten Legendenwerte aus der Modellantwort.
+ *
+ * Ältere Antworten (Template-Fassung 1) tragen das Feld nicht — dann bleibt
+ * die Liste leer, und der Legenden-Abgleich meldet das Chart als nicht
+ * prüfbar. Das ist der richtige Umgang mit einer fehlenden Beobachtung.
+ */
+export function readLegendValues(value: unknown): LegendValue[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry): LegendValue[] => {
+    if (typeof entry !== 'object' || entry === null) return [];
+    const record = entry as Record<string, unknown>;
+    if (typeof record['art'] !== 'string') return [];
+    if (typeof record['prozent'] !== 'number' || !Number.isFinite(record['prozent'])) return [];
+    return [
+      {
+        art: record['art'],
+        sizing: typeof record['sizing'] === 'string' ? record['sizing'] : null,
+        prozent: record['prozent'],
+        beschriftung:
+          typeof record['beschriftung'] === 'string' ? record['beschriftung'] : record['art'],
+      },
+    ];
+  });
 }
 
 function asStrings(value: unknown): string[] {

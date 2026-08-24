@@ -9,6 +9,7 @@ import { JobEventBus } from '../../src/jobs/events.js';
 import { JobHandlerRegistry } from '../../src/jobs/types.js';
 import { JobWorker } from '../../src/jobs/worker.js';
 import { createChartDigitizeJob } from '../../src/jobs/handlers/chart-digitize.js';
+import { createChartLegendJob } from '../../src/jobs/handlers/chart-legend.js';
 import { createChartRecheckJob } from '../../src/jobs/handlers/chart-recheck.js';
 import { TemplateRegistry } from '../../src/prompts/registry.js';
 import { MINI_BOOK } from '../book/fixtures.js';
@@ -73,6 +74,15 @@ export function createChartRuntime(db: Database, json: unknown): ChartTestRuntim
   events.subscribe((event) => received.push({ jobType: event.jobType, status: event.status }));
 
   const handlers = new JobHandlerRegistry()
+    .register(
+      createChartLegendJob({
+        providers,
+        templates: TemplateRegistry.load(),
+        defaultModel: 'claude-sonnet-5',
+        maxTokens: 256,
+        sourceDir: MINI_BOOK,
+      }),
+    )
     .register(
       createChartRecheckJob({
         providers,
@@ -211,10 +221,14 @@ export function fullFoldResponse(): {
   zellen: { hand: string; aktionen: { art: string; prozent: number }[] }[];
   unsicher: string[];
   legende: string[];
+  legendenwerte: { art: string; prozent: number; beschriftung: string }[];
+  legendenwerte_vorhanden: boolean;
 } {
   return {
     zellen: CHART_HANDS.map((hand) => ({ hand, aktionen: [{ art: 'fold', prozent: 100 }] })),
     unsicher: [],
     legende: ['grau = fold'],
+    legendenwerte: [],
+    legendenwerte_vorhanden: false,
   };
 }

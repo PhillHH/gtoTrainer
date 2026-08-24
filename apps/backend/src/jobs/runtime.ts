@@ -7,6 +7,7 @@ import { createSettingsReader } from '../llm/settings.js';
 import { TemplateRegistry } from '../prompts/registry.js';
 import { JobEventBus } from './events.js';
 import { createChartDigitizeJob } from './handlers/chart-digitize.js';
+import { createChartLegendJob } from './handlers/chart-legend.js';
 import { createChartRecheckJob } from './handlers/chart-recheck.js';
 import { createConceptExtractJob } from './handlers/concept-extract.js';
 import { createLlmCompleteJob } from './handlers/llm-complete.js';
@@ -102,6 +103,14 @@ export function createLlmRuntime(options: CreateRuntimeOptions): LlmRuntime {
       }),
     )
     // Gezielter Zweitdurchlauf beanstandeter Charts (AP3.T3.4).
+    .register(
+      createChartLegendJob({
+        providers,
+        templates,
+        defaultModel: llmConfig.model,
+        settings,
+      }),
+    )
     .register(
       createChartRecheckJob({
         providers,

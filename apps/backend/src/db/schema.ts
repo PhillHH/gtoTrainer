@@ -577,6 +577,23 @@ export const rangeChart = pgTable(
       .default(sql`'[]'::jsonb`),
     /** Anzahl gelesener Zellen. 169 = vollstaendig. */
     cellCount: integer('cell_count').notNull().default(0),
+    /**
+     * Die im Bild **gedruckte** Legende als `{ aktionsart: prozent }`.
+     *
+     * Unabhaengige Beobachtung (AP3.T3.6-fix): abgelesen, nie aus der Matrix
+     * hergeleitet. Sie ist die Gegenprobe fuer die vierte Pruefung - und die
+     * einzige, die bei fast jedem Chart greift, waehrend die Caption-Prozente
+     * nur bei etwa einem Viertel vorhanden sind.
+     */
+    legendTotals: jsonb('legend_totals')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    /** Hat das Bild ueberhaupt eine Legende mit Prozentwerten? */
+    legendPresent: boolean('legend_present').notNull().default(false),
+    /** Die Beschriftungen im Wortlaut des Bildes - Beleg der Ablesung. */
+    legendLabels: jsonb('legend_labels')
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     /** Grund, wenn `state = 'failed'`. */
     failureReason: text('failure_reason'),
     /** Begruendung, wenn ein Mensch das Chart als unbrauchbar verworfen hat. */

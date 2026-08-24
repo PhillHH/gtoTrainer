@@ -31,6 +31,12 @@ export interface LoadedChart {
   readonly matrix: ChartMatrix;
   /** Caption-Prozente je Aktionsart - die unabhängige Gegenprobe aus T3.1. */
   readonly captionTotals: Record<string, number>;
+  /**
+   * Die im Bild gedruckte Legende - die zweite, unabhängige Gegenprobe
+   * (AP3.T3.6-fix). Sie wird hier nur gelesen, nie berechnet.
+   */
+  readonly legendTotals: Record<string, number>;
+  readonly legendPresent: boolean;
   /** Blätter, deren Werte ein Mensch korrigiert hat. */
   readonly manualHands: readonly string[];
 }
@@ -64,6 +70,8 @@ export async function loadChart(db: Database, chartId: string): Promise<LoadedCh
       captionNumber: bookAsset.captionNumber,
       captionRaw: bookAsset.captionRaw,
       captionActions: bookAsset.captionActions,
+      legendTotals: rangeChart.legendTotals,
+      legendPresent: rangeChart.legendPresent,
     })
     .from(rangeChart)
     .innerJoin(bookAsset, eq(rangeChart.assetId, bookAsset.id))
@@ -105,6 +113,12 @@ export async function loadChart(db: Database, chartId: string): Promise<LoadedCh
         ? (row.captionActions as { action: string; percent: number }[])
         : [],
     ),
+    // Unveraendert aus der Datenbank - kein Ableiten, kein Ergaenzen.
+    legendTotals:
+      typeof row.legendTotals === 'object' && row.legendTotals !== null
+        ? (row.legendTotals as Record<string, number>)
+        : {},
+    legendPresent: row.legendPresent,
     manualHands: [...manualHands],
   };
 }
@@ -144,7 +158,7 @@ export async function validateAndStore(
   const chart = await loadChart(db, chartId);
   if (chart === undefined) return undefined;
 
-  const result = validateChart(chart.matrix, chart.captionTotals, options);
+  const result = validateChart(chart.matrix, chart.captionTotals, options, chart.legendTotals);
   const errors = result.findings.filter((entry) => entry.severity === 'error').length;
   const warnings = result.findings.filter((entry) => entry.severity === 'warning').length;
 
@@ -369,6 +383,10 @@ export async function manualCellCount(db: Database, chartId: string): Promise<nu
 
 export interface ValidationProgress {
   readonly handRangeAssets: number;
+  /** Charts mit gedruckter Legende - Abdeckung der vierten Prüfung. */
+  readonly chartsWithLegend: number;
+  /** Charts mit verwertbaren Caption-Prozenten - Abdeckung der zweiten. */
+  readonly chartsWithCaptionPercents: number;
   readonly digitized: number;
   readonly byState: Record<string, number>;
   readonly findingsByCheck: Record<string, number>;
@@ -404,15 +422,49 @@ export async function validationProgress(db: Database): Promise<ValidationProgre
     .from(chartFinding)
     .groupBy(chartFinding.severity);
 
+  // Wie viele Charts tragen ueberhaupt eine gedruckte Legende? Das ist die
+  // Abdeckung der vierten Pruefung - und die Zahl, an der sich zeigt, ob sie
+  // ihren Zweck erfuellt (AP3.T3.6-fix).
+  const [withLegend] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(rangeChart)
+    .where(eq(rangeChart.legendPresent, true));
+
+  const [withCaption] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(rangeChart)
+    .innerJoin(bookAsset, eq(bookAsset.id, rangeChart.assetId))
+    .where(sql`jsonb_array_length(${bookAsset.captionActions}) > 0`);
+
   const byState = Object.fromEntries(states.map((row) => [row.state, row.n]));
   const total = assets?.n ?? 0;
 
   return {
     handRangeAssets: total,
+    chartsWithLegend: withLegend?.n ?? 0,
+    chartsWithCaptionPercents: withCaption?.n ?? 0,
     digitized: states.reduce((sum, row) => sum + row.n, 0),
     byState,
     findingsByCheck: Object.fromEntries(byCheck.map((row) => [row.check, row.n])),
     findingsBySeverity: Object.fromEntries(bySeverity.map((row) => [row.severity, row.n])),
     approvedShare: total === 0 ? 0 : (byState['approved'] ?? 0) / total,
   };
+}
+
+/**
+ * Charts, denen die gedruckte Legende noch fehlt (AP3.T3.6-fix).
+ *
+ * Das sind die Datensätze aus der Zeit vor Fassung 2 des
+ * Digitalisierungs-Templates. Charts ohne Matrix (`failed`) bleiben außen vor —
+ * für ein Bild ohne Aktionsraster gibt es nichts abzugleichen.
+ */
+export async function chartsWithoutLegend(db: Database, limit?: number): Promise<string[]> {
+  const query = db
+    .select({ id: rangeChart.id })
+    .from(rangeChart)
+    .where(and(eq(rangeChart.legendPresent, false), ne(rangeChart.state, 'failed')))
+    .orderBy(asc(rangeChart.createdAt))
+    .$dynamic();
+  const rows = await (limit === undefined ? query : query.limit(limit));
+  return rows.map((row) => row.id);
 }

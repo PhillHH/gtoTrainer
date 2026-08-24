@@ -1387,22 +1387,25 @@ nennt. Begründung und Herleitung aus den tatsächlichen Bildunterschriften:
 
 ### `range_chart`
 
-| Spalte                    | Typ                      | Hinweis                                                             |
-| ------------------------- | ------------------------ | ------------------------------------------------------------------- |
-| `id`                      | `uuid` PK                |                                                                     |
-| `asset_id`                | `uuid` FK → `book_asset` | **eindeutig** — genau ein Chart je Bild                             |
-| `state`                   | `text`                   | CHECK: `raw` \| `validated` \| `approved` \| `failed` \| `unusable` |
-| `model`                   | `text`                   | Modell, das die Matrix gelesen hat (Herkunft)                       |
-| `run_id`                  | `text`                   | Lauf, in dem der Datensatz entstand                                 |
-| `actions`                 | `jsonb`                  | Legende: `[{ kind, sizing }]`                                       |
-| `spot`                    | `jsonb`                  | deterministisch aus der Unterschrift, siehe unten                   |
-| `uncertain`               | `jsonb`                  | vom Modell gemeldete Lücken plus seine Legendenzuordnung            |
-| `cell_count`              | `integer`                | 169 = vollständig                                                   |
-| `failure_reason`          | `text` NULL              | gesetzt, wenn `state = 'failed'`                                    |
-| `unusable_reason`         | `text` NULL              | Pflicht, wenn `state = 'unusable'` (T3.4)                           |
-| `validated_at`            | `timestamptz` NULL       | letzter Validierungslauf (T3.4)                                     |
-| `approved_at`             | `timestamptz` NULL       | Zeitpunkt der Freigabe (T3.4)                                       |
-| `duration_ms`, `*_tokens` | `integer` NULL           | Verbrauch des Aufrufs                                               |
+| Spalte                    | Typ                      | Hinweis                                                                |
+| ------------------------- | ------------------------ | ---------------------------------------------------------------------- |
+| `id`                      | `uuid` PK                |                                                                        |
+| `asset_id`                | `uuid` FK → `book_asset` | **eindeutig** — genau ein Chart je Bild                                |
+| `state`                   | `text`                   | CHECK: `raw` \| `validated` \| `approved` \| `failed` \| `unusable`    |
+| `model`                   | `text`                   | Modell, das die Matrix gelesen hat (Herkunft)                          |
+| `run_id`                  | `text`                   | Lauf, in dem der Datensatz entstand                                    |
+| `actions`                 | `jsonb`                  | Legende: `[{ kind, sizing }]`                                          |
+| `spot`                    | `jsonb`                  | deterministisch aus der Unterschrift, siehe unten                      |
+| `uncertain`               | `jsonb`                  | vom Modell gemeldete Lücken plus seine Legendenzuordnung               |
+| `cell_count`              | `integer`                | 169 = vollständig                                                      |
+| `failure_reason`          | `text` NULL              | gesetzt, wenn `state = 'failed'`                                       |
+| `unusable_reason`         | `text` NULL              | Pflicht, wenn `state = 'unusable'` (T3.4)                              |
+| `legend_totals`           | `jsonb`                  | die im Bild gedruckte Legende als `{ aktionsart: prozent }` (T3.6-fix) |
+| `legend_present`          | `boolean`                | trägt das Bild überhaupt eine Legende mit Prozenten?                   |
+| `legend_labels`           | `jsonb`                  | die Beschriftungen im Wortlaut des Bildes — Beleg der Ablesung         |
+| `validated_at`            | `timestamptz` NULL       | letzter Validierungslauf (T3.4)                                        |
+| `approved_at`             | `timestamptz` NULL       | Zeitpunkt der Freigabe (T3.4)                                          |
+| `duration_ms`, `*_tokens` | `integer` NULL           | Verbrauch des Aufrufs                                                  |
 
 ### `range_chart_cell`
 
@@ -1560,9 +1563,9 @@ Quelle der Wahrheit: `apps/backend/src/db/schema.ts`, Migration
 > automatischen Prüfungen keinen Fehler gefunden haben; ein Mensch hat das
 > Chart dann noch nicht gesehen. Der Filter ist nicht optional.
 
-### Die drei Prüfungen
+### Die vier Prüfungen
 
-Alle drei sind **deterministischer Code** in `apps/backend/src/chart/validate.ts`
+Alle vier sind **deterministischer Code** in `apps/backend/src/chart/validate.ts`
 und kosten kein Kontingent. Sie bleiben getrennt, weil sie verschiedene
 Wahrheitsquellen anzapfen.
 
@@ -1574,13 +1577,21 @@ Wahrheitsquellen anzapfen.
 | `plausibility`  | Pokerwissen über die Form einer Range | `incomplete-matrix`, `empty-cell`            | `error`     |
 |                 |                                       | `monotonicity`, `outlier`                    | `warning`   |
 
-Toleranzen und die Auswahl der Heuristiken: [ADR-0034](./DECISIONS.md).
+> **Warum es vier sind und nicht drei:** Der Caption-Abgleich greift nur, wenn
+> die Bildunterschrift Prozentwerte nennt — bei 6 von 25 Charts. Die im Bild
+> gedruckte Legende gibt es bei 18 von 25. Zusammen decken beide **24 von 25**
+> ab. Die vierte Prüfung ist damit die wirksamste, nicht weil sie schärfer
+> wäre, sondern weil sie fast immer etwas zu vergleichen hat
+> ([ADR-0036](./DECISIONS.md)).
+
+Toleranzen und die Auswahl der Heuristiken: [ADR-0034](./DECISIONS.md),
+für die Legende [ADR-0036](./DECISIONS.md).
 `CHART_TOLERANCES` in `packages/shared/src/validation.ts` ist die einzige
 Stelle, an der die Zahlen stehen.
 
 Jede Heuristik lässt sich einzeln abschalten (`ChartCheckOptions`, CLI-Flags
-`--no-summe`, `--no-caption`, `--no-vollstaendigkeit`, `--no-monotonie`,
-`--no-ausreisser`). Das ändert nur, was gemeldet wird — nie, was als bestanden
+`--no-summe`, `--no-caption`, `--no-legende`, `--no-vollstaendigkeit`,
+`--no-monotonie`, `--no-ausreisser`). Das ändert nur, was gemeldet wird — nie, was als bestanden
 gilt.
 
 **Die Gegenprobe rechnet combo-gewichtet.** `weightedTotals()` gewichtet jede
@@ -1671,6 +1682,24 @@ Zwei Zellen gelten als übereinstimmend, wenn dieselben Aktionen mit höchstens
 echt und das Chart bleibt beanstandet. Unterscheiden sie sich, gilt der zweite
 Wert — er entstand mit einem Prompt, der die Schwachstelle benannt hat.
 Begründung: [ADR-0034](./DECISIONS.md).
+
+### Job-Typ `chart.legend` — der einmalige Legenden-Nachzug
+
+| Feld      | Typ      | Pflicht | Hinweis                             |
+| --------- | -------- | ------- | ----------------------------------- |
+| `chartId` | `string` | ja      | ein Chart **ohne** gelesene Legende |
+| `runId`   | `string` | ja      | Kennung des Nachzug-Laufs           |
+| `model`   | `string` | nein    | überschreibt die Modellwahl         |
+
+**Nur für Charts aus der Zeit vor Fassung 2 des Digitalisierungs-Templates.**
+Neue Charts bekommen die Legende im selben Vision-Aufruf wie die Matrix — ein
+zweiter Aufruf je Chart würde den Kontingentbedarf verdoppeln. Der Job prüft
+selbst, ob die Legende schon gelesen ist, und verweigert sich sonst.
+
+Template `task/chart-legend`, Ausgabegrenze **2 048** Token (gegen 32 768 bei
+`chart.digitize`); ohne Blattliste, ohne Rasterarbeit. Gemessen: 6 663 Tokens
+und 8 Sekunden je Chart. Der Job schreibt ausschließlich die Legendenspalten —
+**die Matrix bleibt unangetastet** — und stößt danach die Validierung an.
 
 ### Job-Typ `chart.recheck`
 

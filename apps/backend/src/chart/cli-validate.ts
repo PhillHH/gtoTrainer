@@ -3,12 +3,14 @@ import { CHART_TOLERANCES } from '@gto/shared';
 import { loadConfig } from '../config/env.js';
 import { createDb } from '../db/client.js';
 import { chartRecheck, jobQueue } from '../db/schema.js';
+import { CHART_LEGEND_JOB } from '../jobs/handlers/chart-legend.js';
 import { CHART_RECHECK_JOB } from '../jobs/handlers/chart-recheck.js';
 import { enqueueJob } from '../jobs/queue.js';
 import {
   approveAllValidated,
   chartsToValidate,
   chartsWithErrors,
+  chartsWithoutLegend,
   validateAndStore,
   validationProgress,
 } from './validation-store.js';
@@ -30,11 +32,14 @@ import {
 interface Args {
   status: boolean;
   approve: boolean;
+  includeApproved: boolean;
+  legend?: number;
   recheck?: number;
   limit?: number;
   checks: {
     frequencySum: boolean;
     captionMatch: boolean;
+    legendMatch: boolean;
     completeness: boolean;
     monotonicity: boolean;
     outlier: boolean;
@@ -45,9 +50,11 @@ function parseArgs(argv: readonly string[]): Args {
   const args: Args = {
     status: false,
     approve: false,
+    includeApproved: false,
     checks: {
       frequencySum: true,
       captionMatch: true,
+      legendMatch: true,
       completeness: true,
       monotonicity: true,
       outlier: true,
@@ -57,7 +64,11 @@ function parseArgs(argv: readonly string[]): Args {
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     if (flag === '--status') args.status = true;
-    else if (flag === '--approve') args.approve = true;
+    else if (flag === '--alle') args.includeApproved = true;
+    else if (flag === '--legende-nachziehen') {
+      const next = Number(argv[i + 1]);
+      args.legend = Number.isFinite(next) ? (i++, next) : Number.POSITIVE_INFINITY;
+    } else if (flag === '--approve') args.approve = true;
     else if (flag === '--recheck') {
       const next = argv[i + 1];
       if (next !== undefined && /^\d+$/.test(next)) {
@@ -70,6 +81,7 @@ function parseArgs(argv: readonly string[]): Args {
       args.limit = value;
     } else if (flag === '--no-summe') args.checks.frequencySum = false;
     else if (flag === '--no-caption') args.checks.captionMatch = false;
+    else if (flag === '--no-legende') args.checks.legendMatch = false;
     else if (flag === '--no-vollstaendigkeit') args.checks.completeness = false;
     else if (flag === '--no-monotonie') args.checks.monotonicity = false;
     else if (flag === '--no-ausreisser') args.checks.outlier = false;
@@ -77,7 +89,9 @@ function parseArgs(argv: readonly string[]): Args {
       throw new Error(
         `Unbekanntes Argument: ${String(flag)}\n` +
           'Aufruf: pnpm charts:validate [--status] [--recheck [n]] [--approve] [--limit n]\n' +
-          '        [--no-summe] [--no-caption] [--no-vollstaendigkeit] [--no-monotonie] [--no-ausreisser]',
+          '        [--alle] [--legende-nachziehen [n]]\n' +
+          '        [--no-summe] [--no-caption] [--no-legende] [--no-vollstaendigkeit]\n' +
+          '        [--no-monotonie] [--no-ausreisser]',
       );
     }
   }
@@ -98,6 +112,32 @@ async function main(): Promise<void> {
       const approved = await approveAllValidated(handle.db);
       console.warn(`${approved} Charts von "validated" auf "approved" gesetzt.`);
       await printStatus(handle.db);
+      return;
+    }
+
+    // Legenden-Nachzug: nur fuer Charts, denen die gedruckte Legende noch
+    // fehlt. Neue Charts bekommen sie im Digitalisierungsaufruf mit.
+    if (args.legend !== undefined) {
+      const offen = await chartsWithoutLegend(
+        handle.db,
+        Number.isFinite(args.legend) ? args.legend : undefined,
+      );
+      if (offen.length === 0) {
+        console.warn('Kein Chart ohne gelesene Legende - nichts nachzuziehen.');
+        return;
+      }
+      const runId = `legende-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+      for (const chartId of offen) {
+        await enqueueJob(handle.db, {
+          jobType: CHART_LEGEND_JOB,
+          payload: { chartId, runId },
+        });
+      }
+      console.warn(
+        `${offen.length} Charts fuer den Legenden-Nachzug eingeplant ` +
+          `(${CHART_LEGEND_JOB}), Lauf "${runId}".`,
+      );
+      console.warn('Kleiner Aufruf ohne Blattliste - er liest nur den Legendenkasten.');
       return;
     }
 
@@ -126,14 +166,18 @@ async function main(): Promise<void> {
     }
 
     // Standardfall: alle raw/validated Charts pruefen.
-    const ids = await chartsToValidate(
-      handle.db,
-      args.limit === undefined ? {} : { limit: args.limit },
-    );
+    // `--alle` nimmt freigegebene Charts mit. Ihr Zustand aendert sich dadurch
+    // nicht (eine Freigabe wird nie zurueckgenommen), aber ihre Befunde werden
+    // fortgeschrieben - noetig, sobald eine neue Pruefung hinzukommt.
+    const ids = await chartsToValidate(handle.db, {
+      ...(args.limit === undefined ? {} : { limit: args.limit }),
+      ...(args.includeApproved ? { includeApproved: true } : {}),
+    });
     console.warn(`Pruefe ${ids.length} Charts (deterministisch, ohne KI-Aufruf) …`);
     console.warn(
       `Toleranzen: Frequenzsumme ±${CHART_TOLERANCES.frequencySumPp} pp, ` +
         `Caption ±${CHART_TOLERANCES.captionMatchPp} pp, ` +
+        `Legende ±${CHART_TOLERANCES.legendMatchPp} pp, ` +
         `Monotonie ${CHART_TOLERANCES.monotonicityPp} pp, ` +
         `Ausreisser ${CHART_TOLERANCES.outlierPp} pp.`,
     );
@@ -181,7 +225,7 @@ async function printStatus(db: ReturnType<typeof createDb>['db']): Promise<void>
 
   console.warn('');
   console.warn('Befunde je Pruefart (ohne Hinweise)');
-  for (const check of ['frequency-sum', 'caption-match', 'plausibility']) {
+  for (const check of ['frequency-sum', 'caption-match', 'legend-match', 'plausibility']) {
     console.warn(`  ${check.padEnd(16)} ${progress.findingsByCheck[check] ?? 0}`);
   }
   console.warn('');

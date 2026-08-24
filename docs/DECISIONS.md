@@ -2518,3 +2518,111 @@ keiner, weist die Erklärung auch darauf hin, wenn der beste Treffer unter 75 %
   sich in AP7, dass die Aktionsfolge schwerer wiegen muss, wird hier geändert.
 
 **Keine neuen Dependencies.**
+
+## ADR-0036 — Vierte Prüfung: Abgleich gegen die im Bild gedruckte Legende
+
+- **Datum:** 2026-08-24
+- **Status:** angenommen
+- **Kontext:** Der Abnahme-Report aus T3.6 hat eine Lücke offengelegt, die
+  keine der drei Prüfungen aus T3.4 schließen konnte: Der Caption-Abgleich —
+  die einzige Prüfung mit externer Wahrheit — greift nur, wenn die
+  Bildunterschrift des Buchs Prozentwerte nennt. Das tut sie bei **6 von 25**
+  lesbaren Charts. Bei der manuellen Sichtung fanden sich unter den automatisch
+  bestandenen Charts **fünf mit belegbaren Abweichungen bis 11,4 pp** (HR 3, 6,
+  16, 17, 27). Sie waren `validated`, und ohne die Sichtung wären sie
+  freigegeben worden.
+
+### Entscheidung
+
+Eine vierte Prüfung `legend-match` hält die combo-gewichteten Gesamtfrequenzen
+gegen die **im Bild gedruckte Legende** — den Kasten unter dem Raster, der jede
+Farbe benennt und ihren Gesamtanteil nennt (`Call 59.65 % / Off Range 40.35 %`).
+
+**Die Abdeckung ist der ganze Punkt.** Gemessen am Bestand nach dem
+Legenden-Nachzug:
+
+| Gegenprobe                     | Charts mit verwertbarem Wert |
+| ------------------------------ | ---------------------------- |
+| Caption-Prozente (T3.1)        | 6 von 25                     |
+| Gedruckte Legende (T3.6-fix)   | 18 von 25                    |
+| **mindestens eine von beiden** | **24 von 25**                |
+
+Aus 24 % Abdeckung werden 96 %.
+
+### Die Legende wird abgelesen, nie hergeleitet
+
+Das ist die Bedingung, unter der die Prüfung überhaupt etwas wert ist. Würde
+der Legendenwert aus der Matrix berechnet, prüfte sich die Matrix gegen sich
+selbst, und der Befund aus T3.6 wiederholte sich unbemerkt. Deshalb:
+
+- Die Legendenwerte kommen als eigenes Feld (`legendenwerte`) aus dem
+  Vision-Aufruf und stehen in eigenen Spalten (`legend_totals`,
+  `legend_present`, `legend_labels`). `legendTotalsOf()` formt sie nur um.
+- Der Prompt sagt es ausdrücklich: „Lies diese Zahlen ab. Rechne sie nicht aus."
+- Steht keine Legende im Bild, ist `legendenwerte_vorhanden = false` das
+  richtige Ergebnis. Eine geschätzte Zahl wäre es nicht.
+
+### Ein Aufruf, nicht zwei
+
+Die Legende wird **im selben Vision-Aufruf** gelesen wie die Matrix
+(Template-Fassung 2). Ein zweiter Aufruf je Chart würde den Kontingentbedarf
+des Vollausbaus verdoppeln — bei 318 offenen Charts sind das rund 7 Mio Tokens,
+die nicht zur Verfügung stehen.
+
+Für die **30 vor der Umstellung** entstandenen Charts gibt es einen einmaligen
+Nachzug (`chart.legend`, `pnpm charts:validate --legende-nachziehen`): ein
+schmaler Prompt ohne Blattliste, Ausgabegrenze 2 048 statt 32 768 Token.
+Gemessen: **6 663 Tokens und 8 Sekunden** je Chart gegen 22 586 Tokens und
+122 Sekunden für eine volle Digitalisierung — ein Viertel der Tokens, ein
+Fünfzehntel der Zeit.
+
+### Toleranz: 1,5 pp — dieselbe wie beim Caption-Abgleich
+
+Der erste Entwurf stand bei 2,0 pp mit der Begründung, die abgelesene Legende
+trage dieselbe Unsicherheit wie die Matrix. **Das war falsch.** Gedruckte
+Ziffern zu lesen (`59.65 %`) ist etwas anderes, als einen Farbanteil zu
+schätzen. Der Messfehler sitzt allein in der combo-gewichteten Summe über 169
+Zellen — und für die hat [ADR-0034](#adr-0034--chart-validierung-toleranzen-heuristiken-als-warnung-zweiter-wert-gilt)
+bereits 1,5 pp begründet.
+
+Am Bestand geprüft, in beide Richtungen:
+
+- 15 der 21 automatisch bestandenen Charts trafen ihren gedruckten Wert auf
+  ≤ 0,09 pp; HR 16 nach der Korrektur auf 0,53 pp. Alle weit innerhalb.
+- Die fünf nachweislich falsch gelesenen Charts lagen zwischen **1,81 und
+  11,39 pp**. Bei 2,0 pp wäre HR 27 (1,81 pp) durchgerutscht.
+
+Die Toleranz wurde also **verschärft**, nicht aufgeweicht — und zwar aus einem
+sachlichen Grund, nicht um die Anker zu treffen.
+
+### Gültigkeitsbedingung an den Bezugswert
+
+Eine Legende beschreibt die ganze Range; ihre Anteile ergeben zusammen 100 %.
+Tut sie das nicht, ist sie unvollständig gelesen oder im Buch selbst
+widersprüchlich — dann wird sie als `legend-not-checkable` (Schweregrad `info`)
+geführt, mit ihrer Summe im Klartext.
+
+Der reale Fall: **HR 5** druckt „2.5x 23.08 %" und daneben „Fold 0 %", obwohl
+77 % des Rasters grau sind. Die Null ist dort ein Platzhalter für „nicht Teil
+der Auswahl", keine Messung. Ohne diese Bedingung würde jedes Auswahl-Chart zu
+Unrecht beanstandet.
+
+Die Bedingung ist an den Zahlen belegt und nicht am Ergebnis ausgerichtet:
+**17 der 18 gelesenen Legenden summieren auf exakt 100,00.** Die vier
+tatsächlich falsch gelesenen Charts (HR 3, 6, 17, 27) haben alle eine Legende,
+die auf 100 summiert — sie bleiben beanstandet. Toleranz der Summe: ±2 pp für
+die Rundung zweier Nachkommastellen.
+
+### Folgen
+
+- `validated` bedeutet ab jetzt für 96 % der Charts „gegen eine externe Zahl
+  gehalten" statt „nichts spricht dagegen". Die Sammelfreigabe wird damit
+  vertretbar, wo sie es vorher nicht war.
+- Die vier Prüfungen bleiben unabhängig: Frequenzsumme rechnet in der Matrix,
+  Caption prüft gegen den Buchtext, Legende gegen das Bild, Plausibilität gegen
+  Pokerwissen. Zwei externe Quellen sind besser als eine — ein Chart, das gegen
+  beide besteht, ist zweifach belegt.
+- Charts ohne jede Gegenprobe (1 von 25) bleiben ein Fall für die manuelle
+  Sichtung. Das ist ehrlicher als eine Prüfung, die nichts prüft.
+
+**Keine neuen Dependencies.**
