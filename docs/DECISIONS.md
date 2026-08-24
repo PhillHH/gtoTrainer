@@ -1995,7 +1995,7 @@ ohnehin überschrieben wird, wäre verschwendetes Kontingent.
 ### Entscheidung 8 — Review-Endpunkte getrennt von der Content-API
 
 `/api/concepts` ist die Prüfoberfläche dieses Tasks. Die Content-API für
-Folge-APs (gezielter Abruf, Spot-Suche, Asset-Auslieferung) entsteht in T3.5
+Folge-APs (gezielter Abruf, Spot-Suche, Asset-Auslieferung) liegt seit T3.5
 unter `/api/content` und ist hier nicht vorweggenommen. Getrennte Namensräume,
 weil die Zielgruppen verschieden sind: hier ein Mensch beim Prüfen, dort
 Folge-APs beim Kontext-Retrieval.

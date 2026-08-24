@@ -1686,3 +1686,11 @@ Chart nennt.
 - Der Host-Runner startet nach einem Reboot nicht automatisch (Abschnitt 9.2).
 - Die SSE-`location` im vhost ist vorbereitet, aber wie der ganze vhost noch
   nicht eingespielt (Abschnitt 10.4, Root nötig).
+- **Der Massenlauf der Chart-Digitalisierung ist nicht zu Ende gefahren.** 318
+  der 348 `hand_range`-Assets warten (Stand AP3-Abschluss). Der Ablauf steht in
+  Abschnitt 13, das Wiederaufsetzen ist der Normalfall — `selectCandidates()`
+  überspringt Erledigtes. Der Engpass ist das Wochenlimit des Kontos, nicht die
+  Pipeline: 318 Vision-Aufrufe passen nicht in ein Kontingentfenster.
+- **Der Konzept-Graph wartet auf seine Review.** 161 der 168 Konzepte stehen auf
+  `draft`; die Content-API liefert standardmäßig nur die 7 freigegebenen
+  (Abschnitt 15.3).

@@ -692,7 +692,7 @@ Drei Eigenschaften, auf die sich Folge-APs verlassen können:
 
 Der Trennstrich zu T3.5: `/api/concepts` ist die **Prüfoberfläche** für die
 Vorschläge. Die Content-API für Folge-APs (gezielter Abruf, Spot-Suche,
-Asset-Auslieferung) entsteht in T3.5 unter `/api/content`.
+Asset-Auslieferung) liegt seit T3.5 unter `/api/content` (Abschnitt 3k).
 
 ## 3i. Chart-Pipeline (neu in AP3.T3.3)
 
@@ -715,8 +715,11 @@ range_chart ──< range_chart_cell   (chart, hand, action_kind, sizing, percen
    │  state: raw
    ▼
 T3.4  Validierung  →  validated  →  approved
+                   ↘  unusable (von Hand verworfen, mit Begruendung)
    ▼
-T3.5 Content-API / AP6 Renderer / AP7 Drills / AP8 Analyse
+T3.5 Content-API (/api/content/*)  ← der einzige Lesezugriff ab hier
+   ▼
+AP5 Unterricht / AP6 Renderer / AP7 Drills / AP8 Analyse
      lesen ausschliesslich `approved`
 ```
 

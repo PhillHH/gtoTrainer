@@ -258,6 +258,18 @@ describe('Konzepte', () => {
     expect(body.charts).toHaveLength(1);
     expect(body.charts[0]?.state).toBe('approved');
   });
+
+  it('zaehlt in chartCount dasselbe, was das Detail auch liefert', async () => {
+    // Sonst laese ein Aufrufer "chartCount: 3" und bekaeme ein Chart - die
+    // Approved-Regel muss auch fuer den Zaehlstand gelten.
+    const detail = (await get('/api/content/concepts/pot-odds')).json<ContentConceptDetail>();
+    expect(detail.chartCount).toBe(detail.charts.length);
+
+    const inList = (await get('/api/content/concepts'))
+      .json<ContentConceptListResponse>()
+      .concepts.find((entry) => entry.slug === 'pot-odds');
+    expect(inList?.chartCount).toBe(detail.charts.length);
+  });
 });
 
 /* ---------------------------------------------------------------------------

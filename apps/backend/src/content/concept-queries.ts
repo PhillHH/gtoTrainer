@@ -62,8 +62,13 @@ function summarySelection() {
     sectionCount: sql<number>`(
       select count(*)::int from concept_section cs where cs.concept_id = concept.id
     )`,
+    // Zaehlt nur **freigegebene** Charts - dieselbe Regel wie ueberall sonst.
+    // Ohne den Join stuende hier die Zahl aller verknuepften Assets, und ein
+    // Aufrufer laese "chartCount: 3" neben einem Detail mit einem Chart.
     chartCount: sql<number>`(
-      select count(*)::int from concept_chart cc where cc.concept_id = concept.id
+      select count(*)::int from concept_chart cc
+      join range_chart rc on rc.asset_id = cc.asset_id
+      where cc.concept_id = concept.id and rc.state = 'approved'
     )`,
   };
 }

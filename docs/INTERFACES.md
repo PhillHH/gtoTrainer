@@ -1438,10 +1438,19 @@ Kontext, bestimmt sie aber nicht. Was die Unterschrift nicht hergibt, bleibt
 | `raw`       | vom Modell gelesen, strukturell vollständig, ungeprüft | T3.3        |
 | `validated` | automatische Prüfungen bestanden                       | T3.4        |
 | `approved`  | menschlich freigegeben — **nur das ist sichtbar**      | T3.4        |
-| `failed`    | nicht verwertbar; `failure_reason` nennt den Grund     | T3.3/T3.4   |
+| `failed`    | nicht verwertbar; `failure_reason` nennt den Grund     | T3.3        |
+| `unusable`  | von Hand verworfen; `unusable_reason` ist Pflicht      | T3.4        |
 
-Übergänge nur vorwärts und nur durch den jeweils zuständigen Task. T3.3 setzt
-ausschließlich `raw` und `failed`.
+T3.3 setzt ausschließlich `raw` und `failed`. Die Übergänge nach `validated`,
+`approved` und `unusable` liegen alle in T3.4, an **einer** Stelle
+(`chart/validation-store.ts`); die vollständige Übergangstabelle steht in
+Abschnitt 15.
+
+**`failed` und `unusable` sind nicht dasselbe.** `failed` heißt: Die Pipeline
+konnte aus dem Bild keine verwertbare Matrix lesen — meist, weil das Bild gar
+kein Aktionsraster trägt. `unusable` heißt: Ein Mensch hat eine Matrix gesehen
+und sie verworfen. Das erste ist eine technische Feststellung, das zweite ein
+Urteil.
 
 ### Wie T3.4 die Rohdaten abholt
 
@@ -1680,7 +1689,7 @@ Aufrufer sich irrt. Template `task/chart-recheck`, Persona
 
 Alle auth-geschützt (`app.requireSession`); die schreibenden zusätzlich
 CSRF-pflichtig. **Abgrenzung:** Das ist die Prüfoberfläche, nicht die
-Content-API — die entsteht in T3.5 unter `/api/content`.
+Content-API — die liegt seit T3.5 unter `/api/content` (Abschnitt 16).
 
 | Methode | Pfad                            | Zweck                                             |
 | ------- | ------------------------------- | ------------------------------------------------- |
