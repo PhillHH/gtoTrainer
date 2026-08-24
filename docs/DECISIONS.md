@@ -1713,3 +1713,124 @@ tut das in der `.env` (RUNBOOK 9.5); die Oberfläche ist bewusst kein
 Secret-Manager.
 
 **Keine neuen Dependencies in T2.6.**
+
+---
+
+## ADR-0030 — Buch-Parser: Kapitelstruktur aus dem Inhaltsverzeichnis, Schema mit fachlichen Schlüsseln, Klassifikation regelbasiert
+
+- **Datum:** 2026-08-24
+- **Status:** angenommen
+- **Kontext:** AP3.T3.1 macht die Buchquelle zur Wissensbasis. Zu entscheiden
+  waren: woraus die Kapitelstruktur kommt, wie die drei Tabellen geschnitten
+  sind, wie ein erneuter Import sich verhält und wie Range-Charts von allem
+  anderen unterschieden werden — Letzteres entscheidet in T3.3 über den
+  Kontingentverbrauch.
+
+### Entscheidung 1 — Kapitel kommen aus dem Inhaltsverzeichnis, nicht aus den Überschriften
+
+Der naheliegende Weg — Kapitel an `# NN TITEL` erkennen — scheitert an der
+Quelle selbst: Zwei der vierzehn Kapitel stehen dort **ohne Nummer**, vier
+weitere sind über **zwei** Überschriftszeilen umbrochen (`# 06 THE THEORY OF`
+gefolgt von `# TOURNAMENT PLAY`). Ein rein überschriftenbasierter Parser fände
+12 statt 14 Kapitel und ordnete außerdem keine Teile zu.
+
+Das Inhaltsverzeichnis des Buches nennt dagegen Teile und Kapitel vollständig
+und nummeriert. Es wird als **Sollstruktur** gelesen; jedes Kapitel wird
+anschließend im Fließtext verankert — über die Nummer, ersatzweise über den
+normalisierten Titel. Umbrochene Titel werden zusammengesetzt, solange das
+bisher Gelesene ein echter Präfix des Solltitels ist.
+
+- **Alternative „nur Überschriften":** verworfen, findet die Struktur nicht.
+- **Alternative „Kapitelliste im Code hinterlegen":** verworfen. Die Titel
+  stammen dann nicht mehr aus der Quelle, und die Leitplanke „keine erfundenen
+  Kapitelnamen" wäre nur noch Absichtserklärung.
+- **Rückfallebene:** Fehlt ein Inhaltsverzeichnis (kleine Fixtures), greift die
+  Ableitung aus nummerierten Überschriften — mit einer Meldung `toc-missing`
+  im Report, nicht stillschweigend.
+
+Weicht das Ergebnis von 14 Kapiteln in 3 Teilen ab, erscheint das als
+`chapter-count`/`part-count` im Report. Der Parser repariert nichts.
+
+### Entscheidung 2 — Schema: drei Tabellen, fachlicher Schlüssel je Zeile, Volltext in der Sektion
+
+`book_chapter` → `book_section` → `book_asset`. Der Zuschnitt der Sektionen
+folgt **jeder** Überschrift der Quelle (`##`, `###`), nicht dem Kapitel: Ab AP5
+sollen einzelne Sektionen gezielt geladen werden, und eine Sektion je Kapitel
+wäre für den Kontext zu grob (die größten Kapitel hätten sonst je >100 kB Text).
+
+Jede Tabelle trägt einen fachlichen Schlüssel mit Unique-Index
+(`chapter_number`, `section_key`, `relative_path`). `section_key` enthält
+bewusst **keine laufende Nummer** — ein eingeschobener Abschnitt würde sonst
+alle folgenden Schlüssel verschieben und beim nächsten Import zu
+Neuanlage-plus-Wegfall statt zu einer Änderung führen.
+
+Bildunterschriften liegen **doppelt** vor: `caption_raw` unverändert und
+daneben die geparsten Bestandteile (`caption_label`, `caption_number`,
+`caption_spot`, `caption_actions`). Der Rohtext ist in T3.4 die unabhängige
+Gegenprobe zur Vision-Extraktion — was hier normalisiert würde, wäre dort nicht
+mehr rekonstruierbar.
+
+### Entscheidung 3 — Idempotenz über Inhaltshash, Wegfall über `removed_at`
+
+Je Zeile ein SHA-256 über den fachlichen Inhalt. Gleicher Hash ⇒ die Zeile wird
+**nicht angefasst**, auch `updated_at` bleibt stehen. Anderer Hash ⇒ Update auf
+derselben `id`.
+
+Zeilen, deren Schlüssel nicht mehr in der Quelle vorkommt, bekommen
+`removed_at` gesetzt und werden **nicht gelöscht**.
+
+Der Grund ist nicht Ordnungsliebe: Ab T3.3 hängen Chart-Daten an
+`book_asset.id`. Ein Import, der Assets löscht und neu anlegt, würde bei jedem
+Lauf die Ergebnisse hunderter Vision-Aufrufe verwaisen lassen — genau den
+teuersten Datenbestand des Projekts.
+
+- **Alternative „truncate + insert":** verworfen, siehe oben.
+- **Alternative „Hash über die ganze Datei":** verworfen. Eine Tippfehler-
+  korrektur im Buch würde dann alle 855 Assets als geändert melden.
+
+### Entscheidung 4 — Klassifikation regelbasiert, unsichere Fälle bleiben unsicher
+
+Die Typisierung (`hand_range`, `table`, `diagram`, `formula`, `other`) läuft
+über eine feste Regeltabelle auf Bildunterschrift und Textumfeld — **ohne
+KI-Aufruf**. Zwei Gründe: Der Schritt ist ein _Filter vor_ der Vision-Pipeline
+und darf nicht selbst Kontingent verbrauchen; und ein regelbasiertes Ergebnis
+ist reproduzierbar, ein Modellurteil über 855 Bilder nicht.
+
+Tragfähig ist das, weil die Quelle ihre Abbildungen durchnummeriert
+beschriftet. Der Import belegt es: `Hand Range 1–348`, `Table 1–170`,
+`Diagram 1–133`, `Heatmap 1–4` — **lückenlos**, jede Nummer genau einmal
+vergeben. Der Report weist Lücken je Etikett aus; solange dort „keine" steht,
+ist kein beschriftetes Chart übersehen worden.
+
+Was die Regeln nicht sicher entscheiden, wird **nicht geraten**: Es landet als
+`other` mit `classification_confidence = 'uncertain'` und ist im Report gezählt
+(aktuell 59 von 855). Die Regelnamen stehen in `classification_rule`, damit im
+Nachhinein prüfbar ist, warum ein Asset seinen Typ hat.
+
+Wirkung: 348 statt 855 Vision-Aufrufe in T3.3 — rund 60 % weniger Kontingent,
+und keine Formelbilder oder Autorenfotos in der Chart-Datenbank.
+
+### Entscheidung 5 — Struktur der Quelle tolerant erkennen, aber nicht raten
+
+Die README aus T1.1 beschreibt flache Bildablage; die tatsächliche Quelle legt
+sie in ein Unterverzeichnis (so exportiert das PDF-nach-Markdown-Werkzeug, und
+so zeigen die Bildbezüge im Markdown). Der Parser akzeptiert **beide** Formen
+und nennt die gefundene im Report. Mehr als ein bildhaltiges Unterverzeichnis
+ist ein Abbruchgrund — dann ist die Ablage mehrdeutig, und Raten wäre schlechter
+als eine klare Fehlermeldung. README und INTERFACES Abschnitt 5 sind
+entsprechend nachgezogen.
+
+### Entscheidung 6 — Report nach `data/reports/`, git-ignoriert
+
+Der Import-Report enthält Kapitel- und Sektionstitel sowie Bildunterschriften —
+Buchinhalt. Er wird deshalb nach `data/reports/book-import.md` geschrieben und
+ist git-ignoriert, wie `data/book-source/` selbst. Im Repository stehen nur die
+Zahlen, die für die Abnahme nötig sind (Statusbericht).
+
+**Keine neuen Dependencies in T3.1.**
+
+Ergänzend behoben: `packages/shared/package.json` hatte in `exports` nur die
+Bedingung `import`. drizzle-kit bündelt `schema.ts` samt `drizzle.config.ts`
+im CJS-Modus und konnte das Workspace-Paket dadurch seit AP2 nicht mehr
+auflösen — `pnpm db:generate` scheiterte. Eine zusätzliche `default`-Bedingung
+auf dieselbe Datei stellt das wieder her.

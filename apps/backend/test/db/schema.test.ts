@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, checkDatabaseConnection } from '../../src/db/client.js';
 import type { DbHandle } from '../../src/db/client.js';
-import { BASE_TABLES } from '../../src/db/schema.js';
+import { BASE_TABLES, BOOK_TABLES } from '../../src/db/schema.js';
 import { TEST_DATABASE_URL } from './setup.js';
 
 /**
@@ -20,7 +20,7 @@ describe('Migration und Verbindung', () => {
     await handle.close();
   });
 
-  it('erzeugt aus leerer Datenbank genau die fuenf Basistabellen', async () => {
+  it('erzeugt aus leerer Datenbank genau die erwarteten Tabellen', async () => {
     const result = await handle.db.execute<{ table_name: string }>(
       sql`select table_name from information_schema.tables
           where table_schema = 'public' and table_type = 'BASE TABLE'
@@ -28,8 +28,9 @@ describe('Migration und Verbindung', () => {
     );
 
     const tables = result.rows.map((row) => row.table_name);
-    expect(tables).toEqual([...BASE_TABLES].sort());
-    expect(tables).toHaveLength(5);
+    // Basisschema aus T1.2 plus die Buch-Wissensbasis aus AP3.T3.1.
+    expect(tables).toEqual([...BASE_TABLES, ...BOOK_TABLES].sort());
+    expect(tables).toHaveLength(BASE_TABLES.length + BOOK_TABLES.length);
   });
 
   it('legt die Zeitstempel durchgaengig als timestamptz an', async () => {

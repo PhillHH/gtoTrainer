@@ -445,18 +445,32 @@ Zugehörige Skripte (Root): `db:up`, `db:down`, `db:generate`, `db:migrate`,
 
 ### Erwarteter Inhalt
 
-| Datei           | Beschreibung                                   |
-| --------------- | ---------------------------------------------- |
-| `*.md`          | Buch-Volltext als eine Markdown-Datei          |
-| `pXXXX_YY.jpeg` | Chart-/Abbildungs-Bilder, flach im Verzeichnis |
+| Datei           | Beschreibung                          |
+| --------------- | ------------------------------------- |
+| `*.md`          | Buch-Volltext als eine Markdown-Datei |
+| `pXXXX_YY.jpeg` | Chart-/Abbildungs-Bilder              |
 
 `XXXX` = vierstellige Seitenzahl mit führenden Nullen, `YY` = zweistelliger
 Zähler der Abbildung auf dieser Seite, beginnend bei `01`.
 Beispiel: `p0042_01.jpeg`.
 
+**Ablage der Bilder (präzisiert in T3.1):** Der Parser erkennt zwei Formen und
+nennt die gefundene im Import-Report:
+
+| Form           | Bedingung                                                                   |
+| -------------- | --------------------------------------------------------------------------- |
+| `flat`         | Die Bilder liegen direkt in `data/book-source/`.                            |
+| `subdirectory` | Kein Bild liegt flach, dafür **genau ein** Unterverzeichnis enthält welche. |
+
+Mehr als ein bildhaltiges Unterverzeichnis ist ein Abbruchgrund — dann ist die
+Struktur mehrdeutig. Die tatsächlich vorliegende Quelle nutzt `subdirectory`
+(ein Verzeichnis `<Buchtitel>_images/`), weil der PDF-nach-Markdown-Export die
+Bilder so ablegt und die Bildbezüge im Markdown genau dorthin zeigen.
+
 > **Pflicht:** Das Verzeichnis muss **vor dem Start von AP3** vollständig
 > befüllt sein. Andernfalls kann AP3 nicht beginnen — es gibt keinen Fallback
-> und keine mitgelieferten Beispieldaten.
+> und keine mitgelieferten Beispieldaten. `resolveBookSource()` bricht mit
+> `BookSourceError` ab und nennt Pfad und erwarteten Inhalt.
 
 Details siehe [`data/book-source/README.md`](../data/book-source/README.md).
 
@@ -1040,3 +1054,152 @@ und ihre eigenen Routen.
    bricht die Übersetzung.
 3. Prüfung in `validate()` ergänzen, Default in `defaultsFrom()`.
 4. Feld im Formular ergänzen und einen Frontend-Test dafür schreiben.
+
+---
+
+## 12. Buch-Wissensbasis — Schema und Zugriff (AP3.T3.1)
+
+Quelle der Wahrheit ist `apps/backend/src/db/schema.ts`; Migration
+`0002_cold_amphibian.sql`. Die Namens- und Typkonventionen aus Abschnitt 3
+gelten unverändert.
+
+### Gemeinsame Bauprinzipien der drei Tabellen
+
+| Spalte           | Zweck                                                                                                                                     |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| fachl. Schlüssel | `chapter_number` / `section_key` / `relative_path`, jeweils mit Unique-Index. Der Re-Import findet Zeilen darüber wieder.                 |
+| `content_hash`   | SHA-256 über den fachlichen Inhalt. Gleicher Hash ⇒ die Zeile wird **nicht angefasst**, auch `updated_at` bleibt stehen.                  |
+| `removed_at`     | Quellen, die verschwunden sind, werden markiert statt gelöscht. Ein Re-Import wirft damit **keine** nachgelagerten Daten (T3.3/T3.4) weg. |
+
+> **Regel für alle Folge-APs:** `book_asset.id` ist stabil, solange das Asset in
+> der Quelle steht. Chart-Daten, Konzeptbezüge und Review-Zustände dürfen daran
+> hängen. Wer `book_asset` löscht und neu anlegt, bricht diese Zusage.
+
+### `book_chapter`
+
+| Spalte                       | Typ                | Hinweis                                     |
+| ---------------------------- | ------------------ | ------------------------------------------- |
+| `id`                         | `uuid` PK          |                                             |
+| `part_number` / `part_title` | `integer` / `text` | Teil des Buches (1–3)                       |
+| `chapter_number`             | `integer`          | 1–14, eindeutig (`book_chapter_number_key`) |
+| `title`                      | `text`             |                                             |
+| `ordinal`                    | `integer`          | Reihenfolge im Buch, 0-basiert              |
+| `page_start` / `page_end`    | `integer` NULL     | aus den Seitenmarkern `<!-- page N -->`     |
+| `content_hash`, `removed_at` | s. o.              |                                             |
+| `created_at`, `updated_at`   | `timestamptz`      |                                             |
+
+### `book_section`
+
+| Spalte                       | Typ                        | Hinweis                                                                   |
+| ---------------------------- | -------------------------- | ------------------------------------------------------------------------- |
+| `id`                         | `uuid` PK                  |                                                                           |
+| `chapter_id`                 | `uuid` FK → `book_chapter` | `ON DELETE CASCADE`                                                       |
+| `section_key`                | `text`                     | z. B. `ch07/small-blind-pfi-strategy`, eindeutig (`book_section_key_key`) |
+| `title`                      | `text`                     |                                                                           |
+| `level`                      | `integer`                  | Überschriftsebene der Quelle (2 = `##`, 3 = `###`)                        |
+| `ordinal`                    | `integer`                  | Reihenfolge im Kapitel                                                    |
+| `body`                       | `text`                     | Volltext des Abschnitts, unverändert                                      |
+| `page_start` / `page_end`    | `integer` NULL             | Belegstellen („Seite X") ab AP5                                           |
+| `content_hash`, `removed_at` | s. o.                      |                                                                           |
+
+`section_key` enthält **bewusst keine laufende Nummer**: Ein eingeschobener
+Abschnitt würde sonst die Schlüssel aller folgenden Sektionen verschieben und
+beim nächsten Import alles neu anlegen.
+
+### `book_asset`
+
+| Spalte                       | Typ                        | Hinweis                                                             |
+| ---------------------------- | -------------------------- | ------------------------------------------------------------------- |
+| `id`                         | `uuid` PK                  | **stabil** über Re-Importe                                          |
+| `relative_path`              | `text`                     | Pfad relativ zur Quellwurzel, eindeutig (`book_asset_path_key`)     |
+| `file_name`                  | `text`                     | `pXXXX_YY.jpeg`                                                     |
+| `section_id`                 | `uuid` FK → `book_section` | `ON DELETE SET NULL`; NULL im Vorspann des Buches                   |
+| `page`, `index_on_page`      | `integer` NULL             | aus dem Dateinamen                                                  |
+| `caption_raw`                | `text` NULL                | **Rohtext der Unterschrift, verlustfrei** — Gegenprobe in T3.4      |
+| `caption_label`              | `text` NULL                | `Hand Range`, `Table`, `Diagram`, `Heatmap`                         |
+| `caption_number`             | `integer` NULL             | z. B. 96                                                            |
+| `caption_spot`               | `text` NULL                | Spot-Beschreibung, z. B. `SB vs BB (25bb)`                          |
+| `caption_actions`            | `jsonb`                    | `[{ "action": "Fold", "percent": 17.9 }]`, Default `[]`             |
+| `asset_type`                 | `text`                     | CHECK: `hand_range` \| `table` \| `diagram` \| `formula` \| `other` |
+| `classification_confidence`  | `text`                     | CHECK: `certain` \| `uncertain`                                     |
+| `classification_rule`        | `text`                     | Name der Regel, die den Typ gesetzt hat                             |
+| `file_present`               | `boolean`                  | ist die referenzierte Datei tatsächlich da?                         |
+| `ordinal`                    | `integer`                  | Reihenfolge im Buch                                                 |
+| `content_hash`, `removed_at` | s. o.                      |                                                                     |
+
+Die zulässigen Werte für `asset_type` und `classification_confidence` stehen als
+Vertrag in `packages/shared/src/book.ts` (`BOOK_ASSET_TYPES`,
+`BOOK_ASSET_CONFIDENCES`). In `schema.ts` sind sie dupliziert, weil drizzle-kit
+das Workspace-Paket beim Bündeln nicht auflöst; `test/book/schema.test.ts` hält
+beide Listen deckungsgleich.
+
+### Klassifikationsregeln (Scope-Delta 2)
+
+**Regelbasiert, ohne KI-Aufruf.** Erste passende Regel gewinnt; ihr Name landet
+in `classification_rule`. Quelle: `apps/backend/src/book/classify.ts`.
+
+| #   | Regel                   | Bedingung                                               | Typ          | Sicherheit  |
+| --- | ----------------------- | ------------------------------------------------------- | ------------ | ----------- |
+| 1   | `caption-label`         | Unterschrift trägt ein bekanntes Etikett                | s. Zuordnung | `certain`   |
+| 2   | `caption-actions`       | kein Etikett, aber Aktions-Prozente in der Unterschrift | `hand_range` | `uncertain` |
+| 3   | `front-matter`          | Asset liegt vor dem ersten Kapitel (Cover, Impressum)   | `other`      | `certain`   |
+| 4   | `formula-lead-in`       | keine Unterschrift, Absatz davor endet auf `:`          | `formula`    | `certain`   |
+| 5   | `formula-where`         | keine Unterschrift, Absatz danach beginnt mit `where`   | `formula`    | `certain`   |
+| 6   | `caption-without-label` | Unterschrift ohne erkennbare Struktur                   | `other`      | `uncertain` |
+| 7   | `unclassified`          | nichts davon trifft zu                                  | `other`      | `uncertain` |
+
+Etikett-Zuordnung: `Hand Range` → `hand_range`; `Table` → `table`;
+`Diagram`, `Heatmap`, `Figure`, `Chart` → `diagram`.
+
+Unsichere Fälle werden **nicht geraten**: Sie landen als `other`/`uncertain` im
+Report und sind dort gezählt. T3.3 behandelt sie bewusst, statt sie stillschweigend
+mitlaufen zu lassen.
+
+### Wie T3.3 die Range-Charts abruft
+
+```ts
+import { and, eq, isNull } from 'drizzle-orm';
+import { bookAsset } from '../db/schema.js';
+
+const charts = await db
+  .select({ id: bookAsset.id, path: bookAsset.relativePath, caption: bookAsset.captionRaw })
+  .from(bookAsset)
+  .where(
+    and(
+      eq(bookAsset.assetType, 'hand_range'),
+      eq(bookAsset.filePresent, true),
+      isNull(bookAsset.removedAt),
+    ),
+  )
+  .orderBy(bookAsset.ordinal);
+```
+
+- Der Index `book_asset_type_idx (asset_type, ordinal)` bedient genau diese Abfrage.
+- **Nur `hand_range`** geht durch die Vision-Pipeline. Jede weitere Kategorie
+  kostet Kontingent ohne Nutzen.
+- Die Sollwerte für die Gegenprobe in T3.4 stehen in `caption_actions`;
+  `caption_raw` bleibt daneben als unveränderter Beleg stehen.
+
+### Wie eine einzelne Sektion geladen wird
+
+Kontextdisziplin: Folge-APs laden **eine** Sektion, nicht ein ganzes Kapitel.
+
+```ts
+const [section] = await db
+  .select()
+  .from(bookSection)
+  .where(
+    and(eq(bookSection.sectionKey, 'ch07/small-blind-pfi-strategy'), isNull(bookSection.removedAt)),
+  );
+```
+
+Für ein Inhaltsverzeichnis ohne Volltext reicht eine Projektion ohne `body`
+(`select({ key, title, level, ordinal, pageStart })`) — der `body` ist die
+größte Spalte des Schemas und wird nur geholt, wenn er gebraucht wird.
+Der Index `book_section_chapter_idx (chapter_id, ordinal)` bedient die
+Kapitelübersicht.
+
+### Import ausführen
+
+`pnpm book:import` (Import) bzw. `pnpm book:import --dry-run` (nur Analyse,
+ohne Datenbank). Betrieb und Reportdeutung: RUNBOOK 11.

@@ -1042,7 +1042,101 @@ docker exec gto-postgres psql -U gto -d gto -c \
   "delete from job_queue where status = 'done' and finished_at < now() - interval '30 days';"
 ```
 
-## 11. Noch nicht abgedeckt
+## 11. Buchimport (AP3.T3.1)
+
+### 11.1 Voraussetzung: die Buchquellen liegen bereit
+
+`data/book-source/` ist git-ignorierter **Pflicht-Input des Nutzers**. Kein
+Agent und kein Skript legt die Dateien an.
+
+```bash
+ls data/book-source/
+# erwartet: die Buch-Markdown-Datei (*.md) und die Bilder pXXXX_YY.jpeg
+# Die Bilder duerfen flach liegen ODER in genau einem Unterverzeichnis.
+```
+
+Fehlt etwas, bricht der Import **vor jeder Verarbeitung** ab und sagt, was:
+
+```
+[book:import] Abbruch - Vorbedingung nicht erfuellt.
+Buchquellen-Verzeichnis fehlt: /home/phillip/gto/data/book-source existiert nicht. …
+Buchquellen-Verzeichnis ist leer: … enthaelt ausser der README nichts. …
+Buch-Markdown fehlt: in … liegt keine *.md-Datei (ausser der README). …
+Bilddateien fehlen: weder in … noch in einem Unterverzeichnis liegen Bilder …
+```
+
+Was tun: die Quellen nach `data/book-source/` legen (Struktur siehe
+`data/book-source/README.md` und INTERFACES Abschnitt 5), dann erneut starten.
+Es gibt bewusst keinen Fallback und keine Beispieldaten.
+
+### 11.2 Trockenlauf — analysieren, ohne zu schreiben
+
+```bash
+pnpm book:import --dry-run
+```
+
+Braucht **keine** laufende Datenbank. Liest die Quellen, zerlegt sie, schreibt
+den Report und rührt Postgres nicht an. Der richtige erste Schritt nach dem
+Ablegen neuer Quellen.
+
+### 11.3 Import ausführen
+
+```bash
+pnpm db:up          # Postgres muss laufen
+pnpm db:migrate     # einmalig, legt book_chapter/book_section/book_asset an
+pnpm book:import
+```
+
+Weitere Schalter: `--source <verzeichnis>` (abweichende Quelle),
+`--out <datei>` (abweichender Reportpfad).
+
+Der Lauf ist **idempotent**: Ein zweiter Import über unveränderte Quellen legt
+nichts an, ändert nichts und löscht nichts (alle Zeilen „unverändert").
+Er setzt außerdem **keinen KI-Aufruf** ab — `llm_call_log` wächst nicht.
+
+### 11.4 Den Report lesen
+
+Terminal-Kurzfassung plus `data/reports/book-import.md` (git-ignoriert, weil er
+Buchinhalt enthält).
+
+| Abschnitt             | Worauf zu achten ist                                                                                      |
+| --------------------- | --------------------------------------------------------------------------------------------------------- |
+| Zählstände            | **3 Teile, 14 Kapitel.** Andere Zahlen heißen: die Struktur wurde nicht erkannt, nicht „das Buch ist so". |
+| Assets je Typ         | `hand_range` ist die Zahl, die T3.3 verarbeitet. Sie sollte etwa der Hälfte aller Bilder entsprechen.     |
+| Unterschriften        | „ohne erkennbare Struktur" und „unsichere Klassifikationen" — beides ist Handarbeit für T3.3.             |
+| Datenbank-Wirkung     | Beim zweiten Lauf müssen alle Zeilen in „unverändert" stehen.                                             |
+| Fehlende Bilddateien  | Markdown verweist auf ein Bild, das nicht da ist → Quelle unvollständig.                                  |
+| Verwaiste Bilddateien | Bild liegt da, wird aber nirgends referenziert → meist ein Exportfehler.                                  |
+| Nummerierung          | Lücken je Etikett (`Hand Range`, `Table`, …). „keine" heißt: nichts übersehen.                            |
+| Strukturmeldungen     | Leer ist gut. `chapter-count`, `part-count`, `toc-missing` sind echte Befunde.                            |
+
+### 11.5 Zahlen von Hand nachsehen
+
+```bash
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select part_number, chapter_number, title from book_chapter order by chapter_number"
+
+# Was geht in T3.3 durch die Vision-Pipeline?
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select asset_type, count(*) from book_asset where removed_at is null group by asset_type"
+
+# Unsichere Faelle ansehen
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select relative_path, classification_rule from book_asset
+   where classification_confidence = 'uncertain' order by ordinal limit 20"
+```
+
+### 11.6 Typische Fehlerbilder
+
+| Symptom                                          | Ursache                                                | Abhilfe                                                                 |
+| ------------------------------------------------ | ------------------------------------------------------ | ----------------------------------------------------------------------- |
+| `Mehrdeutige Bildablage: N Unterverzeichnisse …` | mehr als ein bildhaltiges Unterverzeichnis             | überzählige Verzeichnisse entfernen oder Bilder zusammenlegen           |
+| `Mehrdeutige Buchquelle: N Markdown-Dateien`     | zweite `*.md` im Quellverzeichnis                      | nur die Buch-Markdown dort belassen                                     |
+| Report meldet `chapter-count`                    | Kapitelstruktur nicht vollständig erkannt              | Inhaltsverzeichnis der Quelle prüfen (`# CONTENTS`, `**PART n)`-Zeilen) |
+| viele „verwaiste Bilddateien"                    | Export hat Bilder erzeugt, die im Text nicht vorkommen | Quelle neu exportieren oder als bekannt hinnehmen                       |
+| `relation "book_chapter" does not exist`         | Migration `0002` nicht eingespielt                     | `pnpm db:migrate`                                                       |
+
+## 12. Noch nicht abgedeckt
 
 - Der Host-Nginx-vhost und das TLS-Zertifikat sind vorbereitet, aber noch nicht
   eingespielt: Beides erfordert Root auf dem Host (Abschnitte 8.4 und 8.5).

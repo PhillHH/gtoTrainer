@@ -87,3 +87,11 @@ export type {
   SettingsFieldError,
   SettingsOrigin,
 } from './settings.js';
+
+export {
+  BOOK_ASSET_CONFIDENCES,
+  BOOK_ASSET_TYPES,
+  isBookAssetConfidence,
+  isBookAssetType,
+} from './book.js';
+export type { BookAssetConfidence, BookAssetType, BookCaption, BookCaptionAction } from './book.js';

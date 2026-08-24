@@ -603,6 +603,51 @@ Job-Worker mit Retry und Dead-Letter, zentrales Aufruf-Protokoll, SSE-Statuskana
 und die Einstellungen-Seite mit Testaufruf. Die fachlichen Job-Typen und
 Lern-Templates entstehen ab AP3/AP5.
 
+## 3g. Content-Pipeline (neu in AP3.T3.1)
+
+Die Buchquelle wird zur abfragbaren Wissensbasis. Der erste Schritt ist
+**deterministisch und ohne jeden KI-Aufruf** — er entscheidet nur, _was_
+später überhaupt an ein Modell geht.
+
+```
+data/book-source/            (git-ignoriert, vom Nutzer befüllt, nur gelesen)
+   │  <buch>.md  +  Bilder pXXXX_YY.jpeg
+   ▼
+src/book/source.ts           Vorbedingung: Verzeichnis, Markdown, Bilder da?
+   │                         Struktur tolerant: flach ODER ein Unterverzeichnis
+   │                         fehlt etwas -> BookSourceError, sauberer Abbruch
+   ▼
+src/book/parser.ts           Inhaltsverzeichnis -> Teile + Kapitel (Soll)
+   │                         Fließtext -> Kapitelanker, Sektionen, Seitenmarker
+   │                         Bildbezüge -> Assets
+   ├── caption.ts            Unterschrift -> Etikett, Nummer, Spot, Prozente
+   └── classify.ts           Regeltabelle -> hand_range | table | diagram |
+                             formula | other  (+ certain/uncertain)
+   ▼
+src/book/import.ts           Upsert über fachliche Schlüssel, Hash-Vergleich
+   │                         unverändert -> nichts anfassen
+   │                         entfallen  -> removed_at, kein DELETE
+   ▼
+book_chapter -> book_section -> book_asset
+   │
+   ├── T3.2  Konzepte je Sektion
+   ├── T3.3  Vision-Pipeline, gefiltert auf asset_type = 'hand_range'
+   └── T3.5  Content-API (Sektionen gezielt, Charts, Asset-Serving)
+```
+
+Der **Import-Report** (`src/book/report.ts`) fällt bei jedem Lauf an: Terminal
+plus `data/reports/book-import.md`. Er ist git-ignoriert, weil er Kapitel- und
+Sektionstitel aus dem Buch enthält.
+
+Zwei Eigenschaften sind für die Folge-APs wesentlich:
+
+- **Der Filter spart Kontingent.** Von 855 Bildern der Quelle sind 348
+  Range-Charts. T3.3 verarbeitet nur diese — ohne die Typisierung wären es
+  2,5× so viele Vision-Aufrufe.
+- **Assets überleben den Re-Import.** `book_asset.id` bleibt stabil, solange
+  das Asset in der Quelle steht. Chart-Daten aus T3.3/T3.4 hängen daran und
+  gehen bei einem erneuten Buchimport nicht verloren.
+
 ## 4. Querschnitts-Entscheidungen
 
 - **Node 20.19.6**, fixiert in `.nvmrc`; `engines.node >= 20.19.0`.
@@ -618,7 +663,6 @@ Begründungen siehe [DECISIONS.md](./DECISIONS.md).
 
 - Host-Nginx-vhost und TLS sind vorbereitet, aber noch nicht eingespielt —
   beides erfordert Root auf dem Host (siehe `docs/status/AP01.md`).
-- Ingestion-Pipeline für `data/book-source/` (AP3)
 - Der Host-seitige CLI-Runner aus [ADR-0022](./DECISIONS.md) läuft außerhalb
   von Compose. Sein Neustart nach einem Reboot ist noch nicht abgesichert
   (siehe `docs/RUNBOOK.md` 9.2).
