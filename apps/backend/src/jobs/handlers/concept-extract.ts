@@ -54,8 +54,10 @@ export interface ConceptExtractOptions {
    * Kurzdefinition; die Antwort selbst bleibt klein. Grosszuegig gewaehlt,
    * weil die CLI nicht kuerzt, sondern abbricht (T2.2) und Modelle mit
    * innerem Ueberlegen deutlich mehr Tokens erzeugen, als die reine Antwort
-   * vermuten laesst. Auf der CLI-Strecke gilt zusaetzlich
-   * `CLAUDE_CODE_MAX_OUTPUT_TOKENS` des Host-Runners (RUNBOOK 12.1).
+   * vermuten laesst. Auf der CLI-Strecke ist dieser Wert die **tatsaechliche**
+   * Obergrenze: Der Adapter setzt daraus `CLAUDE_CODE_MAX_OUTPUT_TOKENS` je
+   * Aufruf und ueberschreibt die Umgebung des Host-Runners
+   * (`src/llm/invocation.ts`).
    */
   readonly maxTokens?: number;
   readonly settings?: LlmSettingsReader;

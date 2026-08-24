@@ -49,9 +49,18 @@ export interface ChartDigitizeOptions {
   readonly templates: TemplateRegistry;
   readonly defaultModel: string;
   /**
-   * Antwortgrenze. 169 Zellen als JSON sind rund 6 000 Tokens; mit innerem
-   * Ueberlegen deutlich mehr. Auf der CLI-Strecke gilt zusaetzlich
-   * `CLAUDE_CODE_MAX_OUTPUT_TOKENS` des Host-Runners (RUNBOOK 13.1).
+   * Antwortgrenze.
+   *
+   * **Dieser Wert ist die tatsaechliche Obergrenze der CLI**, nicht nur ein
+   * Hinweis: Der CLI-Adapter setzt daraus `CLAUDE_CODE_MAX_OUTPUT_TOKENS` je
+   * Aufruf (`src/llm/invocation.ts`) und ueberschreibt damit, was in der
+   * Umgebung des Host-Runners steht.
+   *
+   * 169 Zellen als JSON sind rund 8 000 Tokens; mit innerem Ueberlegen
+   * deutlich mehr. Bei 16 384 brachen die dichtesten Raster im Massenlauf mit
+   * `Claude's response exceeded the 16384 output token maximum` ab - deshalb
+   * 32 768. Ein zu hoher Wert kostet nichts; die CLI kuerzt nicht, sie bricht
+   * ab (T2.2).
    */
   readonly maxTokens?: number;
   readonly settings?: LlmSettingsReader;
@@ -62,7 +71,7 @@ export interface ChartDigitizeOptions {
   readonly sourceDir?: string;
 }
 
-const DEFAULT_MAX_TOKENS = 16384;
+const DEFAULT_MAX_TOKENS = 32768;
 
 /** Der Spot als lesbarer Prompt-Block. */
 export function renderSpot(spot: ChartSpot): string {

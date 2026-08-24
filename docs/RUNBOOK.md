@@ -1178,22 +1178,29 @@ dieses Buch 53 Aufrufe mit je ~4 000 Token Eingabe. Vorher Modell und
 > docker compose up -d backend
 > ```
 >
-> **Ausgabegrenze der CLI ebenfalls hochsetzen.** Die Claude CLI bricht bei
-> 8192 Ausgabe-Tokens ab (`API Error: Claude's response exceeded the 8192
-output token maximum`). Für die Konzept-Extraktion reicht das nicht — Modelle
-> mit innerem Überlegen verbrauchen deutlich mehr Tokens, als die reine Antwort
-> vermuten lässt. Der Wert ist eine Umgebungsvariable der CLI und wird dem
-> Host-Runner mitgegeben:
+> **Ausgabegrenze der CLI: sie steht im Code, nicht in der Umgebung.** Die
+> Claude CLI bricht ab, wenn die Antwort ihr Token-Limit reißt
+> (`API Error: Claude's response exceeded the N output token maximum`) —
+> Kategorie `invalid`, und `invalid` ist **nicht wiederholbar**, es hilft also
+> kein Retry.
+>
+> Maßgeblich ist das `maxTokens` des jeweiligen Job-Typs: Der CLI-Adapter setzt
+> daraus je Aufruf `CLAUDE_CODE_MAX_OUTPUT_TOKENS`
+> (`apps/backend/src/llm/invocation.ts`) und **überschreibt damit, was in der
+> Umgebung des Host-Runners steht**. Wer die Grenze anheben will, ändert sie im
+> Job-Typ, nicht beim Runner:
+>
+> | Job-Typ           | `maxTokens` | Datei                                  |
+> | ----------------- | ----------: | -------------------------------------- |
+> | `concept.extract` |      16 384 | `src/jobs/handlers/concept-extract.ts` |
+> | `chart.digitize`  |      32 768 | `src/jobs/handlers/chart-digitize.ts`  |
+>
+> Für die Chart-Digitalisierung aus T3.3 ist zusätzlich eine Zeitgrenze von
+> **1 800 000 ms** nötig, nicht 600 000 (ADR-0033).
 >
 > ```bash
-> LLM_TIMEOUT_MS=600000 CLAUDE_CODE_MAX_OUTPUT_TOKENS=32000 pnpm llm:runner
+> LLM_TIMEOUT_MS=1800000 pnpm llm:runner
 > ```
->
-> Ohne das landen die Jobs mit Kategorie `invalid` im Dead-Letter — `invalid`
-> ist nicht wiederholbar, es hilft also kein Retry.
->
-> Für die Chart-Digitalisierung aus T3.3 sind **1 800 000 ms** nötig, nicht
-> 600 000 (ADR-0033).
 >
 > **Reihenfolge beachten:** Den Runner _vor_ dem Einplanen der Jobs neu
 > starten. Wer ihn mittendrin neu startet, macht das Socket kurz unerreichbar —
@@ -1317,8 +1324,9 @@ erzeugt bis zu 50 000 Tokens:
 docker exec -i gto-postgres psql -U gto -d gto -c \
   "update config set value='1800000'::jsonb where key='llm.timeout_ms'"
 
-# 2. Host-Runner mit derselben Grenze UND hoher Ausgabegrenze neu starten
-LLM_TIMEOUT_MS=1800000 CLAUDE_CODE_MAX_OUTPUT_TOKENS=32000 pnpm llm:runner
+# 2. Host-Runner mit derselben Grenze neu starten (die Ausgabegrenze kommt
+#    je Aufruf aus dem Job-Typ, nicht von hier)
+LLM_TIMEOUT_MS=1800000 pnpm llm:runner
 
 # 3. WORKER_STALE_AFTER_MS in der .env deutlich darüber, dann Backend erneuern
 docker compose up -d backend
