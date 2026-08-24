@@ -740,6 +740,70 @@ Scope-Delta 3): dieselbe Stichprobe mit mehreren Modellen, gemessen gegen von
 Hand geprüfte Sollwerte. Er schreibt nicht in `range_chart` — er entscheidet
 nur die Modellwahl ([ADR-0033](./DECISIONS.md)).
 
+## 3j. Validierungsstufe der Chart-Pipeline (neu in AP3.T3.4)
+
+Zwischen „das Modell hat etwas gelesen" und „das gilt als Wahrheit" liegt eine
+eigene Stufe. Sie ist die Gegenmaßnahme zu Risiko R2: ein falsch gelesenes
+Chart, das unbemerkt zur Grundlage von Drills und Analysen wird.
+
+```
+range_chart (state = 'raw')
+   │
+   ▼
+chart/validate.ts            DREI UNABHAENGIGE PRUEFUNGEN, ohne KI
+   ├── frequency-sum   Summe je Zelle ~ 100 %        (rechnet IN der Matrix)
+   ├── caption-match   combo-gewichtet 6/4/12 gegen  (externe Wahrheit aus
+   │                   die Caption-Prozente aus T3.1   T3.1, nie modellberuehrt)
+   └── plausibility    Vollstaendigkeit / Monotonie / (Pokerwissen, unabhaengig
+                       Ausreisser                       von beidem)
+   │
+   ▼
+chart/validation-store.ts    Befunde persistieren, Zustand setzen
+   │  chart_finding (check, kind, severity, hand, measured, expected, detail)
+   │
+   ├── kein error-Befund ──────────────────► validated
+   └── mindestens ein error-Befund ────────► bleibt raw
+              │
+              ▼
+        jobs/handlers/chart-recheck.ts     ← der EINZIGE KI-Anteil in T3.4
+              │  nur beanstandete Charts; geschaerfter Prompt mit der
+              │  konkreten Beanstandung; Job-Queue → Provider-Registry
+              │  chart_recheck protokolliert den Vergleich beider Ablesungen
+              ▼
+        Pruefungen laufen erneut
+              │
+              ▼
+   chart/review-routes.ts     Review-Ansicht: Bild neben Matrix
+        │  manuelle Korrektur (source = 'manual', corrected_at)
+        ▼
+   approved   ── oder ──   unusable (mit Begruendung)
+        │
+        ▼
+   T3.5 Content-API / AP6 / AP7 / AP8 lesen ausschliesslich `approved`
+```
+
+Warum die drei Prüfungen getrennt bleiben: Sie greifen auf **verschiedene
+Wahrheitsquellen** zu. `frequency-sum` rechnet nur innerhalb der Matrix,
+`caption-match` hält sie gegen Zahlen, die kein Modell je gesehen hat, und
+`plausibility` prüft die Form gegen Pokerwissen. Würde man den Caption-Abgleich
+aus denselben Daten speisen, die er prüfen soll, bestätigte er nur sich selbst.
+
+Zwei Eigenschaften, die für Folge-APs zählen:
+
+- **Kein zweiter Weg nach `approved`.** Die Freigabe liegt ausschließlich in
+  `validation-store.ts` und verlangt den Zustand `validated`. Ein erneuter
+  Validierungslauf nimmt eine Freigabe nicht zurück und vergibt selbst nie eine.
+- **Menschliche Korrekturen bleiben erkennbar und überleben.** `source` und
+  `corrected_at` je Zelle; der Zweitdurchlauf überspringt sie, ein erneuter
+  Validierungslauf überschreibt sie nicht.
+
+**Grenze der automatischen Prüfung, gemessen am echten Bestand:** `caption-match`
+ist die einzige Prüfung mit externer Gegenprobe — aber nur 6 der 25 lesbaren
+Charts haben überhaupt Prozentwerte in der Buch-Unterschrift. Ein Chart auf
+`validated` heißt deshalb „nichts spricht dagegen", nicht „extern bestätigt".
+Die Review-Ansicht ist damit kein Restposten, sondern der Regelweg nach
+`approved` (siehe `docs/status/AP03.md`, Abschnitt T3.4).
+
 ## 4. Querschnitts-Entscheidungen
 
 - **Node 20.19.6**, fixiert in `.nvmrc`; `engines.node >= 20.19.0`.

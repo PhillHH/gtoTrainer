@@ -9,6 +9,7 @@ import { JobEventBus } from '../../src/jobs/events.js';
 import { JobHandlerRegistry } from '../../src/jobs/types.js';
 import { JobWorker } from '../../src/jobs/worker.js';
 import { createChartDigitizeJob } from '../../src/jobs/handlers/chart-digitize.js';
+import { createChartRecheckJob } from '../../src/jobs/handlers/chart-recheck.js';
 import { TemplateRegistry } from '../../src/prompts/registry.js';
 import { MINI_BOOK } from '../book/fixtures.js';
 
@@ -71,17 +72,27 @@ export function createChartRuntime(db: Database, json: unknown): ChartTestRuntim
   const received: { jobType: string; status: string }[] = [];
   events.subscribe((event) => received.push({ jobType: event.jobType, status: event.status }));
 
-  const handlers = new JobHandlerRegistry().register(
-    createChartDigitizeJob({
-      providers,
-      templates: TemplateRegistry.load(),
-      defaultModel: 'claude-sonnet-5',
-      maxTokens: 512,
-      // Bilder kommen aus den T3.1-Fixtures - echte Buchbilder gehoeren nicht
-      // in einen Test, und in der CI liegen sie ohnehin nicht vor.
-      sourceDir: MINI_BOOK,
-    }),
-  );
+  const handlers = new JobHandlerRegistry()
+    .register(
+      createChartRecheckJob({
+        providers,
+        templates: TemplateRegistry.load(),
+        defaultModel: 'claude-sonnet-5',
+        maxTokens: 512,
+        sourceDir: MINI_BOOK,
+      }),
+    )
+    .register(
+      createChartDigitizeJob({
+        providers,
+        templates: TemplateRegistry.load(),
+        defaultModel: 'claude-sonnet-5',
+        maxTokens: 512,
+        // Bilder kommen aus den T3.1-Fixtures - echte Buchbilder gehoeren nicht
+        // in einen Test, und in der CI liegen sie ohnehin nicht vor.
+        sourceDir: MINI_BOOK,
+      }),
+    );
 
   const worker = new JobWorker({
     db,
@@ -100,8 +111,8 @@ export function createChartRuntime(db: Database, json: unknown): ChartTestRuntim
 /** Leert alle Tabellen, die die Chart-Tests anfassen. */
 export async function clearAll(db: Database): Promise<void> {
   await db.execute(
-    sql`truncate table range_chart_cell, range_chart, book_asset, book_section, book_chapter,
-        job_queue, llm_call_log cascade`,
+    sql`truncate table chart_finding, chart_recheck, range_chart_cell, range_chart, book_asset,
+        book_section, book_chapter, job_queue, llm_call_log cascade`,
   );
 }
 

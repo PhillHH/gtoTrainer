@@ -4,6 +4,7 @@ import {
   JOB_EVENT_NAME,
   isAuthErrorResponse,
   isJobEvent,
+  isChartErrorResponse,
   isConceptErrorResponse,
   isLlmSettingsErrorResponse,
   type AuthErrorCode,
@@ -11,6 +12,10 @@ import {
   type ConceptListResponse,
   type ConceptUpdate,
   type ConceptUpdateResponse,
+  type ChartApproveResponse,
+  type ChartCellUpdateRequest,
+  type ReviewChartDetail,
+  type ReviewListResponse,
   type CsrfTokenResponse,
   type JobEvent,
   type JobRetryResponse,
@@ -189,6 +194,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     if (isConceptErrorResponse(payload)) {
       throw new ApiError(kind, response.status, payload.message, undefined, payload.fields);
     }
+    // Die Review-Ansicht der Chart-Validierung (AP3.T3.4) lehnt nach demselben
+    // Muster feldweise ab.
+    if (isChartErrorResponse(payload)) {
+      throw new ApiError(kind, response.status, payload.message, undefined, payload.fields);
+    }
     if (isAuthErrorResponse(payload)) {
       throw new ApiError(kind, response.status, payload.message, payload.error);
     }
@@ -331,6 +341,56 @@ export function approveChapter(chapterNumber: number): Promise<ConceptApproveRes
   });
 }
 
+/* -------------------------------------------------------------------------
+ * Chart-Validierung: Review-Ansicht (AP3.T3.4)
+ * ---------------------------------------------------------------------- */
+
+/** Liste aller digitalisierten Charts samt Zustand und Befundzahlen. */
+export function fetchCharts(): Promise<ReviewListResponse> {
+  return request<ReviewListResponse>('/api/charts');
+}
+
+/** Ein Chart mit Matrix, Befunden und Bild-URL. */
+export function fetchChart(id: string): Promise<ReviewChartDetail> {
+  return request<ReviewChartDetail>(`/api/charts/${encodeURIComponent(id)}`);
+}
+
+/**
+ * Korrigiert einzelne Zellen von Hand.
+ *
+ * Die Korrektur startet serverseitig die Pruefung neu - die Antwort traegt
+ * daher schon den neuen Zustand und die verbliebenen Befunde.
+ */
+export function correctChartCells(
+  id: string,
+  body: ChartCellUpdateRequest,
+): Promise<ReviewChartDetail> {
+  return request<ReviewChartDetail>(`/api/charts/${encodeURIComponent(id)}/cells`, {
+    method: 'PATCH',
+    body,
+  });
+}
+
+/** Gibt ein einzelnes Chart frei. Scheitert, solange Fehlerbefunde offen sind. */
+export function approveChart(id: string): Promise<ChartApproveResponse> {
+  return request<ChartApproveResponse>(`/api/charts/${encodeURIComponent(id)}/approve`, {
+    method: 'POST',
+  });
+}
+
+/** Gibt alle Charts im Zustand `validated` frei. */
+export function approveValidatedCharts(): Promise<ChartApproveResponse> {
+  return request<ChartApproveResponse>('/api/charts/approve-validated', { method: 'POST' });
+}
+
+/** Verwirft ein Chart mit Begruendung - der dokumentierte Rest. */
+export function markChartUnusable(id: string, reason: string): Promise<ReviewChartDetail> {
+  return request<ReviewChartDetail>(`/api/charts/${encodeURIComponent(id)}/unusable`, {
+    method: 'POST',
+    body: { reason },
+  });
+}
+
 export const apiClient = {
   fetchCsrfToken,
   login,
@@ -347,4 +407,10 @@ export const apiClient = {
   updateConcept,
   approveConcept,
   approveChapter,
+  fetchCharts,
+  fetchChart,
+  correctChartCells,
+  approveChart,
+  approveValidatedCharts,
+  markChartUnusable,
 } as const;

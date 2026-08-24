@@ -519,7 +519,14 @@ export const CONCEPT_TABLES = [
  * deckungsgleich.
  * ---------------------------------------------------------------------- */
 
-export const CHART_STATES = ['raw', 'validated', 'approved', 'failed'] as const;
+export const CHART_STATES = ['raw', 'validated', 'approved', 'failed', 'unusable'] as const;
+
+/** Herkunft eines Zellwerts (AP3.T3.4). */
+export const CHART_CELL_SOURCES = ['model', 'manual'] as const;
+
+/** Prueffarten und Schweregrade der Validierung (AP3.T3.4). */
+export const CHART_CHECKS = ['frequency-sum', 'caption-match', 'plausibility'] as const;
+export const CHART_FINDING_SEVERITIES = ['error', 'warning', 'info'] as const;
 
 export const CHART_ACTION_KINDS = [
   'fold',
@@ -572,6 +579,12 @@ export const rangeChart = pgTable(
     cellCount: integer('cell_count').notNull().default(0),
     /** Grund, wenn `state = 'failed'`. */
     failureReason: text('failure_reason'),
+    /** Begruendung, wenn ein Mensch das Chart als unbrauchbar verworfen hat. */
+    unusableReason: text('unusable_reason'),
+    /** Zeitpunkt der letzten Validierung. */
+    validatedAt: timestamp('validated_at', { withTimezone: true }),
+    /** Zeitpunkt der Freigabe. */
+    approvedAt: timestamp('approved_at', { withTimezone: true }),
     durationMs: integer('duration_ms'),
     promptTokens: integer('prompt_tokens'),
     completionTokens: integer('completion_tokens'),
@@ -606,6 +619,13 @@ export const rangeChartCell = pgTable(
     sizing: text('sizing').notNull().default(''),
     /** Anteil in Prozent, 0-100. */
     percent: doublePrecision('percent').notNull(),
+    /**
+     * Woher der Wert stammt (AP3.T3.4). `manual` ist gegen jedes automatische
+     * Ueberschreiben geschuetzt - weder ein erneuter Validierungslauf noch der
+     * Zweitdurchlauf fasst solche Zellen an.
+     */
+    source: text('source').notNull().default('model'),
+    correctedAt: timestamp('corrected_at', { withTimezone: true }),
   },
   (table) => [
     primaryKey({ columns: [table.chartId, table.hand, table.actionKind, table.sizing] }),
@@ -615,8 +635,90 @@ export const rangeChartCell = pgTable(
       sql.raw(`action_kind in (${sqlList(CHART_ACTION_KINDS)})`),
     ),
     check('range_chart_cell_percent_check', sql`${table.percent} >= 0 and ${table.percent} <= 100`),
+    check('range_chart_cell_source_check', sql.raw(`source in (${sqlList(CHART_CELL_SOURCES)})`)),
   ],
 );
 
-/** Tabellen der Chart-Digitalisierung (AP3.T3.3). */
-export const CHART_TABLES = ['range_chart', 'range_chart_cell'] as const;
+/**
+ * Befund eines Validierungslaufs (AP3.T3.4).
+ *
+ * Ein Chart hat beliebig viele Befunde; sie werden bei jedem Lauf ersetzt.
+ * Der Befund ist bewusst **zellgenau**, wo das moeglich ist: Der
+ * Zweitdurchlauf soll gezielt auf die beanstandeten Blaetter hinweisen
+ * koennen, statt das ganze Chart als "fehlerhaft" zu behandeln.
+ */
+export const chartFinding = pgTable(
+  'chart_finding',
+  {
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    chartId: uuid('chart_id')
+      .notNull()
+      .references(() => rangeChart.id, { onDelete: 'cascade' }),
+    check: text('check').notNull(),
+    kind: text('kind').notNull(),
+    severity: text('severity').notNull(),
+    /** Betroffenes Blatt, wenn der Befund zellgenau ist. */
+    hand: text('hand'),
+    /** Betroffene Aktionsart, wenn der Befund aktionsgenau ist. */
+    actionKind: text('action_kind'),
+    measured: doublePrecision('measured'),
+    expected: doublePrecision('expected'),
+    detail: text('detail').notNull(),
+    createdAt,
+  },
+  (table) => [
+    index('chart_finding_chart_idx').on(table.chartId),
+    index('chart_finding_check_idx').on(table.check, table.severity),
+    check('chart_finding_check_check', sql.raw(`"check" in (${sqlList(CHART_CHECKS)})`)),
+    check(
+      'chart_finding_severity_check',
+      sql.raw(`severity in (${sqlList(CHART_FINDING_SEVERITIES)})`),
+    ),
+  ],
+);
+
+/**
+ * Protokoll eines gezielten Zweitdurchlaufs (AP3.T3.4).
+ *
+ * Haelt fest, wie die zweite Ablesung zur ersten stand. Ohne diese Zeile
+ * waere die Entscheidung "der zweite Wert gilt" ein stilles Ueberschreiben;
+ * so bleibt sie nachvollziehbar.
+ */
+export const chartRecheck = pgTable(
+  'chart_recheck',
+  {
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    chartId: uuid('chart_id')
+      .notNull()
+      .references(() => rangeChart.id, { onDelete: 'cascade' }),
+    model: text('model').notNull(),
+    runId: text('run_id').notNull(),
+    /** Blaetter, auf die der geschaerfte Prompt hingewiesen hat. */
+    flaggedHands: jsonb('flagged_hands')
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    cellsCompared: integer('cells_compared').notNull().default(0),
+    /** Zellen, in denen beide Durchlaeufe uebereinstimmten. */
+    cellsAgreed: integer('cells_agreed').notNull().default(0),
+    /** Zellen, die der zweite Durchlauf geaendert hat. */
+    cellsChanged: integer('cells_changed').notNull().default(0),
+    /** Zellen, die als manuell korrigiert unangetastet blieben. */
+    cellsProtected: integer('cells_protected').notNull().default(0),
+    /** Klartext der Entscheidung. */
+    decision: text('decision').notNull(),
+    createdAt,
+  },
+  (table) => [index('chart_recheck_chart_idx').on(table.chartId)],
+);
+
+/** Tabellen der Chart-Digitalisierung und -Validierung (AP3.T3.3/T3.4). */
+export const CHART_TABLES = [
+  'range_chart',
+  'range_chart_cell',
+  'chart_finding',
+  'chart_recheck',
+] as const;

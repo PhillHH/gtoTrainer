@@ -1472,7 +1472,125 @@ Validierung aus T3.4 — vorher sind die Zahlen ungeprüfte Modellausgabe.
 | Lauf bricht mit `rate_limit` ab                        | Session- oder Wochenlimit                      | nichts tun; Queue legt wieder vor, sonst später erneut starten |
 | `llm_call_log` wächst stark                            | Bilder werden **nicht** protokolliert          | Prompt-Kürzung greift (ADR-0028); nur Textteil wächst          |
 
-## 14. Noch nicht abgedeckt
+## 14. Chart-Validierung und Review (AP3.T3.4)
+
+### 14.1 Validierung starten
+
+Die drei Prüfungen sind deterministischer Code — **kein Kontingent, kein
+Runner, keine Wartezeit**. Sie laufen auf dem Host gegen die Datenbank:
+
+```bash
+cd apps/backend
+pnpm charts:validate              # alle raw/validated Charts pruefen
+pnpm charts:validate --status     # nur Zaehlstaende, ohne zu schreiben
+pnpm charts:validate --limit 20   # Teillauf
+```
+
+Der Lauf ist wiederholbar. `approved`, `unusable` und `failed` bleiben
+unangetastet — eine Freigabe wird nicht zurückgenommen.
+
+Einzelne Heuristiken abschalten (etwa, um die Warnungslage zu vergleichen):
+
+```bash
+pnpm charts:validate --no-monotonie --no-ausreisser
+```
+
+Das ändert nur, was gemeldet wird. Ob ein Chart als bestanden gilt, hängt
+ausschließlich an `error`-Befunden.
+
+### 14.2 Zweitdurchlauf auslösen
+
+Verarbeitet **ausschließlich** Charts mit mindestens einem `error`-Befund. Der
+Job prüft das selbst noch einmal und verweigert sich sonst — ein Tippfehler im
+Aufruf kostet kein Kontingent.
+
+```bash
+# Voraussetzung: Host-Runner laeuft mit angehobener Zeitgrenze (13.1)
+pnpm charts:validate --recheck        # alle beanstandeten
+pnpm charts:validate --recheck 5      # hoechstens 5
+```
+
+Fortschritt verfolgen:
+
+```bash
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select status, count(*) from job_queue where job_type='chart.recheck' group by status"
+```
+
+Rechnen Sie mit **3 bis 6 Minuten je Chart**. Nach dem Zweitdurchlauf laufen
+die Prüfungen automatisch erneut; das Ergebnis steht in `chart_recheck`:
+
+```bash
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select a.caption_number, r.cells_agreed, r.cells_changed, r.cells_protected, r.decision
+     from chart_recheck r join range_chart c on c.id=r.chart_id
+     join book_asset a on a.id=c.asset_id order by 1"
+```
+
+> **Wenn alle Recheck-Jobs sofort mit `UnknownJobTypeError` sterben:** Der
+> Backend-Container läuft noch mit einem Build ohne den Job-Typ.
+> `docker compose up -d --build backend`, tote Jobs löschen, neu einplanen.
+> Ein Backend-Neustart ist gefahrlos, solange keine Jobs laufen — anders als
+> ein Runner-Neustart (13.1).
+
+### 14.3 Review durchführen
+
+`/charts` im Frontend, angemeldet. Links das Original-Bild, rechts die gelesene
+Matrix als 13×13-Raster; beanstandete Zellen sind umrandet, korrigierte
+gestrichelt. Unter den Befunden steht die Gegenüberstellung „gelesen
+(combo-gewichtet)" gegen „Bildunterschrift".
+
+**Was beim Sichten tatsächlich weiterhilft:** Viele Chart-Bilder tragen unten
+eine **Legende mit Prozentwerten** („Call 59.65 % / Fold 40.35 %"), auch wenn
+die Buch-Unterschrift keine nennt. Diese Zahl gegen die Spalte „gelesen"
+halten — das ist die verlässlichste Einzelprüfung, die ein Mensch hier machen
+kann, und sie deckt Fälle auf, die `caption-match` nicht sehen kann.
+
+Eine Zelle korrigieren: im Raster anklicken, Aktionen als je eine Zeile
+`art [sizing] prozent` eintragen, speichern. Die Korrektur wird als `manual`
+mit Zeitpunkt vermerkt, danach läuft die Prüfung automatisch erneut. Weder ein
+späterer Validierungslauf noch ein Zweitdurchlauf überschreibt sie.
+
+Freigabe einzeln über **Freigeben**, oder für alle geprüften Charts über **Alle
+geprüften freigeben**.
+
+> **Die Sammelfreigabe ist der Ausnahmefall.** `validated` heißt nur, dass die
+> automatischen Prüfungen nichts gefunden haben — und `caption-match` greift
+> nur bei Charts, deren Unterschrift Prozentwerte nennt (am aktuellen Bestand:
+> 6 von 25). Wer alles auf einmal freigibt, erklärt ungeprüfte Zahlen zur
+> Wahrheit. Das ist genau Risiko R2.
+
+### 14.4 Chart als unbrauchbar markieren
+
+Im Detail unter **Unbrauchbar**: Begründung eintragen, markieren. Die Begründung
+ist Pflicht — ein leeres Feld lehnt das Backend mit `400` ab. Das ist der von
+der DoD zugelassene Rest, und er muss benannt sein, nicht nur gezählt.
+
+Typischer Fall aus dem ersten Lauf: HR 31 — das Modell hat die Legende
+vertauscht und rote Zellen durchgängig als `call` gelesen. Weil die
+Unterscheidung im Datensatz nicht mehr enthalten ist, hilft keine zellweise
+Korrektur; das Chart braucht eine erneute Digitalisierung.
+
+### 14.5 Zählstände und Approved-Quote
+
+```bash
+pnpm charts:validate --status
+```
+
+Die Quote bezieht sich auf **alle** `hand_range`-Assets, nicht auf die bereits
+digitalisierten — sonst sähe ein halb gelaufener Massenlauf gut aus.
+
+Zustandsverteilung direkt aus der Datenbank:
+
+```bash
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select state, count(*) from range_chart group by state order by state"
+
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select check, severity, count(*) from chart_finding group by 1,2 order by 1,2"
+```
+
+## 15. Noch nicht abgedeckt
 
 - Der Host-Nginx-vhost und das TLS-Zertifikat sind vorbereitet, aber noch nicht
   eingespielt: Beides erfordert Root auf dem Host (Abschnitte 8.4 und 8.5).

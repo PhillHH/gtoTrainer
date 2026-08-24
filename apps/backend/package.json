@@ -26,7 +26,8 @@
     "book:import": "tsx src/book/cli-import.ts",
     "concepts:generate": "tsx src/concept/cli-generate.ts",
     "charts:digitize": "tsx src/chart/cli-digitize.ts",
-    "charts:calibrate": "tsx src/chart/cli-calibrate.ts"
+    "charts:calibrate": "tsx src/chart/cli-calibrate.ts",
+    "charts:validate": "tsx src/chart/cli-validate.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",

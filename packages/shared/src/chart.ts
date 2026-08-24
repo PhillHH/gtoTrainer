@@ -225,8 +225,13 @@ export const EMPTY_CHART_SPOT: ChartSpot = {
  * - `approved`   — menschlich freigegeben. **Nur dieser Zustand ist ab T3.5
  *   nach außen sichtbar.**
  * - `failed`     — Digitalisierung nicht verwertbar; der Grund steht am Chart.
+ *   Das entscheidet die Pipeline, nicht ein Mensch.
+ * - `unusable`   — ein Mensch hat das Chart in der Review verworfen, mit
+ *   Begruendung. Bewusst getrennt von `failed`: Das eine ist ein technischer
+ *   Fehlschlag, das andere ein fachliches Urteil. T3.6 muss beides
+ *   auseinanderhalten koennen.
  */
-export const CHART_STATES = ['raw', 'validated', 'approved', 'failed'] as const;
+export const CHART_STATES = ['raw', 'validated', 'approved', 'failed', 'unusable'] as const;
 export type ChartState = (typeof CHART_STATES)[number];
 
 export function isChartState(value: unknown): value is ChartState {

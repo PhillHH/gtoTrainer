@@ -44,6 +44,7 @@ describe('Laden aus Dateien', () => {
       'persona/taxonomist',
       'persona/teacher',
       'task/chart-digitize',
+      'task/chart-recheck',
       'task/concept-explanation',
       'task/concept-taxonomy',
     ]);

@@ -80,6 +80,25 @@ const REQUEST_CASES: readonly RequestCase[] = [
     },
   },
   {
+    // Gezielter Zweitdurchlauf (AP3.T3.4). Derselbe Spot wie oben, zusaetzlich
+    // die Beanstandung - so ist im Golden-Fall sichtbar, dass der geschaerfte
+    // Prompt auf konkrete Blaetter hinweist, ohne eine Zahl vorzugeben.
+    name: 'task-chart-recheck',
+    templateId: 'task/chart-recheck',
+    values: {
+      unterschrift:
+        '*Hand Range 96: SB vs BB (15bb)*\n*• All-in 23.7% / • Limp 61.5% / • Fold 14.8%*',
+      spot: ['- Position: SB', '- Gegenposition: BB', '- Stacktiefe: 15bb'].join('\n'),
+      aktionen: ['- `all_in` — All-in', '- `limp` — Limp', '- `fold` — Fold'].join('\n'),
+      blattliste: 'AA AKs AQs …\nAKo KK KQs …',
+      beanstandung: [
+        '- Zelle AA: Frequenzen ergeben 60.0 % statt 100 % (Toleranz ±2 pp).',
+        '',
+        'Besonders zu prüfende Blätter: AA, AKs',
+      ].join('\n'),
+    },
+  },
+  {
     // Konzept-Taxonomie (AP3.T3.2). Die Werte sind bewusst erfunden und kurz -
     // Buchtext gehoert nicht in eine versionierte Golden-Datei.
     name: 'task-concept-taxonomy',

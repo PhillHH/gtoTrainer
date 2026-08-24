@@ -7,6 +7,7 @@ import { createSettingsReader } from '../llm/settings.js';
 import { TemplateRegistry } from '../prompts/registry.js';
 import { JobEventBus } from './events.js';
 import { createChartDigitizeJob } from './handlers/chart-digitize.js';
+import { createChartRecheckJob } from './handlers/chart-recheck.js';
 import { createConceptExtractJob } from './handlers/concept-extract.js';
 import { createLlmCompleteJob } from './handlers/llm-complete.js';
 import { JobHandlerRegistry } from './types.js';
@@ -94,6 +95,15 @@ export function createLlmRuntime(options: CreateRuntimeOptions): LlmRuntime {
     // Chart-Digitalisierung (AP3.T3.3): ein Job je Chart-Bild.
     .register(
       createChartDigitizeJob({
+        providers,
+        templates,
+        defaultModel: llmConfig.model,
+        settings,
+      }),
+    )
+    // Gezielter Zweitdurchlauf beanstandeter Charts (AP3.T3.4).
+    .register(
+      createChartRecheckJob({
         providers,
         templates,
         defaultModel: llmConfig.model,

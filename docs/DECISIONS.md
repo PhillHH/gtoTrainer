@@ -2252,3 +2252,135 @@ Bildkopien. `test/chart/calibration.test.ts` misst sie ohne Live-Aufruf gegen
 dieselben Sollwerte und hält die Trefferquote des gewählten Modells fest.
 
 **Keine neuen Dependencies.**
+
+## ADR-0034 — Chart-Validierung: Toleranzen, Heuristiken als Warnung, zweiter Wert gilt
+
+- **Datum:** 2026-08-24
+- **Status:** angenommen
+- **Kontext:** T3.4 entscheidet, welche Vision-Ergebnisse zur „Wahrheit" werden.
+  Zu enge Toleranzen beanstanden korrekte Charts und erzeugen Handarbeit ohne
+  Ertrag; zu weite lassen falsche Zahlen durch und vergiften jeden späteren
+  Drill (Risiko R2). Die Zahlen sind **vorab** festgelegt und in
+  `packages/shared/src/validation.ts` (`CHART_TOLERANCES`) an einer Stelle
+  hinterlegt — sie werden nicht nachträglich an ein Ergebnis angepasst.
+
+### Prüfung 1 — Frequenzsumme je Hand: ±2,0 pp, Schweregrad `error`
+
+Die Anteile einer Zelle müssen zusammen 100 % ergeben. Rundung im Original ist
+normal: Ein Buch schreibt „33.3 / 33.3 / 33.3" und meint 100. Drei gerundete
+Drittel liegen 0,1 pp daneben, vier Viertel exakt, sechs Sechstel bis 0,2 pp.
+Auch Flächenschätzung an mehrfarbigen Zellen streut um etwa 1 pp.
+
+**±2,0 pp** liegt bequem über beidem und trotzdem weit unter jedem echten
+Lesefehler: Wer eine Aktion in einer Mischzelle übersieht, verfehlt die 100 um
+zweistellige Beträge, nicht um zwei. Der Befund ist **zellgenau** (`hand` ist
+gesetzt), damit der Zweitdurchlauf auf die betroffenen Blätter zeigen kann statt
+auf „Chart fehlerhaft".
+
+### Prüfung 2 — Caption-Abgleich: ±1,5 pp, Schweregrad `error`
+
+Die Toleranz gibt die AP-Datei vor. Sie passt zur Sache: Die Caption-Werte des
+Buchs sind auf ein bis zwei Nachkommastellen gerundet, und die combo-gewichtete
+Summe über 169 Zellen mittelt Schätzfehler einzelner Zellen stark heraus. Am
+echten Bestand bestätigt: 15 der 21 automatisch bestandenen Charts trafen ihren
+extern gedruckten Wert **auf zwei Nachkommastellen genau** — 1,5 pp ist für ein
+richtig gelesenes Chart kein enges Korsett.
+
+Die Rechnung ist **combo-gewichtet** (Paare 6, suited 4, offsuit 12, Summe
+1326). Eine ungewichtete Mittelung über 169 Zellen ist nicht etwas ungenauer,
+sondern systematisch falsch — offsuit wiegt dreimal so schwer wie suited. Bei
+einer reinen Paar-Range liegen beide Rechenwege 1,8 pp auseinander, also mehr
+als die ganze Toleranz.
+
+**Charts ohne Caption-Prozente fallen nicht durch.** Sie bekommen
+`caption-not-checkable` mit Schweregrad `info`. Ein fehlender Maßstab ist ein
+Sachverhalt, kein Fehler des Charts.
+
+> **Was der Lauf gegen den echten Bestand darüber gelehrt hat:** Nur 6 der 25
+> lesbaren Charts nennen überhaupt Prozentwerte in der Buch-Unterschrift. Für
+> die übrigen 19 ist `caption-match` blind — sie erreichen `validated`, ohne je
+> gegen eine externe Zahl gehalten worden zu sein. Bei der Sichtung fanden sich
+> unter ihnen fünf Charts mit belegbaren Abweichungen (bis 11,4 pp). Die
+> automatische Prüfung ist damit eine Vorsortierung, keine Abnahme. Konsequenz
+> im Betrieb: Die Sammelfreigabe ist der Ausnahmefall, die Sichtung im Review
+> der Regelfall. Viele Chart-Bilder tragen ihre Prozentwerte in einer **Legende
+> im Bild** — die liest ein Mensch in der Review-Ansicht, und sie wäre der
+> naheliegende Kandidat für eine vierte, automatische Prüfung in einem späteren
+> AP.
+
+### Prüfung 3 — Plausibilität: Warnungen, keine Fehler
+
+Heuristiken sind Hinweisgeber. Sie kennen die Strategie nicht, sondern nur die
+Form einer typischen Range — und eine untypische Range ist manchmal genau das,
+was das Kapitel zeigen will. Beispiel aus dem Bestand: HR 16 „A Capped Range"
+lässt AA, KK und AKs **absichtlich** aus. Jede Monotonie-Regel schlägt dort an,
+und trotzdem ist das Chart in Ordnung. Deshalb blockieren `monotonicity` und
+`outlier` keine Freigabe.
+
+`incomplete-matrix` und `empty-cell` sind dagegen `error`: Eine fehlende Zelle
+ist kein Stilfrage, sondern eine Lücke.
+
+**Monotonie mit Mindestabstand 10.** Die naive Regel „stärkere Hand nicht
+seltener aggressiv als schwächere" erzeugte im ersten Lauf 159 Warnungen über
+16 Charts — fast alle falsch. Grund: Sie flaggt `A8s` gegen `98s`, obwohl
+Suited Connectors in vielen Spots berechtigt häufiger im Spiel sind als schwache
+suited Asse. Verglichen werden deshalb nur Paare mit deutlichem Rangabstand
+(Summe der Rangdifferenzen ≥ 10, etwa `AKs` gegen `72s`). Zwischenstand bei
+Abstand 6: noch 80 Warnungen. Bei 10: 14 Warnungen über 2 Charts — und die
+Verletzungen, auf die die AP-Datei zielt (vertauschte Zeilen oder Spalten),
+haben Abstände weit darüber.
+
+**Ausreißer nur gegen Nachbarn derselben Kategorie.** Die erste Fassung verglich
+Rasternachbarn und meldete 59 Warnungen. Ein Paar liegt auf der Diagonale und
+hat ausschließlich suited- und offsuit-Nachbarn — jedes Paar sah dadurch wie ein
+Ausreißer aus. Das war ein Fehlalarm aus der Bauart des Rasters, nicht aus den
+Daten. Nach der Einschränkung: 4 Warnungen über 2 Charts. Zusätzlich braucht ein
+Befund mindestens 3 Nachbarn, deren Streuung selbst gering ist — sonst gibt es
+kein „Muster", aus dem eine Zelle fallen könnte.
+
+Die Ausgabe der Monotonie-Prüfung ist auf 10 Befunde plus eine Summenzeile
+gedeckelt. Eine Liste mit 200 Einträgen liest niemand.
+
+### Umgang mit widersprüchlichen Zweitdurchläufen: der zweite Wert gilt
+
+Der Zweitdurchlauf liest das Bild **vollständig neu**, mit einem Prompt, der die
+konkrete Beanstandung nennt. Er sieht die erste Ablesung nicht — sonst würde er
+sie bestätigen statt prüfen.
+
+- **Beide stimmen überein** (dieselben Aktionen, ≤ 5 pp Unterschied je Zelle):
+  Der Befund ist vermutlich echt. Das Chart bleibt beanstandet und geht in die
+  Review. Eine zweite Bestätigung ist ein Argument für den Befund, nicht dagegen.
+- **Sie unterscheiden sich:** Der zweite Wert gilt. Er entstand mit mehr
+  Information — der Hinweis, wo es klemmt, ist echter Kontext, kein Zwang zu
+  einem Ergebnis. Der Prompt sagt das ausdrücklich: „Das ist ein Hinweis, keine
+  Vorgabe. Ändere deine Ablesung nicht, um eine Zahl zu treffen."
+
+Die 5 pp stammen aus derselben Überlegung wie Prüfung 1: Flächenschätzung ist
+keine exakte Wissenschaft, und ein Prozentpunkt hin oder her ist keine
+Meinungsverschiedenheit.
+
+**Jeder Fall wird protokolliert.** `chart_recheck` hält Vergleichszahlen und die
+Entscheidung im Klartext fest. Ohne diese Zeile wäre „der zweite Wert gilt" ein
+stilles Überschreiben — und genau das verbietet die AP-Datei.
+
+**Von Hand korrigierte Zellen sind ausgenommen.** Der Zweitdurchlauf überspringt
+sie und zählt sie als `cells_protected`. Ein Mensch, der ins Bild geschaut hat,
+schlägt ein Modell, das dasselbe Bild noch einmal schätzt.
+
+### Warum die Validierung kein KI-Anteil ist
+
+Eine KI, die eine KI prüft, teilt deren Fehler. Frequenzsummen, Combo-Gewichte,
+Rangordnungen und Nachbarschaften sind rechenbar — und rechenbare Dinge werden
+gerechnet. Die einzige Stelle mit Modellbeteiligung ist der Zweitdurchlauf, und
+der **liest das Bild neu**, statt Zahlen zu beurteilen.
+
+### Folgen
+
+- `validated` heißt „nichts spricht dagegen", nicht „extern bestätigt". Der Weg
+  nach `approved` führt in der Regel über die Review-Ansicht.
+- Warnungen blockieren nichts, tauchen aber in Liste und Detail auf. Wer sie
+  ignoriert, tut das sehenden Auges.
+- Wird die 95-%-Schwelle verfehlt, ist das ein Befund. Die Toleranzen bleiben,
+  wo sie sind.
+
+**Keine neuen Dependencies.**

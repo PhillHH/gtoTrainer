@@ -5,6 +5,7 @@ import type { HealthResponse } from '@gto/shared';
 import authPlugin from './auth/plugin.js';
 import { registerAuthRoutes } from './auth/routes.js';
 import type { LoginRateLimiter } from './auth/rate-limit.js';
+import { registerChartReviewRoutes } from './chart/review-routes.js';
 import { registerConceptRoutes } from './concept/routes.js';
 import type { AuthConfig } from './config/env.js';
 import type { Database } from './db/client.js';
@@ -40,6 +41,11 @@ export interface BuildAppOptions {
   readonly llmConfig?: LlmConfig;
   /** Nur fuer Tests: kuerzere Sperrzeit zwischen zwei Ping-Tests. */
   readonly pingCooldownMs?: number;
+  /**
+   * Abweichendes Quellverzeichnis der Buchbilder (AP3.T3.4). Nur fuer Tests -
+   * im Betrieb gilt `BOOK_SOURCE_DIR` bzw. `data/book-source/`.
+   */
+  readonly bookSourceDir?: string;
 }
 
 /**
@@ -70,6 +76,13 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     // Review-Ansicht des Konzept-Graphen (AP3.T3.2). Nicht die Content-API -
     // die entsteht in T3.5 unter /api/content.
     registerConceptRoutes(app, { db: options.db });
+
+    // Review-Ansicht der Chart-Validierung (AP3.T3.4). Ebenfalls nicht die
+    // Content-API - die entsteht in T3.5 unter /api/content.
+    registerChartReviewRoutes(app, {
+      db: options.db,
+      ...(options.bookSourceDir === undefined ? {} : { sourceDir: options.bookSourceDir }),
+    });
 
     if (options.providers && options.llmConfig) {
       registerLlmSettingsRoutes(app, {

@@ -161,3 +161,33 @@ export type {
   ChartState,
   RangeChart,
 } from './chart.js';
+
+export {
+  ALL_CHECKS,
+  CHART_CELL_SOURCES,
+  CHART_CHECKS,
+  CHART_FINDING_KINDS,
+  CHART_FINDING_SEVERITIES,
+  CHART_TOLERANCES,
+  FINDING_CHECK,
+  isChartCheck,
+  isChartErrorResponse,
+} from './validation.js';
+export type {
+  ChartApproveResponse,
+  ChartCellSource,
+  ChartCellUpdate,
+  ChartCellUpdateRequest,
+  ChartCheck,
+  ChartCheckOptions,
+  ChartErrorResponse,
+  ChartFinding,
+  ChartFindingKind,
+  ChartFindingSeverity,
+  ChartUnusableRequest,
+  ChartValidationResult,
+  ReviewCell,
+  ReviewChartDetail,
+  ReviewChartSummary,
+  ReviewListResponse,
+} from './validation.js';

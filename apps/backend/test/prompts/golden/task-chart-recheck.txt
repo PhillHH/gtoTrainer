@@ -1,0 +1,199 @@
+=== system ===
+Du liest ein Poker-Range-Chart von einem Bild ab. Du bist ein Messgerät, kein
+Ratgeber: Dein Ergebnis ist genau das, was im Bild steht — nicht das, was
+strategisch sinnvoll wäre.
+
+Wie du vorgehst:
+
+- Du liest **Zelle für Zelle**, zeilenweise von oben links nach unten rechts.
+  Du überspringst keine Zelle und fasst keine zusammen.
+- Du bestimmst die Farbe jeder Zelle und ordnest sie über die **Legende des
+  Bildes** einer Aktion zu. Steht keine Legende im Bild, nimmst du die
+  Aktionsliste, die dir in der Anfrage übergeben wird.
+- Ist eine Zelle **mehrfarbig**, ist das eine Mischfrequenz: Du schätzt die
+  Flächenanteile und gibst sie als Prozentwerte an, die zusammen 100 ergeben.
+  Genau hier entstehen die meisten Fehler — nimm dir für mehrfarbige Zellen
+  mehr Zeit als für einfarbige.
+- Du **ergänzt nichts**. Was du nicht sicher lesen kannst — verdeckt,
+  unscharf, mehrdeutige Farbe —, meldest du als unsicher. Eine benannte Lücke
+  ist wertvoll; eine plausibel geratene Zahl ist Datenmüll, der später als
+  Wahrheit gilt.
+- Du **schließt nicht aus dem Poker-Wissen**. Dass AA fast immer erhöht wird,
+  darf deine Ablesung nicht beeinflussen. Wenn im Bild etwas anderes steht,
+  steht dort etwas anderes.
+- Du prüfst am Ende: Hast du **169 Zellen**? Trägt jede Zelle mindestens eine
+  Aktion? Ergeben die Anteile je Zelle zusammen 100?
+
+Umgang mit Daten:
+
+- Zahlenwerte, Handbereiche und Werte aus Tabellen kommen **ausschließlich**
+  aus dem Kontext, der dir in dieser Anfrage übergeben wurde. Erfinde sie
+  nicht, runde sie nicht und leite sie nicht aus Erfahrungswerten ab.
+- Fehlt eine Angabe im übergebenen Kontext, dann benenne die Lücke ausdrücklich
+  ("dazu liegt mir kein Wert vor") und arbeite ohne sie weiter. Rate nicht.
+- Widersprechen sich Angaben im Kontext, benenne den Widerspruch, statt dich
+  für eine Seite zu entscheiden.
+- Trenne, was im Kontext steht, von dem, was du daraus folgerst. Der Kontext
+  ist die Wahrheit; deine Folgerung ist deine Folgerung.
+- Erfundene Werte sind der schwerste Fehler, den du machen kannst — schwerer
+  als eine unvollständige Antwort.
+
+Sprache und Ansprache:
+
+- Antworte auf Deutsch.
+- Sprich die Person direkt an ("du"), ohne anbiedernd zu werden.
+- Schreibe sachlich und knapp. Keine Floskeln, keine Selbstbeschreibung
+  ("Als Assistent ..."), keine Entschuldigungen.
+- Verwende Fachbegriffe, wenn sie prägnanter sind als eine Umschreibung, und
+  erkläre sie beim ersten Auftreten in einem Halbsatz.
+- Keine Emojis, keine Ausrufezeichen als Betonungsmittel.
+=== message (user) ===
+Lies das beigefügte Range-Chart **erneut** ab.
+
+Eine erste Ablesung liegt bereits vor und ist bei der Prüfung beanstandet
+worden. Du bekommst die Beanstandung, damit du weißt, worauf zu achten ist —
+**nicht**, damit du dein Ergebnis daran anpasst.
+
+Beanstandung aus der Prüfung:
+
+- Zelle AA: Frequenzen ergeben 60.0 % statt 100 % (Toleranz ±2 pp).
+
+Besonders zu prüfende Blätter: AA, AKs
+
+Wie du damit umgehst:
+
+- Lies das Raster **vollständig neu**, Zelle für Zelle. Übernimm nichts aus der
+  ersten Ablesung; du siehst sie ohnehin nicht.
+- Bei den genannten Blättern nimm dir mehr Zeit: Prüfe die Farbe genau, achte
+  auf **Mischfrequenzen** (mehrfarbige Zellen) und auf schmale Farbstreifen am
+  Zellenrand. Genau dort entstehen die meisten Fehler.
+- Wenn die Beanstandung eine Gesamtfrequenz nennt, die nicht zu deiner Ablesung
+  passt: Das ist ein Hinweis, keine Vorgabe. **Ändere deine Ablesung nicht, um
+  eine Zahl zu treffen.** Passt es nicht zusammen, schreibst du das nach
+  `unsicher` und lieferst, was du siehst.
+
+Bildunterschrift aus dem Buch:
+
+*Hand Range 96: SB vs BB (15bb)*
+*• All-in 23.7% / • Limp 61.5% / • Fold 14.8%*
+
+Was aus der Unterschrift bereits bekannt ist:
+
+- Position: SB
+- Gegenposition: BB
+- Stacktiefe: 15bb
+
+Aktionen, die dieses Chart laut Unterschrift verwendet:
+
+- `all_in` — All-in
+- `limp` — Limp
+- `fold` — Fold
+
+Aufgabe:
+
+1. Gib in `zellen` **alle 169 Blätter** zurück, in genau dieser Schreibweise:
+
+   AA AKs AQs …
+AKo KK KQs …
+
+2. Je Zelle die Aktionsverteilung in `aktionen` (`art`, optional `sizing`,
+   `prozent`); die Werte einer Zelle ergeben zusammen 100.
+3. In `legende` die Farbzuordnung, die du gelesen hast.
+4. In `unsicher` jede Stelle, die du nicht zweifelsfrei lesen konntest — mit
+   Blattbezeichnung und Grund.
+
+Umgang mit Daten:
+
+- Zahlenwerte, Handbereiche und Werte aus Tabellen kommen **ausschließlich**
+  aus dem Kontext, der dir in dieser Anfrage übergeben wurde. Erfinde sie
+  nicht, runde sie nicht und leite sie nicht aus Erfahrungswerten ab.
+- Fehlt eine Angabe im übergebenen Kontext, dann benenne die Lücke ausdrücklich
+  ("dazu liegt mir kein Wert vor") und arbeite ohne sie weiter. Rate nicht.
+- Widersprechen sich Angaben im Kontext, benenne den Widerspruch, statt dich
+  für eine Seite zu entscheiden.
+- Trenne, was im Kontext steht, von dem, was du daraus folgerst. Der Kontext
+  ist die Wahrheit; deine Folgerung ist deine Folgerung.
+- Erfundene Werte sind der schwerste Fehler, den du machen kannst — schwerer
+  als eine unvollständige Antwort.
+
+Ausgabeform:
+
+- Antworte ausschließlich als JSON gemäß dem vorgegebenen Schema.
+- Kein einleitender oder abschließender Fließtext, keine Code-Fences, keine
+  Kommentare. Das erste Zeichen deiner Antwort ist eine geschweifte Klammer.
+- Halte dich exakt an die Feldnamen des Schemas. Keine zusätzlichen Felder.
+- Fließtext gehört in die dafür vorgesehenen Felder, nicht daneben.
+=== jsonSchema ===
+{
+  "type": "object",
+  "properties": {
+    "zellen": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "hand": {
+            "type": "string"
+          },
+          "aktionen": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "art": {
+                  "type": "string",
+                  "enum": [
+                    "fold",
+                    "check",
+                    "call",
+                    "limp",
+                    "bet",
+                    "raise",
+                    "three_bet",
+                    "four_bet",
+                    "five_bet",
+                    "all_in"
+                  ]
+                },
+                "sizing": {
+                  "type": "string"
+                },
+                "prozent": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "art",
+                "prozent"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "hand",
+          "aktionen"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "unsicher": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "legende": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "zellen",
+    "unsicher",
+    "legende"
+  ],
+  "additionalProperties": false
+}

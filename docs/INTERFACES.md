@@ -1360,6 +1360,12 @@ Quelle der Wahrheit ist `apps/backend/src/db/schema.ts`; Migration
 > Charts im Zustand `approved`**. `raw` ist ungeprüfte Modellausgabe,
 > `validated` hat nur die automatischen Prüfungen aus T3.4 bestanden. Wer
 > `raw` verwendet, baut auf Zahlen, die niemand geprüft hat.
+>
+> Und `validated` ist **nicht** dasselbe wie „extern bestätigt": Der
+> Caption-Abgleich greift nur, wenn die Bildunterschrift Prozentwerte nennt —
+> am echten Bestand traf das auf 6 von 25 lesbaren Charts zu. Deshalb führt der
+> Weg nach `approved` in der Regel über die Review-Ansicht, nicht über die
+> Sammelfreigabe. Vollständiges Zustandsmodell: Abschnitt 15.
 
 ### Das 13×13-Raster
 
@@ -1381,19 +1387,22 @@ nennt. Begründung und Herleitung aus den tatsächlichen Bildunterschriften:
 
 ### `range_chart`
 
-| Spalte                    | Typ                      | Hinweis                                                  |
-| ------------------------- | ------------------------ | -------------------------------------------------------- |
-| `id`                      | `uuid` PK                |                                                          |
-| `asset_id`                | `uuid` FK → `book_asset` | **eindeutig** — genau ein Chart je Bild                  |
-| `state`                   | `text`                   | CHECK: `raw` \| `validated` \| `approved` \| `failed`    |
-| `model`                   | `text`                   | Modell, das die Matrix gelesen hat (Herkunft)            |
-| `run_id`                  | `text`                   | Lauf, in dem der Datensatz entstand                      |
-| `actions`                 | `jsonb`                  | Legende: `[{ kind, sizing }]`                            |
-| `spot`                    | `jsonb`                  | deterministisch aus der Unterschrift, siehe unten        |
-| `uncertain`               | `jsonb`                  | vom Modell gemeldete Lücken plus seine Legendenzuordnung |
-| `cell_count`              | `integer`                | 169 = vollständig                                        |
-| `failure_reason`          | `text` NULL              | gesetzt, wenn `state = 'failed'`                         |
-| `duration_ms`, `*_tokens` | `integer` NULL           | Verbrauch des Aufrufs                                    |
+| Spalte                    | Typ                      | Hinweis                                                             |
+| ------------------------- | ------------------------ | ------------------------------------------------------------------- |
+| `id`                      | `uuid` PK                |                                                                     |
+| `asset_id`                | `uuid` FK → `book_asset` | **eindeutig** — genau ein Chart je Bild                             |
+| `state`                   | `text`                   | CHECK: `raw` \| `validated` \| `approved` \| `failed` \| `unusable` |
+| `model`                   | `text`                   | Modell, das die Matrix gelesen hat (Herkunft)                       |
+| `run_id`                  | `text`                   | Lauf, in dem der Datensatz entstand                                 |
+| `actions`                 | `jsonb`                  | Legende: `[{ kind, sizing }]`                                       |
+| `spot`                    | `jsonb`                  | deterministisch aus der Unterschrift, siehe unten                   |
+| `uncertain`               | `jsonb`                  | vom Modell gemeldete Lücken plus seine Legendenzuordnung            |
+| `cell_count`              | `integer`                | 169 = vollständig                                                   |
+| `failure_reason`          | `text` NULL              | gesetzt, wenn `state = 'failed'`                                    |
+| `unusable_reason`         | `text` NULL              | Pflicht, wenn `state = 'unusable'` (T3.4)                           |
+| `validated_at`            | `timestamptz` NULL       | letzter Validierungslauf (T3.4)                                     |
+| `approved_at`             | `timestamptz` NULL       | Zeitpunkt der Freigabe (T3.4)                                       |
+| `duration_ms`, `*_tokens` | `integer` NULL           | Verbrauch des Aufrufs                                               |
 
 ### `range_chart_cell`
 
@@ -1529,3 +1538,170 @@ Struktur- oder Beispielraster). Das ist **kein** Modellfehler und braucht keine
 Wiederholung. `cell_count` zwischen 1 und 168 heißt dagegen: Das Modell hat die
 Matrix nicht zu Ende gelesen — dieser Fall gehört in einen zweiten Durchlauf.
 `pnpm charts:digitize --status` weist beides getrennt aus.
+
+## 15. Chart-Validierung — Befundmodell, Zustandsübergänge, Review (AP3.T3.4)
+
+Quelle der Wahrheit: `apps/backend/src/db/schema.ts`, Migration
+`0005_worthless_exodus.sql`. Vertragskonstanten in
+`packages/shared/src/validation.ts`.
+
+> **Verbindliche Regel für alle Folge-APs:** Es wird **ausschließlich aus
+> Charts im Zustand `approved`** gelesen — Content-API (T3.5), Renderer (AP6),
+> Drills (AP7), Analyse (AP8). `validated` bedeutet nur, dass die drei
+> automatischen Prüfungen keinen Fehler gefunden haben; ein Mensch hat das
+> Chart dann noch nicht gesehen. Der Filter ist nicht optional.
+
+### Die drei Prüfungen
+
+Alle drei sind **deterministischer Code** in `apps/backend/src/chart/validate.ts`
+und kosten kein Kontingent. Sie bleiben getrennt, weil sie verschiedene
+Wahrheitsquellen anzapfen.
+
+| Prüfung         | Wahrheitsquelle                       | Befundarten                                  | Schweregrad |
+| --------------- | ------------------------------------- | -------------------------------------------- | ----------- |
+| `frequency-sum` | die Matrix selbst                     | `frequency-sum-off`                          | `error`     |
+| `caption-match` | `book_asset.caption_actions` (T3.1)   | `caption-mismatch`, `caption-missing-action` | `error`     |
+|                 |                                       | `caption-not-checkable`                      | `info`      |
+| `plausibility`  | Pokerwissen über die Form einer Range | `incomplete-matrix`, `empty-cell`            | `error`     |
+|                 |                                       | `monotonicity`, `outlier`                    | `warning`   |
+
+Toleranzen und die Auswahl der Heuristiken: [ADR-0034](./DECISIONS.md).
+`CHART_TOLERANCES` in `packages/shared/src/validation.ts` ist die einzige
+Stelle, an der die Zahlen stehen.
+
+Jede Heuristik lässt sich einzeln abschalten (`ChartCheckOptions`, CLI-Flags
+`--no-summe`, `--no-caption`, `--no-vollstaendigkeit`, `--no-monotonie`,
+`--no-ausreisser`). Das ändert nur, was gemeldet wird — nie, was als bestanden
+gilt.
+
+**Die Gegenprobe rechnet combo-gewichtet.** `weightedTotals()` gewichtet jede
+Zelle mit `handComboWeight()` (Paare 6, suited 4, offsuit 12, Summe 1326) —
+dieselbe Rechnung, mit der das Buch seine Caption-Prozente bildet. Eine
+ungewichtete Mittelung über 169 Zellen liegt systematisch daneben; der Test
+`Combo-Gewichtung > rechnet mit 6/4/12 und nicht ungewichtet` hält beide
+Rechenwege gegeneinander.
+
+### `chart_finding`
+
+Ein Befund je Zeile. Der Bestand wird bei jedem Validierungslauf für das
+betroffene Chart **ersetzt**, nicht ergänzt — es gibt keine Altlasten.
+
+| Spalte        | Typ                       | Hinweis                                                                 |
+| ------------- | ------------------------- | ----------------------------------------------------------------------- |
+| `id`          | `uuid` PK                 |                                                                         |
+| `chart_id`    | `uuid` FK → `range_chart` | `on delete cascade`                                                     |
+| `check`       | `text`                    | CHECK: `frequency-sum` \| `caption-match` \| `plausibility`             |
+| `kind`        | `text`                    | die Befundart aus der Tabelle oben                                      |
+| `severity`    | `text`                    | CHECK: `error` \| `warning` \| `info`                                   |
+| `hand`        | `text` NULL               | betroffenes Blatt — **zellgenau**, damit der Zweitdurchlauf zielen kann |
+| `action_kind` | `text` NULL               | betroffene Aktion, wenn der Befund eine nennt                           |
+| `measured`    | `real` NULL               | was gemessen wurde                                                      |
+| `expected`    | `real` NULL               | was erwartet war                                                        |
+| `detail`      | `text`                    | Klartext für die Review-Ansicht                                         |
+
+### Zustandsübergänge
+
+`raw` → `validated` → `approved` ist der Normalweg. Alle Übergänge liegen an
+**einer** Stelle: `apps/backend/src/chart/validation-store.ts`.
+
+| Von                                | Auslöser                                 | Nach        |
+| ---------------------------------- | ---------------------------------------- | ----------- |
+| `raw` / `validated`                | Validierung ohne `error`-Befund          | `validated` |
+| `raw` / `validated`                | Validierung mit mindestens einem `error` | `raw`       |
+| `validated`                        | `approveChart` / Sammelfreigabe          | `approved`  |
+| beliebig außer `failed`            | `markUnusable(reason)`                   | `unusable`  |
+| `approved` / `unusable` / `failed` | erneute Validierung                      | unverändert |
+
+Drei Regeln, die im Code festgeschrieben sind:
+
+- **`validateAndStore` vergibt `approved` nie.** Die Freigabe ist ein eigener,
+  ausdrücklicher Schritt.
+- **`approveChart` verlangt `validated`.** Bei jedem anderen Zustand wirft es
+  `ApprovalRefused` mit der Zahl der offenen Fehlerbefunde; die Route antwortet
+  mit `400` und `error: 'invalid_chart'`.
+- **Eine Freigabe wird nicht stillschweigend zurückgenommen.** `approved`,
+  `unusable` und `failed` sind gegen erneute Läufe eingefroren; die Befunde
+  werden für sie trotzdem fortgeschrieben.
+
+`markUnusable` verlangt eine nichtleere Begründung. Das ist der von der DoD
+zugelassene Rest — er muss benannt sein, nicht nur gezählt.
+
+### Wie manuelle Korrekturen erkennbar bleiben
+
+`range_chart_cell` trägt seit T3.4 zwei zusätzliche Spalten:
+
+| Spalte         | Typ                | Hinweis                                              |
+| -------------- | ------------------ | ---------------------------------------------------- |
+| `source`       | `text`             | CHECK: `model` \| `manual`, Default `model`          |
+| `corrected_at` | `timestamptz` NULL | gesetzt, sobald ein Mensch die Zelle geschrieben hat |
+
+Daraus folgen zwei Zusicherungen:
+
+- **Ein erneuter Validierungslauf überschreibt sie nicht.** Die Validierung
+  liest Zellen, sie schreibt keine.
+- **Der Zweitdurchlauf überspringt sie.** `chart_recheck.cells_protected` zählt,
+  wie viele Zellen deshalb unangetastet blieben.
+
+`ReviewChartSummary.manualCells` weist die Zahl in Liste und Detail aus.
+
+### `chart_recheck` — der Vergleich beider Ablesungen
+
+Eine Zeile je Zweitdurchlauf. Ohne sie wäre „der zweite Wert gilt" ein stilles
+Überschreiben.
+
+| Spalte                                                   | Typ                       | Hinweis                                                    |
+| -------------------------------------------------------- | ------------------------- | ---------------------------------------------------------- |
+| `chart_id`                                               | `uuid` FK → `range_chart` |                                                            |
+| `model`, `run_id`                                        | `text`                    | Herkunft der zweiten Ablesung                              |
+| `flagged_hands`                                          | `jsonb`                   | die Blätter, auf die der geschärfte Prompt hingewiesen hat |
+| `cells_compared` / `_agreed` / `_changed` / `_protected` | `integer`                 | Ergebnis des Zellvergleichs                                |
+| `decision`                                               | `text`                    | die Entscheidung im Klartext                               |
+
+Zwei Zellen gelten als übereinstimmend, wenn dieselben Aktionen mit höchstens
+**5 pp** Unterschied auftreten. Stimmen alle überein, ist der Befund vermutlich
+echt und das Chart bleibt beanstandet. Unterscheiden sie sich, gilt der zweite
+Wert — er entstand mit einem Prompt, der die Schwachstelle benannt hat.
+Begründung: [ADR-0034](./DECISIONS.md).
+
+### Job-Typ `chart.recheck`
+
+| Feld      | Typ      | Pflicht | Hinweis                          |
+| --------- | -------- | ------- | -------------------------------- |
+| `chartId` | `string` | ja      | das beanstandete Chart           |
+| `runId`   | `string` | ja      | Kennung des Zweitdurchlauf-Laufs |
+| `model`   | `string` | nein    | überschreibt die Modellwahl      |
+
+Der Job prüft **selbst**, ob das Chart einen `error`-Befund hat, und wirft
+sonst `JobPayloadError` — Kontingent geht nur in Beanstandetes, auch wenn der
+Aufrufer sich irrt. Template `task/chart-recheck`, Persona
+`persona/chart-reader`, Ausgabegrenze 32 768 Token (wie `chart.digitize`).
+
+### Review-Endpunkte
+
+Alle auth-geschützt (`app.requireSession`); die schreibenden zusätzlich
+CSRF-pflichtig. **Abgrenzung:** Das ist die Prüfoberfläche, nicht die
+Content-API — die entsteht in T3.5 unter `/api/content`.
+
+| Methode | Pfad                            | Zweck                                             |
+| ------- | ------------------------------- | ------------------------------------------------- |
+| `GET`   | `/api/charts`                   | Liste mit Zuständen, Befundzahlen, Approved-Quote |
+| `GET`   | `/api/charts/:id`               | Matrix, Befunde, beide Gesamtfrequenzen, Bild-URL |
+| `GET`   | `/api/charts/:id/image`         | das Original-Bild, `cache-control: no-store`      |
+| `PATCH` | `/api/charts/:id/cells`         | manuelle Korrektur, danach erneute Prüfung        |
+| `POST`  | `/api/charts/:id/validate`      | Prüfung eines Charts erneut fahren                |
+| `POST`  | `/api/charts/:id/approve`       | Einzelfreigabe                                    |
+| `POST`  | `/api/charts/approve-validated` | Sammelfreigabe aller `validated`                  |
+| `POST`  | `/api/charts/:id/unusable`      | verwerfen, Begründung Pflicht                     |
+
+Fehlerantwort der schreibenden Routen:
+`{ error: 'invalid_chart', message, fields: [{ field, message }] }` — dasselbe
+Muster wie bei den LLM-Einstellungen und der Konzept-Review; der API-Client
+erkennt es über `isChartErrorResponse`.
+
+**Das Bild verlässt den Server nur an den angemeldeten Prüfer.** `no-store`
+verhindert, dass ein Zwischenspeicher Buchinhalte vorhält.
+
+### Läufe steuern
+
+`pnpm charts:validate [--status] [--recheck [n]] [--approve] [--limit n]`
+plus die Abschalt-Flags der Heuristiken. Betrieb: RUNBOOK 14.
