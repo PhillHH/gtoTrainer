@@ -1136,7 +1136,172 @@ docker exec -i gto-postgres psql -U gto -d gto -c \
 | viele „verwaiste Bilddateien"                    | Export hat Bilder erzeugt, die im Text nicht vorkommen | Quelle neu exportieren oder als bekannt hinnehmen                       |
 | `relation "book_chapter" does not exist`         | Migration `0002` nicht eingespielt                     | `pnpm db:migrate`                                                       |
 
-## 12. Noch nicht abgedeckt
+## 12. Konzept-Taxonomie (AP3.T3.2)
+
+### 12.1 Voraussetzungen
+
+```bash
+# Die Buchstruktur muss importiert sein (Abschnitt 11).
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select count(*) from book_section"     # erwartet: > 0
+
+# Der Host-Runner muss laufen (Abschnitt 9.2) - sonst scheitert jeder
+# CLI-Aufruf mit Kategorie auth.
+# Der Job-Worker laeuft im Backend-Prozess (ADR-0026):
+docker compose ps backend
+```
+
+Die Generierung kostet **echtes Kontingent**: ein Aufruf je Kapitelteil, für
+dieses Buch 53 Aufrufe mit je ~4 000 Token Eingabe. Vorher Modell und
+`llm.max_concurrency` in den Einstellungen prüfen (Abschnitt 10.5).
+
+> **Zeitgrenzen vorher hochsetzen — sonst laufen alle Aufrufe ins Timeout.**
+> Ein Aufruf braucht bei Sonnet deutlich mehr als die 120 s aus der
+> Standardkonfiguration. **Drei** Stellen müssen passen, und
+> die Einstellungen-Seite allein genügt nicht:
+>
+> | Stelle                                | Wirkung                                                                     |
+> | ------------------------------------- | --------------------------------------------------------------------------- |
+> | `llm.timeout_ms` (Einstellungen / DB) | Zeitgrenze, die der Adapter mitschickt                                      |
+> | `LLM_TIMEOUT_MS` des **Host-Runners** | **deckelt** jede Anfrage (`maxTimeoutMs`) — unabhängig von der DB           |
+> | `WORKER_STALE_AFTER_MS` des Backends  | muss über der Zeitgrenze liegen, sonst wird ein laufender Job erneut geholt |
+>
+> ```bash
+> # 1. Einstellung in der Datenbank (oder über die Einstellungen-Seite)
+> docker exec -i gto-postgres psql -U gto -d gto -c \
+>   "update config set value='600000'::jsonb where key='llm.timeout_ms'"
+>
+> # 2. Host-Runner mit demselben Wert NEU starten (Abschnitt 9.2)
+> LLM_TIMEOUT_MS=600000 pnpm llm:runner
+>
+> # 3. .env: WORKER_STALE_AFTER_MS deutlich darüber, dann Backend neu erzeugen
+> docker compose up -d backend
+> ```
+>
+> **Ausgabegrenze der CLI ebenfalls hochsetzen.** Die Claude CLI bricht bei
+> 8192 Ausgabe-Tokens ab (`API Error: Claude's response exceeded the 8192
+output token maximum`). Für die Konzept-Extraktion reicht das nicht — Modelle
+> mit innerem Überlegen verbrauchen deutlich mehr Tokens, als die reine Antwort
+> vermuten lässt. Der Wert ist eine Umgebungsvariable der CLI und wird dem
+> Host-Runner mitgegeben:
+>
+> ```bash
+> LLM_TIMEOUT_MS=600000 CLAUDE_CODE_MAX_OUTPUT_TOKENS=32000 pnpm llm:runner
+> ```
+>
+> Ohne das landen die Jobs mit Kategorie `invalid` im Dead-Letter — `invalid`
+> ist nicht wiederholbar, es hilft also kein Retry.
+>
+> **Reihenfolge beachten:** Den Runner _vor_ dem Einplanen der Jobs neu
+> starten. Wer ihn mittendrin neu startet, macht das Socket kurz unerreichbar —
+> das ergibt Kategorie `auth`, und `auth` ist nicht wiederholbar: Alle
+> wartenden Jobs landen sofort im Dead-Letter (Abschnitt 10.3).
+
+### 12.2 Trockenlauf: wie viele Jobs entstehen?
+
+```bash
+pnpm concepts:generate --plan
+# je Kapitel: Sektionen, Zeichen, Anzahl Teillaeufe - schreibt nichts
+```
+
+Ein Job verarbeitet **einen Kapitelteil** (Zeichenbudget 15 000). Lange
+Kapitel zerfallen in mehrere Teile; jeder Teil ist einzeln wiederholbar.
+
+### 12.3 Generierung starten
+
+```bash
+pnpm concepts:generate                # alle 14 Kapitel
+pnpm concepts:generate --chapter 7    # nur ein Kapitel nachziehen
+```
+
+Die Jobs landen in der Queue; der Worker arbeitet sie **nacheinander** ab und
+gibt je Teillauf eine Zeile ins Serverprotokoll:
+
+```bash
+docker logs -f gto-backend | grep Konzepte
+# Konzepte Kapitel 7 Teil 1: 9 neu, 2 Dubletten, 0 verworfen, …
+```
+
+Bei `rate_limit` legt die Queue den Job automatisch wieder vor — der Lauf
+bleibt stehen, geht aber nicht verloren. Fortschritt beobachten:
+
+```bash
+pnpm concepts:generate --report
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select status, count(*) from job_queue where job_type='concept.extract' group by status"
+```
+
+### 12.4 Chart-Zuordnung nachziehen
+
+```bash
+pnpm concepts:generate --charts
+```
+
+Verknüpft `hand_range`-Assets mit Konzepten über die gemeinsame Sektion.
+**Ohne KI-Aufruf**, beliebig oft wiederholbar (legt keine Dubletten an). Nach
+jedem Generierungslauf einmal ausführen.
+
+### 12.5 Review durchführen
+
+Oberfläche: **Konzepte** in der Hauptnavigation.
+
+1. **Auffälligkeiten oben** zuerst abarbeiten — sie stehen bewusst über der
+   Liste:
+   - _Offene Voraussetzung_ — das Modell hat einen Titel genannt, zu dem es
+     kein Konzept gibt. Entweder das Konzept fehlt (nachtragen) oder der
+     Verweis war falsch (im Formular korrigieren).
+   - _Zyklus_ — sollte nicht vorkommen; der Import speichert solche Kanten gar
+     nicht erst. Taucht einer auf, wurde von Hand in die Datenbank geschrieben.
+   - _Ohne Sektion_ — das Konzept hängt an keinem Buchtext. AP5 könnte dazu
+     nichts laden.
+   - _Kapitel ohne Konzepte_ — Teillauf fehlgeschlagen; mit
+     `--chapter <n>` nachziehen.
+2. **Bearbeiten** öffnet Titel, Kurzdefinition, Themenbereich, Level und
+   Voraussetzungen. Eine Voraussetzung, die einen Zyklus schlösse, wird mit
+   Begründung abgelehnt.
+3. **Bestätigen** einzeln oder je Kapitel (`draft` → `approved`). Erst
+   `approved` ist für AP4 verbindlich.
+
+### 12.6 Konzepte nachträglich korrigieren
+
+```bash
+# Was steht drin?
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select c.title, c.topic_area, c.state, b.chapter_number
+   from concept c join book_chapter b on b.id = c.chapter_id
+   order by b.chapter_number, c.ordinal"
+
+# Verteilung je Themenbereich (die Achsen des Skill-Ratings in AP4)
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select topic_area, count(*) from concept group by topic_area order by 2 desc"
+
+# Ein Konzept wieder auf draft setzen (Notweg; normal geht das ueber die UI)
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "update concept set state='draft' where title = 'Pot Odds'"
+```
+
+Ein **erneuter** Generierungslauf legt kein bereits vorhandenes Konzept noch
+einmal an (Dubletten-Erkennung über den normalisierten Titel). Wer wirklich
+neu beginnen will, leert die Tabellen — dabei gehen bestätigte Korrekturen
+verloren:
+
+```bash
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "truncate table concept_chart, concept_section, concept_prerequisite, concept cascade"
+```
+
+### 12.7 Typische Fehlerbilder
+
+| Symptom                                     | Ursache                                       | Abhilfe                                                        |
+| ------------------------------------------- | --------------------------------------------- | -------------------------------------------------------------- |
+| Jobs gehen sofort auf `dead`, kein Aufruf   | Backend kennt den Job-Typ nicht (alter Stand) | `docker compose build backend && docker compose up -d backend` |
+| `Kapitel N existiert nicht`                 | Buchimport fehlt                              | `pnpm book:import` (Abschnitt 11)                              |
+| Alle Aufrufe scheitern mit Kategorie `auth` | Host-Runner läuft nicht                       | Abschnitt 9.2                                                  |
+| Viele Konzepte „ohne Sektion"               | Modell hat Sektionsschlüssel nicht übernommen | Betroffenes Kapitel mit `--chapter` neu laufen lassen          |
+| Gesamtzahl deutlich unter 120               | Zerlegung zu grob                             | Zielanzahl im Template schärfen, Kapitel neu laufen lassen     |
+| `Die Antwort war kein JSON`                 | Antwort abgeschnitten (`maxTokens` zu knapp)  | `maxTokens` im Job-Typ erhöhen                                 |
+
+## 13. Noch nicht abgedeckt
 
 - Der Host-Nginx-vhost und das TLS-Zertifikat sind vorbereitet, aber noch nicht
   eingespielt: Beides erfordert Root auf dem Host (Abschnitte 8.4 und 8.5).

@@ -23,7 +23,8 @@
     "llm:runner": "tsx src/llm/runner-main.ts",
     "prompts:golden": "UPDATE_GOLDEN=1 vitest run test/prompts/golden.test.ts",
     "jobs:enqueue": "tsx src/jobs/cli-enqueue.ts",
-    "book:import": "tsx src/book/cli-import.ts"
+    "book:import": "tsx src/book/cli-import.ts",
+    "concepts:generate": "tsx src/concept/cli-generate.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",

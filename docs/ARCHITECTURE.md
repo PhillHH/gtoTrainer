@@ -648,6 +648,52 @@ Zwei Eigenschaften sind für die Folge-APs wesentlich:
   das Asset in der Quelle steht. Chart-Daten aus T3.3/T3.4 hängen daran und
   gehen bei einem erneuten Buchimport nicht verloren.
 
+## 3h. Konzept-Graph (neu in AP3.T3.2)
+
+Aus den Sektionstexten wird das Rückgrat des Lernpfads. Anders als T3.1 ist
+dieser Schritt **KI-gestützt** — aber nur an einer Stelle: Das Modell schlägt
+vor, der Code prüft, ordnet ein und räumt auf.
+
+```
+book_section (T3.1)
+   │  ein Job je Kapitelteil (Zeichenbudget 15 000)
+   ▼
+jobs/handlers/concept-extract.ts      ← der EINZIGE KI-Anteil
+   │  Job-Queue (T2.5) → Provider-Registry (T2.3) → llm_call_log
+   │  Template task/concept-taxonomy (T2.4), Persona persona/taxonomist
+   ▼
+concept/normalize.ts     Themenbereich prüfen · Dubletten über Slug
+concept/resolve.ts       Titel → Konzept-IDs · Sektionsschlüssel → Sektions-IDs
+concept/graph.ts         Zyklenprüfung · Kanten auswählen
+concept/store.ts         schreiben, verknüpfen, Befunde sammeln
+   ▼
+concept ──< concept_prerequisite   (gerichteter, zyklenfreier Graph)
+   ├──< concept_section            → AP5 lädt gezielt den richtigen Buchtext
+   └──< concept_chart              → AP5/AP7 verankern Fragen an Charts
+   ▼
+/api/concepts (Review)  →  Seite „Konzepte" im Frontend
+   │  bearbeiten · bestätigen einzeln und je Kapitel
+   ▼
+state: draft → approved     ← AP4 baut Mastery und Skill-Ratings darauf auf
+```
+
+Drei Eigenschaften, auf die sich Folge-APs verlassen können:
+
+- **Ein Themenbereich je Konzept**, aus einer festen Liste von zwölf
+  ([ADR-0031](./DECISIONS.md)). Das sind die Achsen des Skill-Ratings in AP4;
+  eine Mehrfachzuordnung würde jede Kennzahl unscharf machen.
+- **Der Prerequisite-Graph ist jederzeit zyklenfrei.** Eine Kante, die einen
+  Zyklus schlösse, wird gar nicht erst gespeichert — weder beim Import noch
+  über die Review-Ansicht. Der Konflikt geht trotzdem nicht verloren: Er
+  erscheint als Befund.
+- **Deterministisches bleibt deterministisch.** Zyklenprüfung,
+  Referenzauflösung, Dubletten-Erkennung und Chart-Zuordnung sind Code. Kein
+  zweiter Modellaufruf prüft den ersten.
+
+Der Trennstrich zu T3.5: `/api/concepts` ist die **Prüfoberfläche** für die
+Vorschläge. Die Content-API für Folge-APs (gezielter Abruf, Spot-Suche,
+Asset-Auslieferung) entsteht in T3.5 unter `/api/content`.
+
 ## 4. Querschnitts-Entscheidungen
 
 - **Node 20.19.6**, fixiert in `.nvmrc`; `engines.node >= 20.19.0`.

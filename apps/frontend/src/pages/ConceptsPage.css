@@ -1,0 +1,148 @@
+/* Review-Ansicht des Konzept-Graphen (AP3.T3.2). Nur Design-Tokens aus T1.4. */
+
+.concepts__header {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  justify-content: space-between;
+}
+
+.concepts__hint,
+.concepts__totals {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.concepts__issues {
+  background: var(--color-surface-raised);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  margin-block: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+}
+
+.concepts__issues--clean {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.concepts__issues h2 {
+  font-size: var(--font-size-md);
+  margin: 0 0 var(--space-2);
+}
+
+.concepts__issues ul {
+  margin: 0;
+  padding-left: var(--space-5);
+}
+
+.concepts__issue-kind {
+  background: var(--color-danger-subtle);
+  border: var(--border-width) solid var(--color-danger-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-danger);
+  font-size: var(--font-size-xs);
+  padding: 0 var(--space-2);
+}
+
+.concepts__chapter {
+  margin-block: var(--space-5);
+}
+
+.concepts__chapter-header {
+  align-items: baseline;
+  border-bottom: var(--border-width) solid var(--color-border);
+  display: flex;
+  gap: var(--space-3);
+  justify-content: space-between;
+  padding-bottom: var(--space-2);
+}
+
+.concepts__chapter-header h2 {
+  font-size: var(--font-size-lg);
+  margin: 0;
+}
+
+.concepts__empty {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.concepts__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.concepts__item {
+  border-bottom: var(--border-width) solid var(--color-border);
+  padding-block: var(--space-3);
+}
+
+.concepts__row {
+  display: flex;
+  gap: var(--space-4);
+  justify-content: space-between;
+}
+
+.concepts__row h3 {
+  font-size: var(--font-size-md);
+  margin: 0;
+}
+
+.concepts__summary {
+  margin: var(--space-1) 0;
+}
+
+.concepts__meta,
+.concepts__prereqs {
+  color: var(--color-text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--font-size-sm);
+  gap: var(--space-3);
+  margin: var(--space-1) 0 0;
+}
+
+.concepts__state {
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-xs);
+  padding: 0 var(--space-2);
+}
+
+.concepts__state--draft {
+  background: var(--color-accent-subtle);
+  color: var(--color-accent-text);
+}
+
+.concepts__state--approved {
+  background: var(--color-surface-raised);
+  border: var(--border-width) solid var(--color-border);
+  color: var(--color-text-muted);
+}
+
+.concepts__row-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.concepts__form {
+  background: var(--color-surface-raised);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  padding: var(--space-4);
+}
+
+.concepts__form label {
+  display: flex;
+  flex-direction: column;
+  font-size: var(--font-size-sm);
+  gap: var(--space-1);
+}

@@ -40,8 +40,10 @@ describe('Laden aus Dateien', () => {
       'partial/language',
       'persona/analyst',
       'persona/grader',
+      'persona/taxonomist',
       'persona/teacher',
       'task/concept-explanation',
+      'task/concept-taxonomy',
     ]);
   });
 

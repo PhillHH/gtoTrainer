@@ -3,6 +3,7 @@ import { AuthProvider } from './auth/AuthContext.js';
 import { RequireAuth } from './auth/RequireAuth.js';
 import { ThemeProvider } from './theme/ThemeProvider.js';
 import { AppLayout } from './layout/AppLayout.js';
+import { ConceptsPage } from './pages/ConceptsPage.js';
 import { DashboardPage } from './pages/DashboardPage.js';
 import { LoginPage } from './pages/LoginPage.js';
 import { NotFoundPage } from './pages/NotFoundPage.js';
@@ -66,6 +67,8 @@ export function AppRoutes(): JSX.Element {
               />
             }
           />
+          {/* Review-Ansicht des Konzept-Graphen (AP3.T3.2). */}
+          <Route path="/konzepte" element={<ConceptsPage />} />
           {/* Seit AP2.T2.5 echte Inhalte: die Ansicht "letzte KI-Aufrufe". */}
           <Route path="/einstellungen" element={<SettingsPage />} />
         </Route>

@@ -6,6 +6,7 @@ import './AppLayout.css';
 /** Die fuenf Bereiche der Seitenleiste - Reihenfolge laut Kanon. */
 export const NAV_ITEMS: ReadonlyArray<{ to: string; label: string }> = [
   { to: '/lernen', label: 'Lernen' },
+  { to: '/konzepte', label: 'Konzepte' },
   { to: '/drills', label: 'Drills' },
   { to: '/turniere', label: 'Turniere' },
   { to: '/material', label: 'Material' },

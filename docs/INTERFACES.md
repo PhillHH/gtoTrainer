@@ -1203,3 +1203,147 @@ Kapitelübersicht.
 
 `pnpm book:import` (Import) bzw. `pnpm book:import --dry-run` (nur Analyse,
 ohne Datenbank). Betrieb und Reportdeutung: RUNBOOK 11.
+
+---
+
+## 13. Konzept-Graph — Schema, Invarianten und Zugriff (AP3.T3.2)
+
+Quelle der Wahrheit ist `apps/backend/src/db/schema.ts`; Migration
+`0003_lively_lilith.sql`. Vertragskonstanten in `packages/shared/src/concept.ts`.
+
+### Die vier Tabellen
+
+**`concept`** — eine fachliche Lerneinheit, nicht eine Gliederungsüberschrift.
+
+| Spalte                     | Typ                        | Hinweis                                                     |
+| -------------------------- | -------------------------- | ----------------------------------------------------------- |
+| `id`                       | `uuid` PK                  |                                                             |
+| `chapter_id`               | `uuid` FK → `book_chapter` | `ON DELETE CASCADE`                                         |
+| `slug`                     | `text`                     | normalisierter Titel, eindeutig (`concept_slug_key`)        |
+| `title`                    | `text`                     | Fachbegriff wie im Buch                                     |
+| `summary`                  | `text`                     | knappe, prüfbare Definition — **ohne Frequenzen**           |
+| `topic_area`               | `text`                     | CHECK gegen die feste Liste unten                           |
+| `min_level`                | `text`                     | CHECK: `einsteiger` \| `fortgeschritten` \| `experte`       |
+| `state`                    | `text`                     | CHECK: `draft` \| `approved`                                |
+| `origin`                   | `text`                     | CHECK: `ai` \| `manual`                                     |
+| `ordinal`                  | `integer`                  | Reihenfolge im Kapitel                                      |
+| `unresolved_prerequisites` | `jsonb`                    | Titel-Referenzen ohne Treffer — offene Punkte, Default `[]` |
+| `created_at`, `updated_at` | `timestamptz`              |                                                             |
+
+**`concept_prerequisite`** — gerichtete Kante `prerequisite_id → concept_id`.
+Primärschlüssel über beide Spalten; CHECK `concept_id <> prerequisite_id`.
+
+**`concept_section`** — `(concept_id, section_id)`, mehrfach möglich.
+
+**`concept_chart`** — `(concept_id, asset_id)` plus `source` (aktuell
+`section`), mehrfach möglich.
+
+### Invarianten
+
+| #   | Invariante                                                    | Durchgesetzt von                                                 |
+| --- | ------------------------------------------------------------- | ---------------------------------------------------------------- |
+| 1   | Jedes Konzept hat **genau einen** Themenbereich aus der Liste | CHECK `concept_topic_area_check`                                 |
+| 2   | `min_level`, `state`, `origin` stammen aus festen Listen      | CHECK je Spalte                                                  |
+| 3   | Keine Voraussetzungskante auf sich selbst                     | CHECK `concept_prerequisite_no_self_check`                       |
+| 4   | Jede Kante höchstens einmal                                   | Primärschlüssel                                                  |
+| 5   | **Der Prerequisite-Graph ist zyklenfrei**                     | `src/concept/graph.ts` — geprüft, nicht erzwingbar (siehe unten) |
+| 6   | Ein Titel ergibt genau ein Konzept (Dubletten-Erkennung)      | `concept_slug_key` + `conceptSlug()`                             |
+
+Zu 5: Zyklenfreiheit ist eine Eigenschaft des **ganzen** Graphen und lässt sich
+nicht als Constraint schreiben. Stattdessen wird jede neue Kante gegen den
+bestehenden Graphen geprüft (`selectAcyclicEdges`, `replacePrerequisites`);
+eine Kante, die einen Zyklus schlösse, wird **nicht gespeichert** und erscheint
+als Befund. Die Datenbank ist damit jederzeit zyklenfrei — ein Lernpfad ist
+immer ableitbar.
+
+### Feste Themenbereiche
+
+Die Achsen des Skill-Ratings in AP4. Quelle: `CONCEPT_TOPIC_AREAS` in
+`packages/shared/src/concept.ts`. Begründung: [ADR-0031](./DECISIONS.md).
+
+| Kennung                 | Bezeichnung               | Deckt ab (Kapitel) |
+| ----------------------- | ------------------------- | ------------------ |
+| `grundlagen-mathematik` | Grundlagen und Mathematik | 1                  |
+| `spieltheorie`          | Spieltheorie              | 2                  |
+| `software-werkzeuge`    | Software und Werkzeuge    | 3                  |
+| `preflop-ranges`        | Preflop-Ranges            | 4, 5, 7            |
+| `preflop-verteidigung`  | Preflop-Verteidigung      | 5, 8               |
+| `spiel-gegen-3bets`     | Spiel gegen 3-Bets        | 9                  |
+| `turnier-metriken-icm`  | Turnier-Metriken und ICM  | 6                  |
+| `postflop-grundlagen`   | Postflop-Grundlagen       | 10                 |
+| `flop-spiel`            | Flop-Spiel                | 11, 12             |
+| `turn-spiel`            | Turn                      | 13                 |
+| `river-spiel`           | River                     | 14                 |
+| `mental-game`           | Mental Game               | 6                  |
+
+**Regel:** Ein Wert außerhalb dieser Liste wird abgelehnt, nicht auf einen
+Default umgebogen — weder beim Import noch über die Review-Ansicht.
+
+### Wie AP4 Konzepte und Themenbereiche liest
+
+Mastery, Wiederholungs-Queue und Skill-Ratings hängen an `concept.id`.
+**Nur `approved` Konzepte** sind für AP4 verbindlich; `draft` ist ungeprüfter
+Modellvorschlag.
+
+```ts
+import { and, asc, eq } from 'drizzle-orm';
+import { concept } from '../db/schema.js';
+
+// Alle bestätigten Konzepte eines Themenbereichs - eine Rating-Achse.
+const achse = await db
+  .select({ id: concept.id, title: concept.title, minLevel: concept.minLevel })
+  .from(concept)
+  .where(and(eq(concept.topicArea, 'flop-spiel'), eq(concept.state, 'approved')))
+  .orderBy(asc(concept.ordinal));
+```
+
+Der Index `concept_topic_area_idx` bedient genau diese Abfrage,
+`concept_state_idx` die Filterung nach Zustand.
+
+Die Lernreihenfolge ergibt sich aus `concept_prerequisite`: eine topologische
+Sortierung über die Kanten `prerequisite_id → concept_id`. Sie terminiert,
+weil der Graph zyklenfrei ist (Invariante 5).
+
+### Wie AP5 über `concept_section` gezielt Buchtext lädt
+
+Kontextdisziplin: **ein Konzept, seine Sektionen** — nicht ein ganzes Kapitel.
+
+```ts
+const texte = await db
+  .select({ key: bookSection.sectionKey, title: bookSection.title, body: bookSection.body })
+  .from(conceptSection)
+  .innerJoin(bookSection, eq(conceptSection.sectionId, bookSection.id))
+  .where(and(eq(conceptSection.conceptId, conceptId), isNull(bookSection.removedAt)))
+  .orderBy(asc(bookSection.ordinal));
+```
+
+Für die Charts eines Konzepts entsprechend über `concept_chart` auf
+`book_asset`. Die Zuordnung ist nach T3.2 **grob** (alles, was in derselben
+Sektion steht) und wird in T3.3/T3.4 mit Spot-Metadaten verfeinert.
+
+### Review-Endpunkte (nicht die Content-API)
+
+Prüfoberfläche für die Vorschläge. Die Content-API für Folge-APs entsteht in
+T3.5 unter `/api/content`; sie ist hier bewusst nicht vorweggenommen.
+
+| Endpunkt                                  | Zweck                                          |
+| ----------------------------------------- | ---------------------------------------------- |
+| `GET /api/concepts`                       | alle Konzepte nach Kapitel, samt Befunden      |
+| `PATCH /api/concepts/:id`                 | Titel, Definition, Einordnung, Voraussetzungen |
+| `POST /api/concepts/:id/approve`          | ein Konzept bestätigen                         |
+| `POST /api/concepts/chapters/:nr/approve` | Sammelaktion je Kapitel                        |
+
+Alle auth-geschützt; die schreibenden zusätzlich über den CSRF-Hook aus T1.3.
+Ablehnungen kommen feldweise als `{ error: 'invalid_concept', fields: [...] }` —
+dasselbe Muster wie die Einstellungen aus T2.6, und im Frontend über dieselbe
+Auswertung in `ApiError.fields`.
+
+Befundarten in `GET /api/concepts` (`ConceptIssueKind`):
+`unresolved-prerequisite`, `cycle`, `duplicate`, `without-section`,
+`chapter-empty`.
+
+### Generierung anstoßen
+
+`pnpm concepts:generate [--plan] [--chapter <n>] [--charts] [--report]`.
+Ein Job je Kapitelteil (Zeichenbudget 15 000) über die Queue; Betrieb siehe
+RUNBOOK 12.

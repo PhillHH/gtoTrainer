@@ -1834,3 +1834,170 @@ Bedingung `import`. drizzle-kit bündelt `schema.ts` samt `drizzle.config.ts`
 im CJS-Modus und konnte das Workspace-Paket dadurch seit AP2 nicht mehr
 auflösen — `pnpm db:generate` scheiterte. Eine zusätzliche `default`-Bedingung
 auf dieselbe Datei stellt das wieder her.
+
+---
+
+## ADR-0031 — Konzept-Taxonomie: zwölf feste Themenbereiche, Zuschnitt „prüfbare Lerneinheit", deterministische Nachbearbeitung
+
+- **Datum:** 2026-08-24
+- **Status:** angenommen
+- **Kontext:** AP3.T3.2 baut den Konzept-Graphen — das Rückgrat des gesamten
+  Lernpfads. Zu entscheiden waren: welche Themenbereiche es gibt (AP4 führt
+  darauf Skill-Ratings und kann sie später kaum noch ändern), woran ein Konzept
+  geschnitten wird, wie die KI-Vorschläge geprüft werden und was mit Zyklen und
+  Dubletten geschieht.
+
+### Entscheidung 1 — Zwölf feste Themenbereiche, genau einer je Konzept
+
+Die Liste steht als `CONCEPT_TOPIC_AREAS` in `packages/shared/src/concept.ts`
+und als CHECK-Constraint auf `concept.topic_area`:
+
+`grundlagen-mathematik` · `spieltheorie` · `software-werkzeuge` ·
+`preflop-ranges` · `preflop-verteidigung` · `spiel-gegen-3bets` ·
+`turnier-metriken-icm` · `postflop-grundlagen` · `flop-spiel` · `turn-spiel` ·
+`river-spiel` · `mental-game`
+
+Zuschnitt entlang der **Struktur des Buches**, nicht entlang einer freien
+Systematik: Jedes der 14 Kapitel findet mindestens einen Bereich, und jeder
+Bereich hat mindestens ein Kapitel. `software-werkzeuge` ist gegenüber der im
+Auftrag skizzierten Liste ergänzt — Kapitel 3 behandelt ausschließlich
+Solver und Analysewerkzeuge und hätte sonst keinen Platz; ohne den Bereich
+landeten seine Konzepte in `spieltheorie` und verzerrten dort das Rating.
+
+**Genau ein Bereich je Konzept.** Eine Mehrfachzuordnung wäre fachlich oft
+richtig, macht aber jede Kennzahl unscharf: Ein Konzept in drei Bereichen
+zählt dreimal, und ein Rating „62 % in Flop-Spiel" wäre nicht mehr
+interpretierbar. Wo ein Konzept an einer Grenze liegt, entscheidet die Review.
+
+Ein Wert außerhalb der Liste wird **abgelehnt**, nicht auf einen Default
+umgebogen. Ein falsch einsortiertes Konzept fällt später niemandem mehr auf;
+ein abgelehnter Vorschlag steht im Protokoll des Laufs.
+
+### Entscheidung 2 — Zuschnitt: „verstehen, anwenden, prüfen"
+
+Ein Konzept ist etwas, zu dem sich eine Frage stellen lässt, deren Antwort
+eindeutig richtig oder falsch ist. Gliederungsüberschriften („Weitere
+Überlegungen") sind keine. Die Prompt-Anweisung nennt das ausdrücklich, und
+die Persona `persona/taxonomist` trägt es als Rolle.
+
+Die Grenze nach unten: Braucht die Kurzdefinition ein „und", um zwei
+unabhängige Dinge zu verbinden, sind es zwei Konzepte. Die Grenze nach oben:
+Die Zielgröße von 120–200 über 14 Kapitel entspricht ~9–14 je Kapitel — fein
+genug für gezielte Wiederholung in AP4, grob genug, dass ein Lernpfad nicht
+aus 600 Trivialschritten besteht.
+
+**Die Obergrenze je Teillauf ist bindend, nicht bloß erbeten.** Ein erster
+Anlauf mit der Formulierung „ungefähr N Konzepte" ergab hochgerechnet rund 350
+Konzepte — das Modell nahm die Zahl als Untergrenze. Zwei Änderungen halten das
+Band jetzt: Der Prompt nennt N als **Höchstzahl** und lässt nach Wichtigkeit
+sortieren, und der Handler kappt die Liste zusätzlich bei N. Die Kappung ist
+die deterministische Rückversicherung — ohne sie hinge die Größe des Graphen
+daran, wie streng ein Modell eine Zahl im Prompt nimmt. Wie viel gekappt wurde,
+steht je Teillauf im Serverprotokoll.
+
+**Kurzdefinitionen enthalten keine Zahlenwerte.** Keine Frequenzen, keine
+Ranges, keine Chart-Werte. Diese Wahrheiten liegen ab T3.3/T3.4 in den
+Chart-Daten; eine zweite, vom Modell geschätzte Fassung im Konzepttext wäre
+genau die Sorte Halbwahrheit, gegen die R2 im Gesamtscope schützt. Der Prompt
+verlangt stattdessen einen Verweis auf das zugehörige Chart, und
+`partial/data-truth` ist eingebunden.
+
+### Entscheidung 3 — Eine eigene Persona statt `persona/analyst`
+
+`persona/analyst` ist auf die Auswertung von **Trainingsdaten** geschrieben
+(Stichprobe, Muster, Belege je Datensatz). Für die Zerlegung eines Fachtexts
+in Begriffe passt das nicht: Die Rolle drängt zu „Befunden" statt zu einer
+Begriffsliste. Deshalb `persona/taxonomist` — dieselben Bausteine
+(`partial/language`), aber die richtige Aufgabenbeschreibung.
+
+`partial/data-truth` ist bewusst im **Task** eingebunden, nicht in der Persona:
+So steht die strengste Regel des Projekts direkt neben den Daten, auf die sie
+sich bezieht.
+
+### Entscheidung 4 — Ein Job je Kapitelteil, nicht je Buch und nicht je Sektion
+
+Zeichenbudget **15 000 Zeichen** (~4 000 Token) je Lauf, Sektionen werden nie
+zerschnitten. Das ergibt für dieses Buch 53 Läufe.
+
+Der Wert ist **gemessen, nicht geschätzt**. Der erste Anlauf lief mit 45 000
+Zeichen: Ein einzelner Aufruf über die Claude CLI brauchte dort mehr als zehn
+Minuten und lief ins Zeitlimit; ein anderer sprengte die Ausgabegrenze der CLI
+von 8 192 Tokens. Mit 15 000 Zeichen antwortet derselbe Aufruf in ein bis zwei
+Minuten. Die Gesamtmenge an Eingabetext ist dieselbe — sie verteilt sich nur
+auf mehr, dafür einzeln wiederholbare Läufe. Beide Fehlerbilder samt Abhilfe
+stehen im RUNBOOK 12.1.
+
+- **Ein Lauf je Buch** wäre ein Prompt von rund 620 000 Zeichen — teuer, und
+  bei jedem Fehlschlag komplett zu wiederholen.
+- **Ein Lauf je Sektion** (367 Läufe) sähe den Zusammenhang nicht und lieferte
+  Gliederung statt Fachbegriffe. Außerdem: 7× so viele Aufrufe.
+- **Ein Lauf je Kapitel** wäre beim längsten Kapitel (77 532 Zeichen) weit
+  jenseits dessen, was ein Aufruf in vertretbarer Zeit schafft.
+
+Jeder Teillauf bekommt die **bereits bekannten Konzepte** mit. Das erlaubt
+Voraussetzungen über Kapitelgrenzen hinweg und verhindert, dass derselbe
+Begriff in Kapitel 8 noch einmal erfunden wird. Weil der Worker die Jobs
+nacheinander abarbeitet, wächst diese Liste in Buchreihenfolge.
+
+Zwischenergebnisse werden je Teillauf persistiert: Ein fehlgeschlagenes
+Kapitel zieht die übrigen nicht mit, und bei `rate_limit` legt die Queue den
+Job wieder vor, statt den ganzen Lauf zu verlieren.
+
+### Entscheidung 5 — Zyklen: gar nicht erst speichern, aber melden
+
+Ein Zyklus im Prerequisite-Graphen macht den Lernpfad in AP5 unableitbar. Die
+Zyklenfreiheit ist aber eine Eigenschaft des ganzen Graphen und lässt sich
+nicht als Constraint schreiben.
+
+Gewählt: **Jede neue Kante wird gegen den bestehenden Graphen geprüft.** Was
+einen Zyklus schlösse, wird nicht gespeichert — beim Import (`selectAcyclicEdges`)
+wie in der Review-Ansicht (`replacePrerequisites`, HTTP 400 mit Begründung).
+Die Datenbank ist damit **jederzeit** zyklenfrei.
+
+- **Alternative „speichern und hinterher prüfen":** verworfen. Zwischen Import
+  und Review gäbe es Zeitfenster, in denen kein Lernpfad ableitbar ist, und
+  eine Reparatur müsste raten, welche Kante die falsche war.
+- **Alternative „Zyklus auflösen lassen":** verworfen — das wäre eine fachliche
+  Entscheidung und gehört in die Review, nicht in eine Heuristik.
+
+Der Konflikt geht trotzdem nicht verloren: Er zählt im Ergebnis des Laufs und
+erscheint als Befund `cycle`, sobald doch einer entsteht (etwa durch direkt
+in der Datenbank gesetzte Kanten).
+
+### Entscheidung 6 — Dubletten über den normalisierten Titel zusammenführen
+
+`conceptSlug()` normalisiert aggressiv: Kleinschreibung, Umlaute,
+Klammerzusätze, führende Artikel, alle Nicht-Alphanumerik. „Die Minimum
+Defense Frequency (MDF)" und „minimum defense frequency" ergeben denselben
+Slug — und `concept_slug_key` macht daraus genau eine Zeile.
+
+Bei einem Treffer bleibt das Konzept, **wo es zuerst eingeführt wurde**. Das
+ist die didaktisch richtige Stelle: Wer den Begriff zum ersten Mal braucht,
+lernt ihn dort. Ein Konzept, das in Kapitel 8 noch einmal auftaucht, ist keine
+neue Einheit, sondern eine Wiederholung.
+
+Derselbe Slug trägt auch die Auflösung der Voraussetzungen — ein Verweis auf
+„MDF" findet das Konzept „Minimum Defense Frequency", ohne dass das Modell
+IDs kennen müsste.
+
+### Entscheidung 7 — Nachbearbeitung ist Code, nicht ein zweiter Modellaufruf
+
+Referenzauflösung, Zyklenprüfung, Dubletten-Erkennung, Themenbereichsprüfung
+und die Chart-Zuordnung sind deterministische Funktionen mit Tests. Ein
+zweites Modell zur Prüfung des ersten wäre teurer, langsamer und selbst
+fehlbar — und das Ergebnis wäre bei jedem Lauf ein anderes.
+
+Die Chart-Zuordnung ist bewusst **grob**: Ein `hand_range`-Asset gehört
+zunächst zu jedem Konzept, dem seine Sektion zugeordnet ist. T3.3/T3.4
+verfeinern das mit Spot-Metadaten. Eine KI für eine Zuordnung einzusetzen, die
+ohnehin überschrieben wird, wäre verschwendetes Kontingent.
+
+### Entscheidung 8 — Review-Endpunkte getrennt von der Content-API
+
+`/api/concepts` ist die Prüfoberfläche dieses Tasks. Die Content-API für
+Folge-APs (gezielter Abruf, Spot-Suche, Asset-Auslieferung) entsteht in T3.5
+unter `/api/content` und ist hier nicht vorweggenommen. Getrennte Namensräume,
+weil die Zielgruppen verschieden sind: hier ein Mensch beim Prüfen, dort
+Folge-APs beim Kontext-Retrieval.
+
+**Keine neuen Dependencies in T3.2.**

@@ -55,6 +55,7 @@ const TEXT_CASES: readonly TextCase[] = [
   },
   { name: 'persona-grader', templateId: 'persona/grader' },
   { name: 'persona-analyst', templateId: 'persona/analyst' },
+  { name: 'persona-taxonomist', templateId: 'persona/taxonomist' },
 ];
 
 interface RequestCase {
@@ -64,6 +65,24 @@ interface RequestCase {
 }
 
 const REQUEST_CASES: readonly RequestCase[] = [
+  {
+    // Konzept-Taxonomie (AP3.T3.2). Die Werte sind bewusst erfunden und kurz -
+    // Buchtext gehoert nicht in eine versionierte Golden-Datei.
+    name: 'task-concept-taxonomy',
+    templateId: 'task/concept-taxonomy',
+    values: {
+      kapitel: '02 — Beispielkapitel (Teil 1 von 2)',
+      zielanzahl: '8',
+      themenbereiche: [
+        '   - `grundlagen-mathematik` — Grundlagen und Mathematik',
+        '   - `spieltheorie` — Spieltheorie',
+      ].join('\n'),
+      bekannte_konzepte: '- Position am Tisch (Kapitel 1)',
+      abschnitte:
+        '[sektion: ch02/beispielabschnitt] Beispielabschnitt\n\n' +
+        'Zwei Saetze Platzhaltertext fuer den Golden-Fall.',
+    },
+  },
   {
     name: 'task-concept-explanation',
     templateId: 'task/concept-explanation',

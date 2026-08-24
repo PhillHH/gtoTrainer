@@ -5,6 +5,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -332,3 +333,170 @@ export const bookAsset = pgTable(
 
 /** Tabellen der Buch-Wissensbasis (AP3.T3.1). */
 export const BOOK_TABLES = ['book_chapter', 'book_section', 'book_asset'] as const;
+
+/* -------------------------------------------------------------------------
+ * Konzept-Graph (AP3.T3.2)
+ *
+ * Vier Tabellen: die Konzepte selbst und drei Verknuepfungstabellen
+ * (Voraussetzungen, Sektionen, Charts).
+ *
+ * Invarianten, die das Schema selbst durchsetzt:
+ * - `topic_area` und `min_level` stammen aus festen Listen (CHECK).
+ * - Eine Voraussetzungskante zeigt nie auf sich selbst (CHECK).
+ * - Jede Kante existiert hoechstens einmal (Primaerschluessel ueber beide
+ *   Spalten).
+ * Was das Schema NICHT durchsetzen kann, ist die Zyklenfreiheit - das prueft
+ * `src/concept/graph.ts` und meldet Befunde in die Review-Ansicht.
+ *
+ * Die Listen sind - wie bei den Buchtabellen - dupliziert, weil drizzle-kit
+ * das Workspace-Paket beim Buendeln nicht aufloest;
+ * `test/concept/schema.test.ts` haelt sie mit `packages/shared` deckungsgleich.
+ * ---------------------------------------------------------------------- */
+
+export const CONCEPT_TOPIC_AREAS = [
+  'grundlagen-mathematik',
+  'spieltheorie',
+  'software-werkzeuge',
+  'preflop-ranges',
+  'preflop-verteidigung',
+  'spiel-gegen-3bets',
+  'turnier-metriken-icm',
+  'postflop-grundlagen',
+  'flop-spiel',
+  'turn-spiel',
+  'river-spiel',
+  'mental-game',
+] as const;
+
+export const CONCEPT_LEVELS = ['einsteiger', 'fortgeschritten', 'experte'] as const;
+export const CONCEPT_STATES = ['draft', 'approved'] as const;
+export const CONCEPT_ORIGINS = ['ai', 'manual'] as const;
+
+/**
+ * Fachliche Lerneinheit. Nicht eine Gliederungsueberschrift des Buches -
+ * etwas, das man verstehen, anwenden und pruefen kann.
+ */
+export const concept = pgTable(
+  'concept',
+  {
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    chapterId: uuid('chapter_id')
+      .notNull()
+      .references(() => bookChapter.id, { onDelete: 'cascade' }),
+    /**
+     * Fachlicher Schluessel: normalisierter Titel. Traegt die
+     * Dubletten-Erkennung ueber Kapitelgrenzen hinweg - derselbe Begriff wird
+     * kein zweites Mal angelegt, sondern um Sektionen ergaenzt.
+     */
+    slug: text('slug').notNull(),
+    title: text('title').notNull(),
+    /** Knappe, pruefbare Definition. Ohne Frequenzen - die stehen in den Charts. */
+    summary: text('summary').notNull(),
+    topicArea: text('topic_area').notNull(),
+    minLevel: text('min_level').notNull(),
+    state: text('state').notNull().default('draft'),
+    origin: text('origin').notNull().default('ai'),
+    /** Reihenfolge innerhalb des Kapitels. */
+    ordinal: integer('ordinal').notNull(),
+    /**
+     * Voraussetzungen, die als Titel vorgeschlagen wurden, aber auf kein
+     * bekanntes Konzept zeigen. Bewusst aufbewahrt statt verworfen: In der
+     * Review-Ansicht sind sie offene Punkte, keine stille Luecke.
+     */
+    unresolvedPrerequisites: jsonb('unresolved_prerequisites')
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    createdAt,
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('concept_slug_key').on(table.slug),
+    index('concept_chapter_idx').on(table.chapterId, table.ordinal),
+    index('concept_topic_area_idx').on(table.topicArea),
+    index('concept_state_idx').on(table.state),
+    check('concept_topic_area_check', sql.raw(`topic_area in (${sqlList(CONCEPT_TOPIC_AREAS)})`)),
+    check('concept_min_level_check', sql.raw(`min_level in (${sqlList(CONCEPT_LEVELS)})`)),
+    check('concept_state_check', sql.raw(`state in (${sqlList(CONCEPT_STATES)})`)),
+    check('concept_origin_check', sql.raw(`origin in (${sqlList(CONCEPT_ORIGINS)})`)),
+  ],
+);
+
+/**
+ * Gerichtete Kante: `prerequisite_id` muss vor `concept_id` verstanden sein.
+ *
+ * Die Zyklenfreiheit ist eine Eigenschaft des ganzen Graphen und laesst sich
+ * nicht als Constraint ausdruecken - sie wird geprueft, nicht erzwungen.
+ */
+export const conceptPrerequisite = pgTable(
+  'concept_prerequisite',
+  {
+    conceptId: uuid('concept_id')
+      .notNull()
+      .references(() => concept.id, { onDelete: 'cascade' }),
+    prerequisiteId: uuid('prerequisite_id')
+      .notNull()
+      .references(() => concept.id, { onDelete: 'cascade' }),
+    createdAt,
+  },
+  (table) => [
+    primaryKey({ columns: [table.conceptId, table.prerequisiteId] }),
+    index('concept_prerequisite_prereq_idx').on(table.prerequisiteId),
+    check('concept_prerequisite_no_self_check', sql`${table.conceptId} <> ${table.prerequisiteId}`),
+  ],
+);
+
+/**
+ * Konzept ↔ Buchsektion. Mehrfach moeglich.
+ *
+ * Das ist die Grundlage dafuer, dass AP5 gezielt **den richtigen** Buchtext
+ * laedt, statt ein ganzes Kapitel in den Kontext zu schieben.
+ */
+export const conceptSection = pgTable(
+  'concept_section',
+  {
+    conceptId: uuid('concept_id')
+      .notNull()
+      .references(() => concept.id, { onDelete: 'cascade' }),
+    sectionId: uuid('section_id')
+      .notNull()
+      .references(() => bookSection.id, { onDelete: 'cascade' }),
+    createdAt,
+  },
+  (table) => [
+    primaryKey({ columns: [table.conceptId, table.sectionId] }),
+    index('concept_section_section_idx').on(table.sectionId),
+  ],
+);
+
+/**
+ * Konzept ↔ `hand_range`-Asset. Zunaechst grob ueber die Sektion abgeleitet;
+ * T3.3/T3.4 verfeinern die Zuordnung mit den dann vorhandenen Spot-Metadaten.
+ */
+export const conceptChart = pgTable(
+  'concept_chart',
+  {
+    conceptId: uuid('concept_id')
+      .notNull()
+      .references(() => concept.id, { onDelete: 'cascade' }),
+    assetId: uuid('asset_id')
+      .notNull()
+      .references(() => bookAsset.id, { onDelete: 'cascade' }),
+    /** Wie die Zuordnung zustande kam, z. B. `section`. */
+    source: text('source').notNull().default('section'),
+    createdAt,
+  },
+  (table) => [
+    primaryKey({ columns: [table.conceptId, table.assetId] }),
+    index('concept_chart_asset_idx').on(table.assetId),
+  ],
+);
+
+/** Tabellen des Konzept-Graphen (AP3.T3.2). */
+export const CONCEPT_TABLES = [
+  'concept',
+  'concept_prerequisite',
+  'concept_section',
+  'concept_chart',
+] as const;

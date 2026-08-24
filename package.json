@@ -27,7 +27,8 @@
     "jobs:enqueue": "pnpm --filter @gto/backend jobs:enqueue",
     "test:e2e": "pnpm --filter @gto/shared build && playwright test",
     "test:e2e:install": "playwright install --with-deps chromium",
-    "book:import": "pnpm --filter @gto/backend book:import"
+    "book:import": "pnpm --filter @gto/backend book:import",
+    "concepts:generate": "pnpm --filter @gto/backend concepts:generate"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
