@@ -804,6 +804,60 @@ Charts haben überhaupt Prozentwerte in der Buch-Unterschrift. Ein Chart auf
 Die Review-Ansicht ist damit kein Restposten, sondern der Regelweg nach
 `approved` (siehe `docs/status/AP03.md`, Abschnitt T3.4).
 
+## 3k. Content-Service (neu in AP3.T3.5)
+
+Die Wissensbasis aus T3.1 bis T3.4 bekommt eine Tür. Ab hier greift **kein
+Folge-AP mehr direkt auf die Tabellen zu** — AP5 unterrichtet, AP6 rendert, AP7
+baut Drills und AP8 analysiert Hände, alle über dieselbe Schnittstelle.
+
+```
+                       /api/content/*        alles hinter app.requireSession (T1.3)
+                              │
+   content/routes.ts ─────────┴─────────── nur GET; dieser Task schreibt nichts
+        │
+        ├── content/book-queries.ts     Kapitel, Sektionen
+        │     Uebersicht ohne Volltexte │ Sektionsdetail MIT Volltext
+        │
+        ├── content/concept-queries.ts  Konzepte, Lernpfad
+        │     Vorgabe state='approved'  │ Kahn, ebenenweise
+        │
+        ├── content/chart-queries.ts    Charts, Zellabruf
+        │     ┌─────────────────────────────────────────────────┐
+        │     │  stateCondition()  — die Approved-Regel, EINMAL │
+        │     │  ohne includeUnapproved: state = 'approved'     │
+        │     └─────────────────────────────────────────────────┘
+        │
+        ├── content/spot-search.ts      Spot-Suche
+        │     anteilige Bewertung │ Stacktiefe als Bereich │ Erklaerung
+        │
+        └── content/assets.ts           Bilder
+              safeAssetPath() │ Inhalts-ETag │ private, immutable
+```
+
+Vier Eigenschaften, auf die sich Folge-APs verlassen können:
+
+- **Zuschnitt statt Vollausgabe.** `book_section.body` erscheint in genau einer
+  Antwort: dem Sektionsdetail. Eine Kapitelübersicht liefert Zählstände, eine
+  Chartliste Metadaten. Das ist Kontextdisziplin: Ein Prompt in AP5 hat ein
+  Token-Budget, und ein versehentlich mitgeliefertes Kapitel sprengt es.
+- **Die Approved-Regel liegt an einer Stelle.** `stateCondition()` in
+  `chart-queries.ts` ist der einzige Ort, an dem über die Sichtbarkeit eines
+  Charts entschieden wird. Liste, Detail, Zellabruf, Spot-Suche und das
+  Konzeptdetail gehen alle hindurch — es gibt keinen zweiten Weg zu
+  ungeprüften Frequenzen.
+- **Der Zellabruf ist der schmalste Weg zu einer Zahl.**
+  `/charts/:id/cells/:hand` liefert eine Zeile statt 169. Damit stellen AP5 und
+  AP7 objektiv prüfbare Fragen, ohne eine Matrix in den Kontext zu ziehen.
+- **Bilder verlassen den Server nur an eine Session.** Der Weg führt durch das
+  Backend, nicht am Host-Nginx vorbei — nur das Backend kennt die Session
+  ([ADR-0035](./DECISIONS.md)).
+
+**Abgrenzung zur Review-Ansicht aus T3.4:** `/api/charts/*` ist die
+Prüfoberfläche und darf schreiben; `/api/content/*` ist der Lesezugriff für
+Folge-APs und darf es nicht. Beide leben nebeneinander, weil sie verschiedene
+Fragen beantworten — und weil die Review-Ansicht der einzige Aufrufer ist, der
+`includeUnapproved` überhaupt setzen darf.
+
 ## 4. Querschnitts-Entscheidungen
 
 - **Node 20.19.6**, fixiert in `.nvmrc`; `engines.node >= 20.19.0`.

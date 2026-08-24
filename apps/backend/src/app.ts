@@ -6,6 +6,7 @@ import authPlugin from './auth/plugin.js';
 import { registerAuthRoutes } from './auth/routes.js';
 import type { LoginRateLimiter } from './auth/rate-limit.js';
 import { registerChartReviewRoutes } from './chart/review-routes.js';
+import { registerContentRoutes } from './content/routes.js';
 import { registerConceptRoutes } from './concept/routes.js';
 import type { AuthConfig } from './config/env.js';
 import type { Database } from './db/client.js';
@@ -80,6 +81,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     // Review-Ansicht der Chart-Validierung (AP3.T3.4). Ebenfalls nicht die
     // Content-API - die entsteht in T3.5 unter /api/content.
     registerChartReviewRoutes(app, {
+      db: options.db,
+      ...(options.bookSourceDir === undefined ? {} : { sourceDir: options.bookSourceDir }),
+    });
+
+    // Content-API (AP3.T3.5): der Lesezugriff, ueber den AP5 bis AP8 gehen.
+    // Nur lesend, auth-geschuetzt, und ohne includeUnapproved ausschliesslich
+    // freigegebene Charts.
+    registerContentRoutes(app, {
       db: options.db,
       ...(options.bookSourceDir === undefined ? {} : { sourceDir: options.bookSourceDir }),
     });

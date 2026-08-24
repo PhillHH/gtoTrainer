@@ -2384,3 +2384,137 @@ der **liest das Bild neu**, statt Zahlen zu beurteilen.
   wo sie sind.
 
 **Keine neuen Dependencies.**
+
+## ADR-0035 — Content-API: Zuschnitt nach Listenform und Detailform, Bilder über das Backend, anteilige Spot-Bewertung
+
+- **Datum:** 2026-08-24
+- **Status:** angenommen
+- **Kontext:** AP3.T3.5 macht die Wissensbasis für AP5 bis AP8 zugänglich. Drei
+  Fragen waren zu entscheiden, und alle drei haben Folgen weit über diesen Task
+  hinaus: Wie werden Antworten geschnitten, wie kommen die Bilder zum Nutzer,
+  und wie sucht man einen Spot.
+
+### 1. Zwei Antwortformen je Gegenstand: Liste und Detail
+
+Jeder Gegenstand — Kapitel, Sektion, Konzept, Chart — hat eine **schlanke
+Listenform** und eine **vollständige Detailform**. Das ist keine Bequemlichkeit,
+sondern Kontextdisziplin.
+
+Der Grund steht in AP5: Eine Lerneinheit lädt Buchtext in einen Prompt, und ein
+Prompt hat ein Token-Budget. Würde die Kapitelübersicht Volltexte mitliefern,
+zöge ein Aufruf „welche Kapitel gibt es?" das halbe Buch in den Kontext.
+Gemessen am echten Bestand: 14 Kapitel mit 367 Sektionen. Die Übersicht ist
+knapp 4 kB groß; die Volltexte dieser Sektionen zusammen liegen im
+Megabyte-Bereich.
+
+Umgesetzt heißt das:
+
+- `book_section.body` erscheint in **genau einer** Antwort: dem Sektionsdetail.
+- Die Chartliste trägt keine `matrix`. Gemessen: 16 Charts als Liste 9,5 kB;
+  **ein** Chart als Detail 15,7 kB. Alle 16 mit Matrix wären etwa 250 kB — für
+  eine Übersicht, aus der man eines auswählen will.
+- Statt des Inhalts kommt sein **Maß** mit: `bodyChars` je Sektion,
+  `cellCount` je Chart, `sectionCount`/`conceptCount`/`chartCount` je Kapitel.
+  Damit lässt sich ein Budget planen, bevor geladen wird.
+
+**Der Zellabruf ist die konsequente Fortsetzung.**
+`/charts/:id/cells/:hand` liefert eine Zeile statt 169 — gemessen unter einem
+Zehntel der Detailantwort. AP5 und AP7 stellen damit objektiv prüfbare Fragen
+(„Was macht AKs im CO bei 40bb?"), ohne eine Matrix in den Kontext zu ziehen.
+
+**Verworfen:** ein einziger Endpunkt mit `?fields=`-Parameter. Er verlagert die
+Entscheidung zum Aufrufer, und der wählt im Zweifel „alles". Zwei benannte
+Formen sind eine Zusage, ein Feldparameter nur eine Möglichkeit.
+
+### 2. Bilder gehen durch das Backend, nicht am Host-Nginx vorbei
+
+Buchinhalt ist urheberrechtlich geschützt und bleibt auf dem privaten Server.
+Der Auslieferungsweg muss den Auth-Schutz behalten.
+
+Die Topologie aus [ADR-0016](#adr-0016--frontend-assets-direkt-vom-host-nginx-kein-frontend-container)
+liefert die **Frontend-Assets** direkt vom Host-Nginx — die sind öffentlich und
+tragen nichts Schützenswertes. Für Buchbilder gilt das nicht.
+
+**Entscheidung: Das Backend liefert sie aus**, hinter `app.requireSession`.
+
+Die Alternativen und warum sie ausscheiden:
+
+- **Nginx liefert das Bildverzeichnis direkt aus.** Verliert den Auth-Schutz
+  vollständig. Wer die URL kennt, hat das Buch. Ausgeschlossen.
+- **Nginx mit `auth_request` gegen das Backend.** Behielte den Schutz, kostet
+  aber je Bild eine zusätzliche Anfrage und verteilt die Zugriffsregel auf zwei
+  Systeme — eine davon in einer Datei, die laut RUNBOOK 8.4 noch gar nicht
+  eingespielt ist und Root braucht. Der Gewinn wäre Durchsatz, den niemand
+  misst: Es geht um einen einzelnen Prüfer, nicht um Publikumsverkehr.
+- **`X-Accel-Redirect`.** Technisch der sauberste Weg für große Dateien, setzt
+  aber denselben, noch nicht eingespielten vhost voraus. Bleibt als Option, wenn
+  der Durchsatz je einmal ein Thema wird; die Route müsste dafür nur den Header
+  statt des Puffers senden.
+
+**Caching:** `private, max-age=31536000, immutable` plus ETag und
+`vary: Cookie`. `private` und nicht `public`, weil die Auslieferung an eine
+Session gebunden ist — ein gemeinsamer Zwischenspeicher dürfte das Bild nicht
+an den Nächsten weitergeben. `immutable` mit einem Jahr, weil ein Buchbild sich
+nicht ändert: Es ist über seine Asset-ID identifiziert, ein anderes Bild bekäme
+eine andere ID.
+
+**Der ETag kommt aus dem Dateiinhalt**, nicht aus Zeitstempel und Größe. Ein
+Inhalts-Hash bleibt richtig, wenn eine Datei neu kopiert wird und dabei einen
+neuen Zeitstempel bekommt. Dass zwei identische Dateien denselben ETag
+bekommen, ist harmlos — ETags sind je URL gültig.
+
+**Pfad-Sicherheit:** Angefragt wird eine **Asset-ID**, nie ein Pfad; der Pfad
+kommt aus der Datenbank. Trotzdem prüft `safeAssetPath()` den **aufgelösten**
+Pfad gegen das Wurzelverzeichnis. Ein Pfad aus der Datenbank ist kein Beweis,
+sondern nur eine wahrscheinlichere Herkunft — und `bilder/../../etc/passwd`
+sieht als Zeichenkette harmlos aus. Geprüft wird deshalb nach `resolve()`, nicht
+davor. Abgewiesen werden zusätzlich absolute Pfade, Laufwerksbuchstaben,
+Null-Bytes und Endungen, die kein Bildformat sind.
+
+### 3. Spot-Suche: anteilige Bewertung, Stacktiefe als Bereich
+
+Die Suche ist die Grundlage der Drills in AP7 und der Handanalyse in AP8. Beide
+fragen nicht „welches Chart ist das", sondern „welches passt **hier**" — und
+die Antwort ist selten exakt.
+
+**Die Stacktiefe wird als Bereich gesucht, Vorgabe ±5 bb.** Das Buch zeigt
+Charts für 10, 15, 20, 25 und 40 bb. Wer eine Hand mit 22 bb analysiert, braucht
+das 20er-Chart; eine Gleichheitssuche gäbe ihm nichts. Innerhalb der Toleranz
+fällt die Punktzahl linear ab — exakt zählt voll, am Rand halb. Gemessen am
+Bestand: HR 11 (15 bb) trifft bei `stack=15` mit `score 1`, bei 18 mit 0,91, bei
+20 mit 0,86 und fällt bei 21 heraus.
+
+**Bewertet wird anteilig.** Jedes **angegebene** Kriterium bringt Punkte
+(Position 3, Gegenposition 2, Stacktiefe 2, Aktion 1,5, Spielform 1), das
+Ergebnis ist der erreichte Anteil. Wer nur die Position angibt, bekommt alle
+Charts dieser Position mit `score = 1`; wer vier Kriterien angibt, bekommt eine
+feinere Rangfolge. Eine feste Punktzahl über alle Kriterien würde eine grobe
+Anfrage künstlich schlecht bewerten.
+
+**Die Position schließt aus, alles andere zieht nur ab.** Passt die Position des
+Helden nicht, ist das Chart kein Treffer — die Position _ist_ der Spot. Eine
+fehlende Gegenposition oder Stacktiefe in der Unterschrift dagegen schließt
+nicht aus: Am echten Bestand nennt längst nicht jede Unterschrift alles, und ein
+Chart mit unvollständiger Beschreibung kann trotzdem das richtige sein. Solche
+Treffer landen mit niedriger Punktzahl unten, und `missed` sagt im Klartext,
+was fehlt.
+
+**Keine leere Antwort ohne Erklärung.** `coverage` steht in jeder Antwort
+(abgedeckter Stacktiefen-Bereich, vorhandene Positionen und Spielformen). Bleibt
+die Trefferliste leer, nennt `explanation` die nachweisliche Ursache — „200 bb
+(±5) liegt außerhalb des abgedeckten Bereichs von 15 bis 40 bb" statt einer
+stummen Leermenge. Und weil ein schwacher Treffer irreführender sein kann als
+keiner, weist die Erklärung auch darauf hin, wenn der beste Treffer unter 75 %
+Übereinstimmung bleibt.
+
+### Folgen
+
+- Ein Folge-AP, das Volltexte oder Matrizen braucht, muss sie **einzeln**
+  anfordern. Das ist beabsichtigt.
+- Wird der Bildabruf je zum Engpass, ist `X-Accel-Redirect` der vorgesehene
+  nächste Schritt — die Route ändert sich dabei nicht.
+- Die Gewichte der Spot-Suche stehen in `spot-search.ts` an einer Stelle
+  (`WEIGHT`). Sie sind eine Annahme über das Buch, keine Naturkonstante: Zeigt
+  sich in AP7, dass die Aktionsfolge schwerer wiegen muss, wird hier geändert.
+
+**Keine neuen Dependencies.**

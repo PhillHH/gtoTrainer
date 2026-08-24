@@ -191,3 +191,30 @@ export type {
   ReviewChartSummary,
   ReviewListResponse,
 } from './validation.js';
+
+export { CONTENT_ERROR_CODES, SPOT_STACK_TOLERANCE_BB, isContentErrorResponse } from './content.js';
+export type {
+  AssetRef,
+  CellResponse,
+  ChapterListResponse,
+  ChapterSummary,
+  ChartDetail,
+  ChartListResponse,
+  ChartSummary,
+  ConceptRef,
+  ContentCell,
+  ContentConceptDetail,
+  ContentConceptListResponse,
+  ContentConceptSummary,
+  ContentErrorCode,
+  ContentErrorResponse,
+  LearningPathResponse,
+  LearningPathStep,
+  SectionDetail,
+  SectionListResponse,
+  SectionRef,
+  SectionSummary,
+  SpotCoverage,
+  SpotMatch,
+  SpotSearchResponse,
+} from './content.js';

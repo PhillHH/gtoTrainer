@@ -1705,3 +1705,256 @@ verhindert, dass ein Zwischenspeicher Buchinhalte vorhält.
 
 `pnpm charts:validate [--status] [--recheck [n]] [--approve] [--limit n]`
 plus die Abschalt-Flags der Heuristiken. Betrieb: RUNBOOK 14.
+
+## 16. Content-API — Endpunkt-Referenz für AP5 bis AP8 (AP3.T3.5)
+
+Vertrag in `packages/shared/src/content.ts`, Umsetzung in
+`apps/backend/src/content/`. **Dieser Abschnitt ist das Nachschlagewerk**: Wer
+in AP5, AP6, AP7 oder AP8 an Buchinhalte, Konzepte oder Charts will, kommt hier
+her und nicht an die Tabellen.
+
+> **Drei Regeln gelten ausnahmslos:**
+>
+> 1. **Alles hängt am Auth-Guard aus T1.3.** Es gibt keine öffentliche
+>    Content-Route, auch nicht für Bilder. Ohne Session: `401`.
+> 2. **Nur lesend.** Ausschließlich `GET`. Wer Zustände ändern will, nimmt die
+>    Review-Ansicht aus T3.4.
+> 3. **Nur `approved` Charts** — siehe „Die Approved-Regel" weiter unten.
+
+### Überblick
+
+| Methode | Pfad                                  | Liefert                                             |
+| ------- | ------------------------------------- | --------------------------------------------------- |
+| `GET`   | `/api/content/chapters`               | alle Kapitel mit Zählständen, **ohne** Volltexte    |
+| `GET`   | `/api/content/chapters/:nr/sections`  | Sektionen eines Kapitels, **ohne** Volltexte        |
+| `GET`   | `/api/content/sections/*`             | eine Sektion **mit** Volltext, Konzepten, Assets    |
+| `GET`   | `/api/content/concepts`               | Konzeptliste, gefiltert                             |
+| `GET`   | `/api/content/concepts/learning-path` | gültige Unterrichtsreihenfolge                      |
+| `GET`   | `/api/content/concepts/:slugOrId`     | Konzept mit Voraussetzungen in **beide** Richtungen |
+| `GET`   | `/api/content/charts`                 | Chartliste, **ohne** Matrizen                       |
+| `GET`   | `/api/content/charts/:id`             | Chart mit vollständiger 13×13-Matrix                |
+| `GET`   | `/api/content/charts/:id/cells/:hand` | **eine** Zelle statt 169                            |
+| `GET`   | `/api/content/spots`                  | Spot-Suche mit Rangfolge und Erklärung              |
+| `GET`   | `/api/content/assets/:assetId/image`  | das Buchbild, mit ETag und Caching                  |
+
+Fehlerantwort durchgängig:
+`{ error: 'invalid_request' | 'not_found', message, allowed? }`. `allowed`
+nennt bei einem ungültigen Filterwert die zulässige Menge — das spart eine
+Runde durch die Doku. Erkennung im Frontend über `isContentErrorResponse`.
+
+### Kontextdisziplin: wie man gezielt eine Sektion lädt
+
+Das ist der Grund für den Zuschnitt. AP5 lädt für eine Lerneinheit **einzelne
+Sektionen** in den Prompt, nicht ganze Kapitel:
+
+```ts
+// 1. Zum Konzept die zugehoerigen Sektionen holen - der Konzeptgraph aus T3.2
+//    weiss, welcher Buchtext zum Thema gehoert.
+const konzept = await get<ContentConceptDetail>('/api/content/concepts/pot-odds');
+//    konzept.sections = [{ id, sectionKey, title, chapterNumber }, …]
+
+// 2. Genau die eine Sektion laden, die gebraucht wird.
+const sektion = await get<SectionDetail>(`/api/content/sections/${konzept.sections[0].sectionKey}`);
+//    sektion.body ist der Volltext - und nur dieser eine.
+```
+
+Der Weg über die Kapitelübersicht ist der **falsche**, wenn ein Text gebraucht
+wird: Sie liefert absichtlich keinen. Sie ist für Navigation da.
+
+**`bodyChars` ist die Budgetplanung.** Jede `SectionSummary` nennt die Länge
+ihres Volltexts in Zeichen, ohne ihn zu liefern. Wer weiß, dass er 6 000
+Zeichen unterbringen kann, sucht sich damit die passenden Sektionen aus, bevor
+er lädt.
+
+Der Wildcard im Pfad (`sections/*`) ist nötig, weil der fachliche Schlüssel
+selbst einen Schrägstrich trägt (`ch07/bet-sizing`). Eine UUID geht ebenso.
+
+### Kapitel und Sektionen
+
+`GET /api/content/chapters` → `ChapterListResponse`
+
+```jsonc
+{
+  "chapters": [
+    {
+      "chapterNumber": 1,
+      "partNumber": 1,
+      "partTitle": "…",
+      "title": "…",
+      "ordinal": 0,
+      "pageStart": 21,
+      "pageEnd": 93,
+      "sectionCount": 48,
+      "conceptCount": 16,
+      "chartCount": 9,
+    },
+  ],
+  "totals": { "chapters": 14, "sections": 367, "concepts": 168, "approvedCharts": 16 },
+}
+```
+
+`chartCount` zählt **nur freigegebene** Charts — dieselbe Regel wie überall.
+
+`GET /api/content/chapters/:nr/sections` → `SectionListResponse` mit
+`{ chapter, sections }`. Je Sektion: `sectionKey`, `title`, `level`, `ordinal`,
+`pageStart`/`pageEnd`, `bodyChars`, `conceptCount`, `assetCount`. Ein unbekanntes
+Kapitel ergibt `404`, keine leere Liste — der Unterschied zwischen „gibt es
+nicht" und „ist leer" bleibt sichtbar.
+
+`GET /api/content/sections/*` → `SectionDetail`: alles aus der Liste, dazu
+`body`, `chapterTitle`, `partNumber`, `concepts` und `assets`. Jedes Asset trägt
+`imageUrl`, und — falls digitalisiert — `chartId` mit `chartState`. Frequenzen
+liefert das Sektionsdetail **nicht**; dafür geht es über den Chart-Abruf, und
+damit über die Approved-Regel.
+
+### Konzepte
+
+`GET /api/content/concepts?chapter=&topicArea=&state=&level=`
+
+| Filter      | Werte                                    | Vorgabe      |
+| ----------- | ---------------------------------------- | ------------ |
+| `chapter`   | Kapitelnummer                            | alle         |
+| `topicArea` | `CONCEPT_TOPIC_AREA_IDS`                 | alle         |
+| `state`     | `draft` \| `approved`                    | **approved** |
+| `level`     | `einsteiger`/`fortgeschritten`/`experte` | alle         |
+
+**`level` ist eine Obergrenze, kein exakter Wert.** Wer nach `fortgeschritten`
+fragt, bekommt auch Einsteiger-Konzepte — sie sind für ihn ebenfalls geeignet.
+Andersherum nicht.
+
+`GET /api/content/concepts/:slugOrId` → `ContentConceptDetail`:
+
+- `prerequisites` — was vorher verstanden sein muss,
+- `dependents` — was darauf aufbaut (**die Gegenrichtung**; AP5 weiß damit nach
+  einer Lerneinheit, was jetzt freigeschaltet ist),
+- `unresolvedPrerequisites` — vorgeschlagene Voraussetzungen ohne Treffer im
+  Graphen, aus T3.2 aufbewahrt statt verworfen,
+- `sections`, `charts` (letztere wieder nur `approved`).
+
+`GET /api/content/concepts/learning-path` → `LearningPathResponse`. Topologische
+Ordnung (Kahn, ebenenweise) über die gefilterte Menge:
+
+```jsonc
+{ "steps": [ { "step": 1, "tier": 0, "concept": { … } } ],
+  "cyclic": [], "totals": { "steps": 7, "tiers": 3 } }
+```
+
+`tier` ist die eigentlich nützliche Angabe: Konzepte derselben Ebene sind
+untereinander unabhängig und in beliebiger Reihenfolge unterrichtbar.
+Voraussetzungen **außerhalb** der gefilterten Menge werden ignoriert — sonst
+blockierte ein einzelnes nicht freigegebenes Konzept den ganzen Pfad. `cyclic`
+ist leer, solange der Graph zyklenfrei ist (T3.2 prüft das).
+
+### Charts
+
+`GET /api/content/charts?chapter=&concept=&includeUnapproved=` →
+`ChartListResponse`. Je Chart Metadaten **ohne** Matrix: `spot`, `actions`,
+`cellCount`, `model`, `manualCells`, `chapterNumber`, `sectionKey`, `imageUrl`.
+
+`GET /api/content/charts/:id` → `ChartDetail`: zusätzlich
+
+- `matrix` — genau die vorhandenen Zellen in Rasterreihenfolge (`CHART_HANDS`),
+  jede mit `actions` und `source` (`model` \| `manual`),
+- `uncertain` — vom Modell gemeldete Lücken,
+- `weightedTotals` — combo-gewichtet (6/4/12),
+- `captionTotals` — die Prozentwerte der Bildunterschrift aus T3.1 als
+  unabhängige Gegenprobe,
+- `approvedAt`.
+
+**Herkunft ist Teil der Antwort.** `model` sagt, welches Modell gelesen hat;
+`manualCells` und `source` sagen, wo ein Mensch korrigiert hat. Ein Folge-AP
+kann damit unterscheiden, wie belastbar eine Zahl ist.
+
+### Ein einzelnes Blatt abfragen
+
+`GET /api/content/charts/:id/cells/:hand` → `CellResponse`
+
+```jsonc
+{ "chartId": "…", "hand": "AKs",
+  "actions": [ { "kind": "raise", "sizing": "2.25x", "percent": 100 } ],
+  "source": "model", "correctedAt": null,
+  "spot": { "heroPosition": "CO", "stackDepthBb": 40, … },
+  "state": "approved" }
+```
+
+Das ist der Baustein für **objektiv prüfbare Fragen** in AP5 und AP7: „Was macht
+AKs im CO bei 40bb?" beantwortet sich aus gespeicherten Zahlen, ohne Modell und
+ohne die ganze Matrix. Der `spot` kommt mit, damit die Antwort für sich allein
+verständlich ist. Eine unbekannte Blattbezeichnung ergibt `400` mit Hinweis auf
+die Schreibweise des Rasters.
+
+### Spot-Suche
+
+`GET /api/content/spots?position=&vs=&stack=&tolerance=&action=&format=&limit=`
+
+| Parameter   | Bedeutung                                                  |
+| ----------- | ---------------------------------------------------------- |
+| `position`  | Position des Helden (`CHART_POSITIONS`)                    |
+| `vs`        | Gegenposition                                              |
+| `stack`     | Stacktiefe in bb — **als Bereich gesucht**                 |
+| `tolerance` | Umgebung um `stack`, Vorgabe `SPOT_STACK_TOLERANCE_BB` = 5 |
+| `action`    | Aktionsfolge; `unopened`/`rfi`/`open` meint Eröffnung      |
+| `format`    | `cash` \| `mtt`                                            |
+
+Antwort: `matches` (nach `score` sortiert), `query`, `coverage`, `explanation`.
+
+Jeder Treffer trägt `matched` und `missed` im Klartext — **`missed` ist so
+wichtig wie `matched`**: Ein Chart, dessen Unterschrift keine Stacktiefe nennt,
+passt vielleicht trotzdem, und der Aufrufer soll das entscheiden können.
+
+`coverage` steht in **jeder** Antwort, nicht nur in der leeren: abgedeckter
+Stacktiefen-Bereich, vorhandene Positionen und Spielformen, Zahl der
+durchsuchten Charts. Wer nach 200bb sucht und liest, dass der Bestand bei 40bb
+endet, weiß sofort, woran es lag.
+
+`explanation` erklärt eine leere Antwort — und weist auch auf einen **nur
+schwachen** besten Treffer hin, statt ihn kommentarlos auszuliefern.
+Suchlogik und Gewichte: [ADR-0035](./DECISIONS.md).
+
+### Bilder
+
+`GET /api/content/assets/:assetId/image`
+
+| Header          | Wert                                   |
+| --------------- | -------------------------------------- |
+| `content-type`  | aus der Dateiendung, nur Bildformate   |
+| `cache-control` | `private, max-age=31536000, immutable` |
+| `etag`          | starker ETag aus dem **Dateiinhalt**   |
+| `last-modified` | Zeitstempel der Datei                  |
+| `vary`          | `Cookie`                               |
+
+Ein bedingter Abruf mit `if-none-match` beantwortet sich mit `304` ohne
+Nutzlast. `private` statt `public`, weil die Auslieferung an eine Session
+gebunden ist — ein gemeinsamer Zwischenspeicher dürfte das Bild nicht an den
+Nächsten weitergeben.
+
+**Angefragt wird eine ID, nie ein Pfad.** Der Dateipfad stammt aus der
+Datenbank und wird trotzdem gegen das Bildverzeichnis geprüft
+(`safeAssetPath()`) — ein Pfad aus der Datenbank ist kein Beweis, nur eine
+wahrscheinlichere Herkunft. Eine Kennung, die keine UUID ist, ergibt `404`.
+
+### Die Approved-Regel
+
+> **Verbindlich für AP5 bis AP8: Es werden ausschließlich Charts im Zustand
+> `approved` geliefert.** Der Parameter `includeUnapproved=true` öffnet die
+> Antwort für `raw`, `validated`, `failed` und `unusable` — er ist **allein der
+> Review-Ansicht aus T3.4 vorbehalten**. Ein Folge-AP, der ihn nicht setzt,
+> kann gar nicht versehentlich auf ungeprüfte Frequenzen zugreifen.
+
+Die Regel steht im Code an **einer** Stelle: `stateCondition()` in
+`apps/backend/src/content/chart-queries.ts`. Sie greift in
+
+- `GET /api/content/charts` (Liste),
+- `GET /api/content/charts/:id` (Detail),
+- `GET /api/content/charts/:id/cells/:hand` (Zellabruf),
+- `GET /api/content/spots` (Suche),
+- `ContentConceptDetail.charts` (Charts am Konzept),
+- `ChapterSummary.chartCount` (Zählstand).
+
+Ein Chart, das nach `unusable` zurückgezogen wird, verschwindet damit sofort aus
+allen Antworten — ohne dass irgendwo eine zweite Bedingung nachgezogen werden
+müsste.
+
+**Was `validated` nicht heißt:** dass ein Mensch die Zahlen gesehen hat. Der
+Zustandsvertrag steht in Abschnitt 15; die Content-API liefert `validated`
+deshalb genauso wenig aus wie `raw`.

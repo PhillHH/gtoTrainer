@@ -1590,7 +1590,96 @@ docker exec -i gto-postgres psql -U gto -d gto -c \
   "select check, severity, count(*) from chart_finding group by 1,2 order by 1,2"
 ```
 
-## 15. Noch nicht abgedeckt
+## 15. Content-API prüfen (AP3.T3.5)
+
+Alle Endpunkte sind auth-geschützt und **nur lesend** — ein Prüflauf kann nichts
+kaputt machen und kostet kein Kontingent.
+
+### 15.1 Anmelden und Endpunkte abklopfen
+
+```bash
+B=http://127.0.0.1:3010
+curl -s -c cj.txt "$B/api/auth/csrf" > /dev/null
+TOK=$(grep gto_csrf cj.txt | awk '{print $7}')
+curl -s -b cj.txt -c cj.txt -X POST "$B/api/auth/login" \
+  -H 'content-type: application/json' -H "x-csrf-token: $TOK" \
+  -d '{"username":"<benutzer>","password":"<passwort>"}'
+
+# Kapitel, Sektionen, eine einzelne Sektion
+curl -s -b cj.txt "$B/api/content/chapters" | head -c 400
+curl -s -b cj.txt "$B/api/content/chapters/7/sections" | head -c 400
+curl -s -b cj.txt "$B/api/content/sections/ch07/bet-sizing" | head -c 400
+
+# Konzepte und Lernpfad
+curl -s -b cj.txt "$B/api/content/concepts?chapter=3"
+curl -s -b cj.txt "$B/api/content/concepts/learning-path"
+
+# Charts und eine einzelne Zelle
+curl -s -b cj.txt "$B/api/content/charts?chapter=1"
+curl -s -b cj.txt "$B/api/content/charts/<uuid>/cells/AKs"
+
+# Spot-Suche
+curl -s -b cj.txt "$B/api/content/spots?position=CO&stack=40"
+```
+
+> **Schnelltest des Zugriffsschutzes:** Dieselben Pfade **ohne** `-b cj.txt`
+> müssen alle `401` liefern — auch der Bildabruf.
+>
+> ```bash
+> curl -s -o /dev/null -w '%{http_code}\n' "$B/api/content/chapters"
+> ```
+
+### 15.2 Bilder und Caching prüfen
+
+```bash
+# Header ansehen
+curl -s -D - -o /dev/null -b cj.txt "$B/api/content/assets/<asset-uuid>/image"
+
+# Bedingter Abruf: muss 304 ohne Nutzlast liefern
+ETAG=$(curl -s -D - -o /dev/null -b cj.txt "$B/api/content/assets/<asset-uuid>/image" \
+       | grep -i '^etag' | tr -d '\r' | cut -d' ' -f2-)
+curl -s -o /dev/null -w '%{http_code} %{size_download}\n' \
+  -b cj.txt -H "if-none-match: $ETAG" "$B/api/content/assets/<asset-uuid>/image"
+```
+
+Erwartet: `304 0`.
+
+### 15.3 Typische Fehlerbilder
+
+| Symptom                                                               | Ursache                                                                   | Abhilfe                                                                  |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `404 "Die Bilddatei liegt auf diesem Server nicht vor"`               | Quellverzeichnis nicht eingehängt oder Datei fehlt                        | `BOOK_SOURCE_DIR` prüfen, Abschnitt 13; Mount in `docker-compose.yml`    |
+| `404 "Dieses Asset gibt es nicht"` bei einer offensichtlich echten ID | Kennung ist keine UUID (Tippfehler, Pfad statt ID)                        | ID aus `bookAsset.id` bzw. aus `imageUrl` einer Antwort nehmen           |
+| `400 "Der hinterlegte Pfad ist nicht zulässig"`                       | `book_asset.relative_path` verlässt das Bildverzeichnis — **Datenfehler** | Zeile prüfen; Import aus T3.1 wiederholen                                |
+| Chartliste leer, obwohl Charts existieren                             | keines ist `approved`                                                     | `pnpm charts:validate --status` (Abschnitt 14.5)                         |
+| Chart per ID nicht auffindbar (`404`)                                 | Chart ist nicht freigegeben                                               | absichtlich; nur die Review-Ansicht darf `includeUnapproved=true` setzen |
+| Konzeptliste fast leer                                                | Vorgabe ist `state=approved`, und T3.2 hat kaum freigegeben               | `?state=draft` zeigt den Entwurfsbestand                                 |
+| `400` mit `allowed`-Liste                                             | Filterwert außerhalb der geschlossenen Menge                              | Wert aus `allowed` nehmen                                                |
+
+### 15.4 Leeres Suchergebnis deuten
+
+Die Spot-Suche liefert nie eine stumme Leermenge. Zwei Felder sagen, was los
+ist:
+
+```bash
+curl -s -b cj.txt "$B/api/content/spots?position=BN&stack=200" \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["explanation"]); print(d["coverage"])'
+```
+
+- `explanation` nennt die nachweisliche Ursache — etwa „200bb (±5) liegt
+  außerhalb des abgedeckten Bereichs von 15 bis 40 bb".
+- `coverage` zeigt, was der freigegebene Bestand überhaupt hergibt: Positionen,
+  Stacktiefen, Spielformen, Zahl der durchsuchten Charts.
+
+Steht dort `chartsSearched: 0`, ist noch kein Chart freigegeben — dann fehlt
+nicht die Suche, sondern die Freigabe (Abschnitt 14).
+
+Bei einem Treffer mit niedriger Punktzahl weist `explanation` ausdrücklich
+darauf hin. `missed` am einzelnen Treffer sagt, welches Kriterium nicht saß —
+meist „keine Stacktiefe in der Unterschrift", weil das Buch sie nicht zu jedem
+Chart nennt.
+
+## 16. Noch nicht abgedeckt
 
 - Der Host-Nginx-vhost und das TLS-Zertifikat sind vorbereitet, aber noch nicht
   eingespielt: Beides erfordert Root auf dem Host (Abschnitte 8.4 und 8.5).
