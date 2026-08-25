@@ -508,6 +508,22 @@ docker compose ps
 > Diese Schritte brauchen Root-Rechte auf dem Host. Sie sind **nicht** Teil
 > von `deploy.sh`, damit ein normaler Deploy keine Root-Rechte benötigt.
 
+**Kurzweg — ein Aufruf für 8.4 und 8.5 zusammen:**
+
+```bash
+sudo ./deploy/nginx/enable-site.sh
+```
+
+Das Skript prüft zuerst den DNS-Eintrag gegen die eigene Server-IP (ein
+Zertifikat „auf Verdacht" zählt auch im Fehlerfall auf das
+Let's-Encrypt-Limit), kopiert den vhost, setzt die Leserechte für den
+Nginx-Worker, aktiviert die Site, lädt Nginx neu und holt anschließend das
+Zertifikat. Es ist idempotent und überschreibt eine bereits von Certbot
+ergänzte Fassung nicht. Am Ende nennt es den einen verbleibenden Schritt als
+normaler Nutzer (`COOKIE_SECURE`, `ALLOWED_ORIGINS`, neu deployen).
+
+Wer die Schritte einzeln gehen will:
+
 ```bash
 # 1. vhost kopieren
 sudo cp /home/phillip/gto/deploy/nginx/gto.growento.com.conf \
