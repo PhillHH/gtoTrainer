@@ -6,6 +6,10 @@ import { LlmProviderRegistry } from '../llm/registry.js';
 import { createSettingsReader } from '../llm/settings.js';
 import { TemplateRegistry } from '../prompts/registry.js';
 import { JobEventBus } from './events.js';
+import { createChartDigitizeJob } from './handlers/chart-digitize.js';
+import { createChartLegendJob } from './handlers/chart-legend.js';
+import { createChartRecheckJob } from './handlers/chart-recheck.js';
+import { createConceptExtractJob } from './handlers/concept-extract.js';
 import { createLlmCompleteJob } from './handlers/llm-complete.js';
 import { JobHandlerRegistry } from './types.js';
 import { JobWorker } from './worker.js';
@@ -68,17 +72,53 @@ export function createLlmRuntime(options: CreateRuntimeOptions): LlmRuntime {
     },
   });
 
-  const handlers = new JobHandlerRegistry().register(
-    createLlmCompleteJob({
-      providers,
-      templates,
-      defaultModel: llmConfig.model,
-      // Grosszuegig: Ein abgeschnittener Prompt kostet mehr als ein paar Tokens.
-      defaultMaxTokens: 4096,
-      // Modell und Timeout kommen bevorzugt aus den Einstellungen.
-      settings,
-    }),
-  );
+  const handlers = new JobHandlerRegistry()
+    .register(
+      createLlmCompleteJob({
+        providers,
+        templates,
+        defaultModel: llmConfig.model,
+        // Grosszuegig: Ein abgeschnittener Prompt kostet mehr als ein paar Tokens.
+        defaultMaxTokens: 4096,
+        // Modell und Timeout kommen bevorzugt aus den Einstellungen.
+        settings,
+      }),
+    )
+    // Konzept-Taxonomie (AP3.T3.2): ein Job je Kapitelteil.
+    .register(
+      createConceptExtractJob({
+        providers,
+        templates,
+        defaultModel: llmConfig.model,
+        settings,
+      }),
+    )
+    // Chart-Digitalisierung (AP3.T3.3): ein Job je Chart-Bild.
+    .register(
+      createChartDigitizeJob({
+        providers,
+        templates,
+        defaultModel: llmConfig.model,
+        settings,
+      }),
+    )
+    // Gezielter Zweitdurchlauf beanstandeter Charts (AP3.T3.4).
+    .register(
+      createChartLegendJob({
+        providers,
+        templates,
+        defaultModel: llmConfig.model,
+        settings,
+      }),
+    )
+    .register(
+      createChartRecheckJob({
+        providers,
+        templates,
+        defaultModel: llmConfig.model,
+        settings,
+      }),
+    );
 
   const worker = new JobWorker({
     db: options.db,

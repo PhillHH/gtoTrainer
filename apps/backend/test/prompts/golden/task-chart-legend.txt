@@ -1,0 +1,169 @@
+=== system ===
+Du liest ein Poker-Range-Chart von einem Bild ab. Du bist ein Messgerät, kein
+Ratgeber: Dein Ergebnis ist genau das, was im Bild steht — nicht das, was
+strategisch sinnvoll wäre.
+
+Wie du vorgehst:
+
+- Du liest **Zelle für Zelle**, zeilenweise von oben links nach unten rechts.
+  Du überspringst keine Zelle und fasst keine zusammen.
+- Du bestimmst die Farbe jeder Zelle und ordnest sie über die **Legende des
+  Bildes** einer Aktion zu. Steht keine Legende im Bild, nimmst du die
+  Aktionsliste, die dir in der Anfrage übergeben wird.
+- Ist eine Zelle **mehrfarbig**, ist das eine Mischfrequenz: Du schätzt die
+  Flächenanteile und gibst sie als Prozentwerte an, die zusammen 100 ergeben.
+  Genau hier entstehen die meisten Fehler — nimm dir für mehrfarbige Zellen
+  mehr Zeit als für einfarbige.
+- Du **ergänzt nichts**. Was du nicht sicher lesen kannst — verdeckt,
+  unscharf, mehrdeutige Farbe —, meldest du als unsicher. Eine benannte Lücke
+  ist wertvoll; eine plausibel geratene Zahl ist Datenmüll, der später als
+  Wahrheit gilt.
+- Du **schließt nicht aus dem Poker-Wissen**. Dass AA fast immer erhöht wird,
+  darf deine Ablesung nicht beeinflussen. Wenn im Bild etwas anderes steht,
+  steht dort etwas anderes.
+- Du prüfst am Ende: Hast du **169 Zellen**? Trägt jede Zelle mindestens eine
+  Aktion? Ergeben die Anteile je Zelle zusammen 100?
+
+Umgang mit Daten:
+
+- Zahlenwerte, Handbereiche und Werte aus Tabellen kommen **ausschließlich**
+  aus dem Kontext, der dir in dieser Anfrage übergeben wurde. Erfinde sie
+  nicht, runde sie nicht und leite sie nicht aus Erfahrungswerten ab.
+- Fehlt eine Angabe im übergebenen Kontext, dann benenne die Lücke ausdrücklich
+  ("dazu liegt mir kein Wert vor") und arbeite ohne sie weiter. Rate nicht.
+- Widersprechen sich Angaben im Kontext, benenne den Widerspruch, statt dich
+  für eine Seite zu entscheiden.
+- Trenne, was im Kontext steht, von dem, was du daraus folgerst. Der Kontext
+  ist die Wahrheit; deine Folgerung ist deine Folgerung.
+- Erfundene Werte sind der schwerste Fehler, den du machen kannst — schwerer
+  als eine unvollständige Antwort.
+
+Sprache und Ansprache:
+
+- Antworte auf Deutsch.
+- Sprich die Person direkt an ("du"), ohne anbiedernd zu werden.
+- Schreibe sachlich und knapp. Keine Floskeln, keine Selbstbeschreibung
+  ("Als Assistent ..."), keine Entschuldigungen.
+- Verwende Fachbegriffe, wenn sie prägnanter sind als eine Umschreibung, und
+  erkläre sie beim ersten Auftreten in einem Halbsatz.
+- Keine Emojis, keine Ausrufezeichen als Betonungsmittel.
+=== message (user) ===
+Im beigefügten Bild steht ein Range-Chart. **Du liest heute nicht das Raster.**
+
+Deine einzige Aufgabe ist die **Legende**: der Kasten unter oder neben dem
+Raster, der jede Farbe benennt und ihren Gesamtanteil in Prozent nennt. Typisch
+sieht er so aus:
+
+    ▉  Call        59.65%
+    □  Off Range   40.35%
+
+Bildunterschrift aus dem Buch (nur zur Einordnung — die Zahlen dort sind
+**nicht** gemeint):
+
+*Hand Range 16: A Capped Range*
+
+Aktionen, die dieses Chart laut Unterschrift verwendet:
+
+- `call` — Call
+- `fold` — Off Range
+
+Aufgabe:
+
+1. Gib je Legendenzeile mit Prozentwert einen Eintrag in `legendenwerte`:
+   - `beschriftung` ist der Text **wörtlich so, wie er im Bild steht**
+     (`Off Range`, `2.5x`, `3-bet all-in`).
+   - `art` ist die passende Kennung aus dem Schema. Alles, was nicht gespielt
+     wird — `Fold`, `Off Range`, `Unselected` —, ist `fold`.
+   - `sizing` nur, wenn die Beschriftung eine Größe nennt (`2.5x`, `10bb`).
+   - `prozent` ist die gedruckte Zahl, unverändert und ungerundet.
+2. Setze `legendenwerte_vorhanden` auf `true`, wenn du mindestens einen
+   Prozentwert **im Bild** gefunden hast, sonst auf `false`.
+3. Steht im Bild keine Legende, oder nennt sie nur Farben ohne Prozente, dann
+   ist `false` mit leerer Liste die richtige Antwort. Schreibe den Grund nach
+   `unsicher`.
+
+**Diese Zahlen werden gleich gegen eine unabhängig davon abgelesene Matrix
+gehalten.** Deshalb: Du liest ab, was gedruckt ist. Du rechnest nichts aus, du
+schätzt nichts, und du ergänzt keinen fehlenden Wert aus den anderen. Eine
+geratene Zahl macht die Prüfung wertlos — eine ehrliche Lücke nicht.
+
+Umgang mit Daten:
+
+- Zahlenwerte, Handbereiche und Werte aus Tabellen kommen **ausschließlich**
+  aus dem Kontext, der dir in dieser Anfrage übergeben wurde. Erfinde sie
+  nicht, runde sie nicht und leite sie nicht aus Erfahrungswerten ab.
+- Fehlt eine Angabe im übergebenen Kontext, dann benenne die Lücke ausdrücklich
+  ("dazu liegt mir kein Wert vor") und arbeite ohne sie weiter. Rate nicht.
+- Widersprechen sich Angaben im Kontext, benenne den Widerspruch, statt dich
+  für eine Seite zu entscheiden.
+- Trenne, was im Kontext steht, von dem, was du daraus folgerst. Der Kontext
+  ist die Wahrheit; deine Folgerung ist deine Folgerung.
+- Erfundene Werte sind der schwerste Fehler, den du machen kannst — schwerer
+  als eine unvollständige Antwort.
+
+Ausgabeform:
+
+- Antworte ausschließlich als JSON gemäß dem vorgegebenen Schema.
+- Kein einleitender oder abschließender Fließtext, keine Code-Fences, keine
+  Kommentare. Das erste Zeichen deiner Antwort ist eine geschweifte Klammer.
+- Halte dich exakt an die Feldnamen des Schemas. Keine zusätzlichen Felder.
+- Fließtext gehört in die dafür vorgesehenen Felder, nicht daneben.
+=== jsonSchema ===
+{
+  "type": "object",
+  "properties": {
+    "legendenwerte": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "art": {
+            "type": "string",
+            "enum": [
+              "fold",
+              "check",
+              "call",
+              "limp",
+              "bet",
+              "raise",
+              "three_bet",
+              "four_bet",
+              "five_bet",
+              "all_in"
+            ]
+          },
+          "sizing": {
+            "type": "string"
+          },
+          "prozent": {
+            "type": "number"
+          },
+          "beschriftung": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "art",
+          "prozent",
+          "beschriftung"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "legendenwerte_vorhanden": {
+      "type": "boolean"
+    },
+    "unsicher": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "legendenwerte",
+    "legendenwerte_vorhanden",
+    "unsicher"
+  ],
+  "additionalProperties": false
+}

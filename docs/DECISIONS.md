@@ -1713,3 +1713,916 @@ tut das in der `.env` (RUNBOOK 9.5); die Oberfläche ist bewusst kein
 Secret-Manager.
 
 **Keine neuen Dependencies in T2.6.**
+
+---
+
+## ADR-0030 — Buch-Parser: Kapitelstruktur aus dem Inhaltsverzeichnis, Schema mit fachlichen Schlüsseln, Klassifikation regelbasiert
+
+- **Datum:** 2026-08-24
+- **Status:** angenommen
+- **Kontext:** AP3.T3.1 macht die Buchquelle zur Wissensbasis. Zu entscheiden
+  waren: woraus die Kapitelstruktur kommt, wie die drei Tabellen geschnitten
+  sind, wie ein erneuter Import sich verhält und wie Range-Charts von allem
+  anderen unterschieden werden — Letzteres entscheidet in T3.3 über den
+  Kontingentverbrauch.
+
+### Entscheidung 1 — Kapitel kommen aus dem Inhaltsverzeichnis, nicht aus den Überschriften
+
+Der naheliegende Weg — Kapitel an `# NN TITEL` erkennen — scheitert an der
+Quelle selbst: Zwei der vierzehn Kapitel stehen dort **ohne Nummer**, vier
+weitere sind über **zwei** Überschriftszeilen umbrochen (`# 06 THE THEORY OF`
+gefolgt von `# TOURNAMENT PLAY`). Ein rein überschriftenbasierter Parser fände
+12 statt 14 Kapitel und ordnete außerdem keine Teile zu.
+
+Das Inhaltsverzeichnis des Buches nennt dagegen Teile und Kapitel vollständig
+und nummeriert. Es wird als **Sollstruktur** gelesen; jedes Kapitel wird
+anschließend im Fließtext verankert — über die Nummer, ersatzweise über den
+normalisierten Titel. Umbrochene Titel werden zusammengesetzt, solange das
+bisher Gelesene ein echter Präfix des Solltitels ist.
+
+- **Alternative „nur Überschriften":** verworfen, findet die Struktur nicht.
+- **Alternative „Kapitelliste im Code hinterlegen":** verworfen. Die Titel
+  stammen dann nicht mehr aus der Quelle, und die Leitplanke „keine erfundenen
+  Kapitelnamen" wäre nur noch Absichtserklärung.
+- **Rückfallebene:** Fehlt ein Inhaltsverzeichnis (kleine Fixtures), greift die
+  Ableitung aus nummerierten Überschriften — mit einer Meldung `toc-missing`
+  im Report, nicht stillschweigend.
+
+Weicht das Ergebnis von 14 Kapiteln in 3 Teilen ab, erscheint das als
+`chapter-count`/`part-count` im Report. Der Parser repariert nichts.
+
+### Entscheidung 2 — Schema: drei Tabellen, fachlicher Schlüssel je Zeile, Volltext in der Sektion
+
+`book_chapter` → `book_section` → `book_asset`. Der Zuschnitt der Sektionen
+folgt **jeder** Überschrift der Quelle (`##`, `###`), nicht dem Kapitel: Ab AP5
+sollen einzelne Sektionen gezielt geladen werden, und eine Sektion je Kapitel
+wäre für den Kontext zu grob (die größten Kapitel hätten sonst je >100 kB Text).
+
+Jede Tabelle trägt einen fachlichen Schlüssel mit Unique-Index
+(`chapter_number`, `section_key`, `relative_path`). `section_key` enthält
+bewusst **keine laufende Nummer** — ein eingeschobener Abschnitt würde sonst
+alle folgenden Schlüssel verschieben und beim nächsten Import zu
+Neuanlage-plus-Wegfall statt zu einer Änderung führen.
+
+Bildunterschriften liegen **doppelt** vor: `caption_raw` unverändert und
+daneben die geparsten Bestandteile (`caption_label`, `caption_number`,
+`caption_spot`, `caption_actions`). Der Rohtext ist in T3.4 die unabhängige
+Gegenprobe zur Vision-Extraktion — was hier normalisiert würde, wäre dort nicht
+mehr rekonstruierbar.
+
+### Entscheidung 3 — Idempotenz über Inhaltshash, Wegfall über `removed_at`
+
+Je Zeile ein SHA-256 über den fachlichen Inhalt. Gleicher Hash ⇒ die Zeile wird
+**nicht angefasst**, auch `updated_at` bleibt stehen. Anderer Hash ⇒ Update auf
+derselben `id`.
+
+Zeilen, deren Schlüssel nicht mehr in der Quelle vorkommt, bekommen
+`removed_at` gesetzt und werden **nicht gelöscht**.
+
+Der Grund ist nicht Ordnungsliebe: Ab T3.3 hängen Chart-Daten an
+`book_asset.id`. Ein Import, der Assets löscht und neu anlegt, würde bei jedem
+Lauf die Ergebnisse hunderter Vision-Aufrufe verwaisen lassen — genau den
+teuersten Datenbestand des Projekts.
+
+- **Alternative „truncate + insert":** verworfen, siehe oben.
+- **Alternative „Hash über die ganze Datei":** verworfen. Eine Tippfehler-
+  korrektur im Buch würde dann alle 855 Assets als geändert melden.
+
+### Entscheidung 4 — Klassifikation regelbasiert, unsichere Fälle bleiben unsicher
+
+Die Typisierung (`hand_range`, `table`, `diagram`, `formula`, `other`) läuft
+über eine feste Regeltabelle auf Bildunterschrift und Textumfeld — **ohne
+KI-Aufruf**. Zwei Gründe: Der Schritt ist ein _Filter vor_ der Vision-Pipeline
+und darf nicht selbst Kontingent verbrauchen; und ein regelbasiertes Ergebnis
+ist reproduzierbar, ein Modellurteil über 855 Bilder nicht.
+
+Tragfähig ist das, weil die Quelle ihre Abbildungen durchnummeriert
+beschriftet. Der Import belegt es: `Hand Range 1–348`, `Table 1–170`,
+`Diagram 1–133`, `Heatmap 1–4` — **lückenlos**, jede Nummer genau einmal
+vergeben. Der Report weist Lücken je Etikett aus; solange dort „keine" steht,
+ist kein beschriftetes Chart übersehen worden.
+
+Was die Regeln nicht sicher entscheiden, wird **nicht geraten**: Es landet als
+`other` mit `classification_confidence = 'uncertain'` und ist im Report gezählt
+(aktuell 59 von 855). Die Regelnamen stehen in `classification_rule`, damit im
+Nachhinein prüfbar ist, warum ein Asset seinen Typ hat.
+
+Wirkung: 348 statt 855 Vision-Aufrufe in T3.3 — rund 60 % weniger Kontingent,
+und keine Formelbilder oder Autorenfotos in der Chart-Datenbank.
+
+### Entscheidung 5 — Struktur der Quelle tolerant erkennen, aber nicht raten
+
+Die README aus T1.1 beschreibt flache Bildablage; die tatsächliche Quelle legt
+sie in ein Unterverzeichnis (so exportiert das PDF-nach-Markdown-Werkzeug, und
+so zeigen die Bildbezüge im Markdown). Der Parser akzeptiert **beide** Formen
+und nennt die gefundene im Report. Mehr als ein bildhaltiges Unterverzeichnis
+ist ein Abbruchgrund — dann ist die Ablage mehrdeutig, und Raten wäre schlechter
+als eine klare Fehlermeldung. README und INTERFACES Abschnitt 5 sind
+entsprechend nachgezogen.
+
+### Entscheidung 6 — Report nach `data/reports/`, git-ignoriert
+
+Der Import-Report enthält Kapitel- und Sektionstitel sowie Bildunterschriften —
+Buchinhalt. Er wird deshalb nach `data/reports/book-import.md` geschrieben und
+ist git-ignoriert, wie `data/book-source/` selbst. Im Repository stehen nur die
+Zahlen, die für die Abnahme nötig sind (Statusbericht).
+
+**Keine neuen Dependencies in T3.1.**
+
+Ergänzend behoben: `packages/shared/package.json` hatte in `exports` nur die
+Bedingung `import`. drizzle-kit bündelt `schema.ts` samt `drizzle.config.ts`
+im CJS-Modus und konnte das Workspace-Paket dadurch seit AP2 nicht mehr
+auflösen — `pnpm db:generate` scheiterte. Eine zusätzliche `default`-Bedingung
+auf dieselbe Datei stellt das wieder her.
+
+---
+
+## ADR-0031 — Konzept-Taxonomie: zwölf feste Themenbereiche, Zuschnitt „prüfbare Lerneinheit", deterministische Nachbearbeitung
+
+- **Datum:** 2026-08-24
+- **Status:** angenommen
+- **Kontext:** AP3.T3.2 baut den Konzept-Graphen — das Rückgrat des gesamten
+  Lernpfads. Zu entscheiden waren: welche Themenbereiche es gibt (AP4 führt
+  darauf Skill-Ratings und kann sie später kaum noch ändern), woran ein Konzept
+  geschnitten wird, wie die KI-Vorschläge geprüft werden und was mit Zyklen und
+  Dubletten geschieht.
+
+### Entscheidung 1 — Zwölf feste Themenbereiche, genau einer je Konzept
+
+Die Liste steht als `CONCEPT_TOPIC_AREAS` in `packages/shared/src/concept.ts`
+und als CHECK-Constraint auf `concept.topic_area`:
+
+`grundlagen-mathematik` · `spieltheorie` · `software-werkzeuge` ·
+`preflop-ranges` · `preflop-verteidigung` · `spiel-gegen-3bets` ·
+`turnier-metriken-icm` · `postflop-grundlagen` · `flop-spiel` · `turn-spiel` ·
+`river-spiel` · `mental-game`
+
+Zuschnitt entlang der **Struktur des Buches**, nicht entlang einer freien
+Systematik: Jedes der 14 Kapitel findet mindestens einen Bereich, und jeder
+Bereich hat mindestens ein Kapitel. `software-werkzeuge` ist gegenüber der im
+Auftrag skizzierten Liste ergänzt — Kapitel 3 behandelt ausschließlich
+Solver und Analysewerkzeuge und hätte sonst keinen Platz; ohne den Bereich
+landeten seine Konzepte in `spieltheorie` und verzerrten dort das Rating.
+
+**Genau ein Bereich je Konzept.** Eine Mehrfachzuordnung wäre fachlich oft
+richtig, macht aber jede Kennzahl unscharf: Ein Konzept in drei Bereichen
+zählt dreimal, und ein Rating „62 % in Flop-Spiel" wäre nicht mehr
+interpretierbar. Wo ein Konzept an einer Grenze liegt, entscheidet die Review.
+
+Ein Wert außerhalb der Liste wird **abgelehnt**, nicht auf einen Default
+umgebogen. Ein falsch einsortiertes Konzept fällt später niemandem mehr auf;
+ein abgelehnter Vorschlag steht im Protokoll des Laufs.
+
+### Entscheidung 2 — Zuschnitt: „verstehen, anwenden, prüfen"
+
+Ein Konzept ist etwas, zu dem sich eine Frage stellen lässt, deren Antwort
+eindeutig richtig oder falsch ist. Gliederungsüberschriften („Weitere
+Überlegungen") sind keine. Die Prompt-Anweisung nennt das ausdrücklich, und
+die Persona `persona/taxonomist` trägt es als Rolle.
+
+Die Grenze nach unten: Braucht die Kurzdefinition ein „und", um zwei
+unabhängige Dinge zu verbinden, sind es zwei Konzepte. Die Grenze nach oben:
+Die Zielgröße von 120–200 über 14 Kapitel entspricht ~9–14 je Kapitel — fein
+genug für gezielte Wiederholung in AP4, grob genug, dass ein Lernpfad nicht
+aus 600 Trivialschritten besteht.
+
+**Die Obergrenze je Teillauf ist bindend, nicht bloß erbeten.** Ein erster
+Anlauf mit der Formulierung „ungefähr N Konzepte" ergab hochgerechnet rund 350
+Konzepte — das Modell nahm die Zahl als Untergrenze. Zwei Änderungen halten das
+Band jetzt: Der Prompt nennt N als **Höchstzahl** und lässt nach Wichtigkeit
+sortieren, und der Handler kappt die Liste zusätzlich bei N. Die Kappung ist
+die deterministische Rückversicherung — ohne sie hinge die Größe des Graphen
+daran, wie streng ein Modell eine Zahl im Prompt nimmt. Wie viel gekappt wurde,
+steht je Teillauf im Serverprotokoll.
+
+**Kurzdefinitionen enthalten keine Zahlenwerte.** Keine Frequenzen, keine
+Ranges, keine Chart-Werte. Diese Wahrheiten liegen ab T3.3/T3.4 in den
+Chart-Daten; eine zweite, vom Modell geschätzte Fassung im Konzepttext wäre
+genau die Sorte Halbwahrheit, gegen die R2 im Gesamtscope schützt. Der Prompt
+verlangt stattdessen einen Verweis auf das zugehörige Chart, und
+`partial/data-truth` ist eingebunden.
+
+### Entscheidung 3 — Eine eigene Persona statt `persona/analyst`
+
+`persona/analyst` ist auf die Auswertung von **Trainingsdaten** geschrieben
+(Stichprobe, Muster, Belege je Datensatz). Für die Zerlegung eines Fachtexts
+in Begriffe passt das nicht: Die Rolle drängt zu „Befunden" statt zu einer
+Begriffsliste. Deshalb `persona/taxonomist` — dieselben Bausteine
+(`partial/language`), aber die richtige Aufgabenbeschreibung.
+
+`partial/data-truth` ist bewusst im **Task** eingebunden, nicht in der Persona:
+So steht die strengste Regel des Projekts direkt neben den Daten, auf die sie
+sich bezieht.
+
+### Entscheidung 4 — Ein Job je Kapitelteil, nicht je Buch und nicht je Sektion
+
+Zeichenbudget **15 000 Zeichen** (~4 000 Token) je Lauf, Sektionen werden nie
+zerschnitten. Das ergibt für dieses Buch 53 Läufe.
+
+Der Wert ist **gemessen, nicht geschätzt**. Der erste Anlauf lief mit 45 000
+Zeichen: Ein einzelner Aufruf über die Claude CLI brauchte dort mehr als zehn
+Minuten und lief ins Zeitlimit; ein anderer sprengte die Ausgabegrenze der CLI
+von 8 192 Tokens. Mit 15 000 Zeichen antwortet derselbe Aufruf in ein bis zwei
+Minuten. Die Gesamtmenge an Eingabetext ist dieselbe — sie verteilt sich nur
+auf mehr, dafür einzeln wiederholbare Läufe. Beide Fehlerbilder samt Abhilfe
+stehen im RUNBOOK 12.1.
+
+- **Ein Lauf je Buch** wäre ein Prompt von rund 620 000 Zeichen — teuer, und
+  bei jedem Fehlschlag komplett zu wiederholen.
+- **Ein Lauf je Sektion** (367 Läufe) sähe den Zusammenhang nicht und lieferte
+  Gliederung statt Fachbegriffe. Außerdem: 7× so viele Aufrufe.
+- **Ein Lauf je Kapitel** wäre beim längsten Kapitel (77 532 Zeichen) weit
+  jenseits dessen, was ein Aufruf in vertretbarer Zeit schafft.
+
+Jeder Teillauf bekommt die **bereits bekannten Konzepte** mit. Das erlaubt
+Voraussetzungen über Kapitelgrenzen hinweg und verhindert, dass derselbe
+Begriff in Kapitel 8 noch einmal erfunden wird. Weil der Worker die Jobs
+nacheinander abarbeitet, wächst diese Liste in Buchreihenfolge.
+
+Zwischenergebnisse werden je Teillauf persistiert: Ein fehlgeschlagenes
+Kapitel zieht die übrigen nicht mit, und bei `rate_limit` legt die Queue den
+Job wieder vor, statt den ganzen Lauf zu verlieren.
+
+### Entscheidung 5 — Zyklen: gar nicht erst speichern, aber melden
+
+Ein Zyklus im Prerequisite-Graphen macht den Lernpfad in AP5 unableitbar. Die
+Zyklenfreiheit ist aber eine Eigenschaft des ganzen Graphen und lässt sich
+nicht als Constraint schreiben.
+
+Gewählt: **Jede neue Kante wird gegen den bestehenden Graphen geprüft.** Was
+einen Zyklus schlösse, wird nicht gespeichert — beim Import (`selectAcyclicEdges`)
+wie in der Review-Ansicht (`replacePrerequisites`, HTTP 400 mit Begründung).
+Die Datenbank ist damit **jederzeit** zyklenfrei.
+
+- **Alternative „speichern und hinterher prüfen":** verworfen. Zwischen Import
+  und Review gäbe es Zeitfenster, in denen kein Lernpfad ableitbar ist, und
+  eine Reparatur müsste raten, welche Kante die falsche war.
+- **Alternative „Zyklus auflösen lassen":** verworfen — das wäre eine fachliche
+  Entscheidung und gehört in die Review, nicht in eine Heuristik.
+
+Der Konflikt geht trotzdem nicht verloren: Er zählt im Ergebnis des Laufs und
+erscheint als Befund `cycle`, sobald doch einer entsteht (etwa durch direkt
+in der Datenbank gesetzte Kanten).
+
+### Entscheidung 6 — Dubletten über den normalisierten Titel zusammenführen
+
+`conceptSlug()` normalisiert aggressiv: Kleinschreibung, Umlaute,
+Klammerzusätze, führende Artikel, alle Nicht-Alphanumerik. „Die Minimum
+Defense Frequency (MDF)" und „minimum defense frequency" ergeben denselben
+Slug — und `concept_slug_key` macht daraus genau eine Zeile.
+
+Bei einem Treffer bleibt das Konzept, **wo es zuerst eingeführt wurde**. Das
+ist die didaktisch richtige Stelle: Wer den Begriff zum ersten Mal braucht,
+lernt ihn dort. Ein Konzept, das in Kapitel 8 noch einmal auftaucht, ist keine
+neue Einheit, sondern eine Wiederholung.
+
+Derselbe Slug trägt auch die Auflösung der Voraussetzungen — ein Verweis auf
+„MDF" findet das Konzept „Minimum Defense Frequency", ohne dass das Modell
+IDs kennen müsste.
+
+### Entscheidung 7 — Nachbearbeitung ist Code, nicht ein zweiter Modellaufruf
+
+Referenzauflösung, Zyklenprüfung, Dubletten-Erkennung, Themenbereichsprüfung
+und die Chart-Zuordnung sind deterministische Funktionen mit Tests. Ein
+zweites Modell zur Prüfung des ersten wäre teurer, langsamer und selbst
+fehlbar — und das Ergebnis wäre bei jedem Lauf ein anderes.
+
+Die Chart-Zuordnung ist bewusst **grob**: Ein `hand_range`-Asset gehört
+zunächst zu jedem Konzept, dem seine Sektion zugeordnet ist. T3.3/T3.4
+verfeinern das mit Spot-Metadaten. Eine KI für eine Zuordnung einzusetzen, die
+ohnehin überschrieben wird, wäre verschwendetes Kontingent.
+
+### Entscheidung 8 — Review-Endpunkte getrennt von der Content-API
+
+`/api/concepts` ist die Prüfoberfläche dieses Tasks. Die Content-API für
+Folge-APs (gezielter Abruf, Spot-Suche, Asset-Auslieferung) liegt seit T3.5
+unter `/api/content` und ist hier nicht vorweggenommen. Getrennte Namensräume,
+weil die Zielgruppen verschieden sind: hier ein Mensch beim Prüfen, dort
+Folge-APs beim Kontext-Retrieval.
+
+**Keine neuen Dependencies in T3.2.**
+
+---
+
+## ADR-0032 — Chart-Daten: geschlossene Aktionsmenge, Zellen als eigene Tabelle, Spot deterministisch aus der Unterschrift
+
+- **Datum:** 2026-08-24
+- **Status:** angenommen
+- **Kontext:** AP3.T3.3 macht aus 348 Chart-Bildern maschinenlesbare Daten.
+  Diese Zahlen sind ab hier die **einzige Wahrheitsquelle** für jede objektiv
+  prüfbare Frage im Tool (Risiko R2 im Gesamtscope). Zu entscheiden waren:
+  welche Aktionen es geben darf, wie die Matrix abgelegt wird, woher die
+  Spot-Metadaten kommen und was mit unvollständigen Ergebnissen geschieht.
+
+### Entscheidung 1 — Zehn Aktionsarten, Sizing daneben
+
+`CHART_ACTION_KINDS` ist geschlossen: `fold`, `check`, `call`, `limp`, `bet`,
+`raise`, `three_bet`, `four_bet`, `five_bet`, `all_in`.
+
+Die Liste ist **aus den tatsächlichen Bildunterschriften abgeleitet**, nicht
+erfunden. Eine Abfrage über `book_asset.caption_actions` der 348 Range-Charts
+ergibt 31 verschiedene Beschriftungen — darunter `Fold` (297×), `Call` (213×),
+`All-in` (119×), `3-bet` (67×), aber auch `Raise 2.25x`, `3Bet 10bb`,
+`Bet Full Pot`, `5-bet All-in` und `Call All-in`. Diese 31 Beschriftungen sind
+zehn Arten in unterschiedlichen Größen.
+
+Die **Größe** steht deshalb daneben als normalisierte Zeichenkette (`2.5x`,
+`10bb`, `pot`), nicht als eigene Art. Sizings sind Zahlen und lassen sich nicht
+sinnvoll aufzählen; die Art dagegen schon, und Vergleiche und Suche stützen
+sich auf sie.
+
+- **Alternative „freier Text":** verworfen. „3-bet", „3Bet 10bb" und
+  „3-bet all-in" wären drei verschiedene Aktionen, und keine Auswertung könnte
+  sie zusammenführen.
+- **Alternative „jede Beschriftung eine eigene Art":** verworfen. 31 Arten
+  heute, unbekannt viele nach dem nächsten Buch — und `raise@2.5x` vs.
+  `raise@3x` wäre ein Artunterschied statt eines Größenunterschieds.
+
+Mehrdeutigkeiten sind bewusst aufgelöst: `5-bet All-in` ist ein `five_bet` mit
+Sizing `all-in`, `Call All-in` ist ein `call`. Die Reihenfolge der Regeln in
+`parseChartAction()` erzwingt das.
+
+### Entscheidung 2 — Die Matrix als Zeilen, nicht als Blob
+
+`range_chart_cell` ist eine eigene Tabelle mit
+`(chart_id, hand, action_kind, sizing, percent)` und Index auf
+`(hand, action_kind)`. Eine Zelle mit Mischfrequenz ergibt mehrere Zeilen.
+
+Der Grund ist der Zugriff der Folge-APs: Die Spot-Suche aus T3.5 und die Drills
+aus AP7 fragen „was macht AJs in diesem Spot?". Mit der Tabelle beantwortet das
+ein Index. Mit einem `jsonb`-Blob am Chart müsste jede solche Frage das ganze
+Chart laden und parsen — bei 348 Charts × 169 Zellen ist das der Unterschied
+zwischen einer Abfrage und einem Vollscan.
+
+Größenordnung: 348 Charts × ~200 Zeilen ≈ 70 000 Zeilen. Für Postgres nichts.
+
+- **Alternative „Blob plus generierte Spalten":** verworfen; komplizierter als
+  eine Tabelle und ohne Vorteil.
+- Der Chart trägt daneben eine **Legende** (`actions`) als `jsonb`. Sie ist
+  Metadaten über die Matrix, keine abfragbare Größe.
+
+### Entscheidung 3 — Der Spot kommt aus der Unterschrift, nicht vom Modell
+
+Position, Gegenposition, Stacktiefe, Aktionsfolge und Sizings liest
+`apps/backend/src/chart/spot.ts` **deterministisch** aus dem beschreibenden
+Teil der Bildunterschrift (`SB vs BB (15bb)`, `CO 25bb (2x vs SB 3x 3-bet)`).
+Das Modell bekommt das Ergebnis als Kontext mit — es soll den Spot richtig
+einordnen —, bestimmt es aber nicht.
+
+Der Grund ist derselbe wie überall in diesem Projekt: Was sich mit einer Regel
+entscheiden lässt, entscheidet eine Regel. Ein Modell, das die Stacktiefe aus
+dem Bild schätzt, liegt gelegentlich daneben, und niemand merkt es. Was die
+Unterschrift nicht hergibt, bleibt `null` — eine benannte Lücke statt einer
+plausiblen Erfindung.
+
+### Entscheidung 4 — Unvollständig ist `failed`, nicht „teilweise gut"
+
+`validateChartMatrix()` verlangt genau 169 Zellen, jedes Blatt genau einmal,
+mindestens eine Aktion je Zelle, nur bekannte Arten, Frequenzen zwischen 0 und 100. Wird das verletzt, landet der Chart als `state = 'failed'` mit Begründung
+in `failure_reason` — er wird trotzdem gespeichert, damit sichtbar bleibt, was
+das Modell geliefert hat.
+
+Ein halb gelesenes Chart ist gefährlicher als ein fehlendes: Es sieht in jeder
+Auswertung wie ein vollständiges aus, und die fehlenden Blätter wären still
+„nicht in der Range".
+
+**Ausdrücklich nicht hier:** die Frequenzsummen-Prüfung je Hand, der
+gewichtete Abgleich gegen die Caption-Prozente und die Plausibilitätsregeln.
+Das ist T3.4. Hier geht es allein um strukturelle Vollständigkeit.
+
+### Entscheidung 5 — Ein Job je Chart, Wiederaufnahme über den Datenbestand
+
+Ein Job je Chart-Bild, nicht einer je Charge. Damit wirkt ein Retry gezielt,
+ein Abbruch verliert höchstens den laufenden Chart, und ein `rate_limit` legt
+genau diesen einen Job wieder vor.
+
+Die **Wiederaufnahme** braucht keinen eigenen Zustand: `selectCandidates()`
+wählt Assets, zu denen noch kein `range_chart` existiert. Ein zweiter Lauf ruft
+deshalb nichts noch einmal auf. Das ist robuster als eine Fortschrittsdatei —
+der Datenbestand _ist_ der Fortschritt.
+
+- **Alternative „Batch-Job über alle Charts":** verworfen. Ein Wochenlimit
+  mitten im Lauf würde die ganze Charge kosten.
+- **Alternative „Lauf-Tabelle mit Cursor":** verworfen; zwei Wahrheiten über
+  denselben Sachverhalt.
+
+### Entscheidung 6 — Bilder gehen über `renderRequest`, nicht am Template vorbei
+
+`RenderOptions` bekam eine Option `images`. Der Provider-Request entsteht damit
+weiterhin an **einer** Stelle. Das Bild selbst gehört nicht in die
+Template-Datei — es ist Nutzlast, keine Prompt-Fassung. Im Aufruf-Protokoll
+erscheint es als Kurzvermerk (ADR-0028); diese Kürzung wird nicht umgangen,
+sonst würde `llm_call_log` bei 348 Bildern um mehrere hundert Megabyte wachsen.
+
+**Keine neuen Dependencies in T3.3.**
+
+---
+
+## ADR-0033 — Modellwahl für die Chart-Digitalisierung: `claude-sonnet-5`, mit angehobener Zeitgrenze
+
+- **Datum:** 2026-08-24
+- **Status:** angenommen
+- **Kontext:** Scope-Delta 3 der AP-Datei verlangt einen Kalibrierungslauf, bevor
+  hunderte Vision-Aufrufe laufen. Eingestellt war `claude-haiku-4-5` als Rest
+  des Ping-Tests aus T2.6. Falsche Frequenzen in der Datenbank vergiften jeden
+  späteren Drill, jede Bewertung und jedes Szenario (Risiko R2) — die Wahl darf
+  deshalb nicht nach Bauchgefühl fallen.
+
+### Die Stichprobe
+
+Acht Charts, bewusst nach **Bauart** ausgewählt, nicht nach Reihenfolge.
+Sollwerte in `apps/backend/test/chart/fixtures/calibration-reference.json`:
+die Prozentwerte der Bildunterschrift für alle acht, dazu 31 von Hand aus dem
+Bild abgelesene Einzelzellen für die drei aussagekräftigsten.
+
+| HR  | Bauart                                               | Warum in der Stichprobe                                          |
+| --- | ---------------------------------------------------- | ---------------------------------------------------------------- |
+| 1   | Strukturraster ohne Aktionsfarben                    | Ehrlichkeitsprobe — 41 der 348 Bilder tragen keine Frequenzen    |
+| 7   | 3 Aktionen, dichte Mischfrequenzen (BB-Verteidigung) | dichtester Fall; hier scheitern schwache Modelle an den Anteilen |
+| 8   | 2 Aktionen, zweifarbig ohne Mischzellen              | einfachster Fall — wer den nicht liest, scheidet sofort aus      |
+| 11  | 2 Aktionen, Call/Fold statt Raise/Fold               | prüft, ob die Legende gelesen und nicht geraten wird             |
+| 96  | 3 Aktionen, Push/Limp/Fold, viele schmale Anteile    | typischer Turnier-Chart                                          |
+| 99  | 4 Aktionen **mit Sizing** (Raise 3.3x)               | prüft die Trennung von Aktionsart und Größenangabe               |
+| 300 | 3 Aktionen, Reaktion auf 3-Bet                       | Spot mit Aktionsfolge in der Unterschrift                        |
+| 348 | 4 Aktionen, extrem fold-lastig (82,9 % Fold)         | Randfall: „alles Fold" sieht hier scheinbar fast richtig aus     |
+
+### Die Messwerte
+
+| Modell             | beantwortet | vollständig | Referenzzellen | Ø Caption-Abweichung |   Dauer |  Tokens |
+| ------------------ | ----------: | ----------: | -------------: | -------------------: | ------: | ------: |
+| `claude-haiku-4-5` |         8/8 | 8/8 (100 %) |   22/32 (69 %) |          **19,9 pp** | 1 305 s | 264 888 |
+| `claude-sonnet-5`  |         4/8 |  4/8 (50 %) |   20/32 (63 %) |           **3,5 pp** | 2 841 s |  83 083 |
+
+Je Chart, die aussagekräftigen Fälle:
+
+| HR  | Haiku Zellen | Haiku Abw. | Sonnet Zellen | Sonnet Abw. |
+| --- | -----------: | ---------: | ------------: | ----------: |
+| 1   | korrekt leer |          — |  korrekt leer |           — |
+| 8   |        11/12 |     1,8 pp |     **12/12** |  **0,3 pp** |
+| 96  |          5/9 |    40,3 pp |       **7/9** |  **2,4 pp** |
+| 99  |         5/10 |    22,3 pp |       Timeout |           — |
+| 11  |            — |    22,7 pp |             — |      7,9 pp |
+| 7   |            — |    22,5 pp |       Timeout |           — |
+| 300 |            — |    24,9 pp |       Timeout |           — |
+| 348 |            — |     4,7 pp |       Timeout |           — |
+
+### Entscheidung — `claude-sonnet-5`
+
+**Entscheidend ist die Caption-Abweichung, nicht die Vollständigkeitsquote.**
+
+Die Prozentwerte der Bildunterschrift sind eine vom Bild unabhängige Wahrheit:
+Das Buch nennt sie, und sie lassen sich aus der abgelesenen Matrix
+Combo-gewichtet nachrechnen. T3.4 prüft genau das mit einer Toleranz von
+±1,5 pp.
+
+- Haiku liegt im Mittel **19,9 pp** daneben — bei fünf von sechs Charts
+  zwischen 22 und 40 pp. Mit dieser Streuung würde in T3.4 praktisch **jeder**
+  Chart durchfallen. Haiku liefert zuverlässig 169 Zellen, aber die Zahlen
+  darin sind falsch. Eine vollständige Matrix mit falschen Werten ist der
+  gefährlichste Fall überhaupt: Sie sieht in jeder Auswertung gesund aus.
+- Sonnet liegt im Mittel **3,5 pp** daneben, auf den beiden Charts mit
+  Referenzzellen bei 0,3 pp und 2,4 pp. Auf den Zellen, die es tatsächlich
+  gelesen hat, trifft es **20 von 22** (91 %); Haiku auf denselben Charts
+  21 von 31 (68 %).
+- Bei HR 8 las Sonnet zusätzlich die **Sizing-Angabe** (`raise 2.25x`) korrekt
+  mit und meldete den scheinbaren Widerspruch zur Unterschrift als offene
+  Frage, statt seine Ablesung daran anzupassen — genau das Verhalten, das
+  `partial/data-truth` verlangt.
+- Beide Modelle bestanden die Ehrlichkeitsprobe (HR 1): leere Matrix mit
+  Begründung, keine erfundene Strategie.
+
+Sonnet ist außerdem **sparsamer**: 83 083 Tokens für vier gelesene Charts
+gegen 264 888 für acht bei Haiku — je gelesenem Chart rund 19 000 gegen
+33 000 Tokens.
+
+### Das Problem, das die Entscheidung mitbringt
+
+Sonnet riss bei **vier von acht** Charts die Zeitgrenze von 600 s;
+reproduzierbar (HR 7 zweimal). Haiku brauchte für dieselben Charts unter 200 s.
+Sonnet denkt bei dichten Rastern deutlich länger.
+
+Zwei Maßnahmen:
+
+1. **Die Obergrenze für `llm.timeout_ms` steigt von 600 000 auf 1 800 000 ms**
+   (`LLM_SETTINGS_RANGES` in `packages/shared/src/settings.ts`). Sonst würde
+   die Modellwahl nicht durch Qualität, sondern durch eine Zeitgrenze
+   entschieden. Der Host-Runner muss mit demselben Wert gestartet werden — er
+   deckelt jede Anfrage auf sein eigenes `LLM_TIMEOUT_MS` (RUNBOOK 13.1).
+2. **`timeout` ist eine wiederholbare Kategorie.** Der Job geht mit Backoff
+   zurück in die Queue; ein Chart, der auch nach `maxAttempts` nicht durchkommt,
+   landet im Dead-Letter und bleibt als offener Fall sichtbar. Er wird **nicht**
+   mit einem schwächeren Modell nachgelesen — dann stünden zwei
+   Qualitätsstufen nebeneinander in derselben Tabelle.
+
+### Nebenläufigkeit
+
+`llm.max_concurrency` bleibt bei **2**. Sie greift ohnehin nicht als Beschleuniger:
+Der Job-Worker holt einen Job je Durchlauf und wartet ihn ab (ADR-0026) — die
+Semaphore der Adapter begrenzt nur, sie parallelisiert nicht. Eine höhere Zahl
+würde auf diesem geteilten Host nur mehr CLI-Prozesse erlauben, ohne den
+Massenlauf zu verkürzen.
+
+### Hochrechnung für den Vollausbau
+
+348 Charts, Sonnet, sequenziell:
+
+| Größe                        | Rechnung             | Ergebnis          |
+| ---------------------------- | -------------------- | ----------------- |
+| Tokens                       | 348 × ~19 000        | **~6,6 Mio**      |
+| Modellzeit (ohne Timeouts)   | 348 × ~110 s         | **~10,6 Stunden** |
+| Modellzeit (mit ~30 % Zähen) | zzgl. Wiederholungen | **12–17 Stunden** |
+
+Das ist der mit Abstand größte Massenlauf des Projekts. Er läuft deshalb **in
+Chargen** und ist jederzeit fortsetzbar (`selectCandidates()` wählt nur Assets
+ohne Chart-Datensatz) — ein Session- oder Wochenlimit kostet keinen bereits
+gelesenen Chart.
+
+### Prompt-Fassung
+
+Unverändert übernommen: `task/chart-digitize` mit `persona/chart-reader`,
+`partial/data-truth` und `partial/json-output`, Ausgabegrenze 16 384 Tokens,
+Bild als Vision-Baustein. Der Golden-Fall `task-chart-digitize` hält die
+Fassung fest; ändert sie sich, ist die Kalibrierung zu wiederholen.
+
+### Regressionsgrundlage
+
+Die Antworten beider Modelle zu HR 1 und HR 8 liegen als
+`apps/backend/test/chart/fixtures/recorded/` im Repo — reine Zahlen, keine
+Bildkopien. `test/chart/calibration.test.ts` misst sie ohne Live-Aufruf gegen
+dieselben Sollwerte und hält die Trefferquote des gewählten Modells fest.
+
+**Keine neuen Dependencies.**
+
+## ADR-0034 — Chart-Validierung: Toleranzen, Heuristiken als Warnung, zweiter Wert gilt
+
+- **Datum:** 2026-08-24
+- **Status:** angenommen
+- **Kontext:** T3.4 entscheidet, welche Vision-Ergebnisse zur „Wahrheit" werden.
+  Zu enge Toleranzen beanstanden korrekte Charts und erzeugen Handarbeit ohne
+  Ertrag; zu weite lassen falsche Zahlen durch und vergiften jeden späteren
+  Drill (Risiko R2). Die Zahlen sind **vorab** festgelegt und in
+  `packages/shared/src/validation.ts` (`CHART_TOLERANCES`) an einer Stelle
+  hinterlegt — sie werden nicht nachträglich an ein Ergebnis angepasst.
+
+### Prüfung 1 — Frequenzsumme je Hand: ±2,0 pp, Schweregrad `error`
+
+Die Anteile einer Zelle müssen zusammen 100 % ergeben. Rundung im Original ist
+normal: Ein Buch schreibt „33.3 / 33.3 / 33.3" und meint 100. Drei gerundete
+Drittel liegen 0,1 pp daneben, vier Viertel exakt, sechs Sechstel bis 0,2 pp.
+Auch Flächenschätzung an mehrfarbigen Zellen streut um etwa 1 pp.
+
+**±2,0 pp** liegt bequem über beidem und trotzdem weit unter jedem echten
+Lesefehler: Wer eine Aktion in einer Mischzelle übersieht, verfehlt die 100 um
+zweistellige Beträge, nicht um zwei. Der Befund ist **zellgenau** (`hand` ist
+gesetzt), damit der Zweitdurchlauf auf die betroffenen Blätter zeigen kann statt
+auf „Chart fehlerhaft".
+
+### Prüfung 2 — Caption-Abgleich: ±1,5 pp, Schweregrad `error`
+
+Die Toleranz gibt die AP-Datei vor. Sie passt zur Sache: Die Caption-Werte des
+Buchs sind auf ein bis zwei Nachkommastellen gerundet, und die combo-gewichtete
+Summe über 169 Zellen mittelt Schätzfehler einzelner Zellen stark heraus. Am
+echten Bestand bestätigt: 15 der 21 automatisch bestandenen Charts trafen ihren
+extern gedruckten Wert **auf zwei Nachkommastellen genau** — 1,5 pp ist für ein
+richtig gelesenes Chart kein enges Korsett.
+
+Die Rechnung ist **combo-gewichtet** (Paare 6, suited 4, offsuit 12, Summe
+1326). Eine ungewichtete Mittelung über 169 Zellen ist nicht etwas ungenauer,
+sondern systematisch falsch — offsuit wiegt dreimal so schwer wie suited. Bei
+einer reinen Paar-Range liegen beide Rechenwege 1,8 pp auseinander, also mehr
+als die ganze Toleranz.
+
+**Charts ohne Caption-Prozente fallen nicht durch.** Sie bekommen
+`caption-not-checkable` mit Schweregrad `info`. Ein fehlender Maßstab ist ein
+Sachverhalt, kein Fehler des Charts.
+
+> **Was der Lauf gegen den echten Bestand darüber gelehrt hat:** Nur 6 der 25
+> lesbaren Charts nennen überhaupt Prozentwerte in der Buch-Unterschrift. Für
+> die übrigen 19 ist `caption-match` blind — sie erreichen `validated`, ohne je
+> gegen eine externe Zahl gehalten worden zu sein. Bei der Sichtung fanden sich
+> unter ihnen fünf Charts mit belegbaren Abweichungen (bis 11,4 pp). Die
+> automatische Prüfung ist damit eine Vorsortierung, keine Abnahme. Konsequenz
+> im Betrieb: Die Sammelfreigabe ist der Ausnahmefall, die Sichtung im Review
+> der Regelfall. Viele Chart-Bilder tragen ihre Prozentwerte in einer **Legende
+> im Bild** — die liest ein Mensch in der Review-Ansicht, und sie wäre der
+> naheliegende Kandidat für eine vierte, automatische Prüfung in einem späteren
+> AP.
+
+### Prüfung 3 — Plausibilität: Warnungen, keine Fehler
+
+Heuristiken sind Hinweisgeber. Sie kennen die Strategie nicht, sondern nur die
+Form einer typischen Range — und eine untypische Range ist manchmal genau das,
+was das Kapitel zeigen will. Beispiel aus dem Bestand: HR 16 „A Capped Range"
+lässt AA, KK und AKs **absichtlich** aus. Jede Monotonie-Regel schlägt dort an,
+und trotzdem ist das Chart in Ordnung. Deshalb blockieren `monotonicity` und
+`outlier` keine Freigabe.
+
+`incomplete-matrix` und `empty-cell` sind dagegen `error`: Eine fehlende Zelle
+ist kein Stilfrage, sondern eine Lücke.
+
+**Monotonie mit Mindestabstand 10.** Die naive Regel „stärkere Hand nicht
+seltener aggressiv als schwächere" erzeugte im ersten Lauf 159 Warnungen über
+16 Charts — fast alle falsch. Grund: Sie flaggt `A8s` gegen `98s`, obwohl
+Suited Connectors in vielen Spots berechtigt häufiger im Spiel sind als schwache
+suited Asse. Verglichen werden deshalb nur Paare mit deutlichem Rangabstand
+(Summe der Rangdifferenzen ≥ 10, etwa `AKs` gegen `72s`). Zwischenstand bei
+Abstand 6: noch 80 Warnungen. Bei 10: 14 Warnungen über 2 Charts — und die
+Verletzungen, auf die die AP-Datei zielt (vertauschte Zeilen oder Spalten),
+haben Abstände weit darüber.
+
+**Ausreißer nur gegen Nachbarn derselben Kategorie.** Die erste Fassung verglich
+Rasternachbarn und meldete 59 Warnungen. Ein Paar liegt auf der Diagonale und
+hat ausschließlich suited- und offsuit-Nachbarn — jedes Paar sah dadurch wie ein
+Ausreißer aus. Das war ein Fehlalarm aus der Bauart des Rasters, nicht aus den
+Daten. Nach der Einschränkung: 4 Warnungen über 2 Charts. Zusätzlich braucht ein
+Befund mindestens 3 Nachbarn, deren Streuung selbst gering ist — sonst gibt es
+kein „Muster", aus dem eine Zelle fallen könnte.
+
+Die Ausgabe der Monotonie-Prüfung ist auf 10 Befunde plus eine Summenzeile
+gedeckelt. Eine Liste mit 200 Einträgen liest niemand.
+
+### Umgang mit widersprüchlichen Zweitdurchläufen: der zweite Wert gilt
+
+Der Zweitdurchlauf liest das Bild **vollständig neu**, mit einem Prompt, der die
+konkrete Beanstandung nennt. Er sieht die erste Ablesung nicht — sonst würde er
+sie bestätigen statt prüfen.
+
+- **Beide stimmen überein** (dieselben Aktionen, ≤ 5 pp Unterschied je Zelle):
+  Der Befund ist vermutlich echt. Das Chart bleibt beanstandet und geht in die
+  Review. Eine zweite Bestätigung ist ein Argument für den Befund, nicht dagegen.
+- **Sie unterscheiden sich:** Der zweite Wert gilt. Er entstand mit mehr
+  Information — der Hinweis, wo es klemmt, ist echter Kontext, kein Zwang zu
+  einem Ergebnis. Der Prompt sagt das ausdrücklich: „Das ist ein Hinweis, keine
+  Vorgabe. Ändere deine Ablesung nicht, um eine Zahl zu treffen."
+
+Die 5 pp stammen aus derselben Überlegung wie Prüfung 1: Flächenschätzung ist
+keine exakte Wissenschaft, und ein Prozentpunkt hin oder her ist keine
+Meinungsverschiedenheit.
+
+**Jeder Fall wird protokolliert.** `chart_recheck` hält Vergleichszahlen und die
+Entscheidung im Klartext fest. Ohne diese Zeile wäre „der zweite Wert gilt" ein
+stilles Überschreiben — und genau das verbietet die AP-Datei.
+
+**Von Hand korrigierte Zellen sind ausgenommen.** Der Zweitdurchlauf überspringt
+sie und zählt sie als `cells_protected`. Ein Mensch, der ins Bild geschaut hat,
+schlägt ein Modell, das dasselbe Bild noch einmal schätzt.
+
+### Warum die Validierung kein KI-Anteil ist
+
+Eine KI, die eine KI prüft, teilt deren Fehler. Frequenzsummen, Combo-Gewichte,
+Rangordnungen und Nachbarschaften sind rechenbar — und rechenbare Dinge werden
+gerechnet. Die einzige Stelle mit Modellbeteiligung ist der Zweitdurchlauf, und
+der **liest das Bild neu**, statt Zahlen zu beurteilen.
+
+### Folgen
+
+- `validated` heißt „nichts spricht dagegen", nicht „extern bestätigt". Der Weg
+  nach `approved` führt in der Regel über die Review-Ansicht.
+- Warnungen blockieren nichts, tauchen aber in Liste und Detail auf. Wer sie
+  ignoriert, tut das sehenden Auges.
+- Wird die 95-%-Schwelle verfehlt, ist das ein Befund. Die Toleranzen bleiben,
+  wo sie sind.
+
+**Keine neuen Dependencies.**
+
+## ADR-0035 — Content-API: Zuschnitt nach Listenform und Detailform, Bilder über das Backend, anteilige Spot-Bewertung
+
+- **Datum:** 2026-08-24
+- **Status:** angenommen
+- **Kontext:** AP3.T3.5 macht die Wissensbasis für AP5 bis AP8 zugänglich. Drei
+  Fragen waren zu entscheiden, und alle drei haben Folgen weit über diesen Task
+  hinaus: Wie werden Antworten geschnitten, wie kommen die Bilder zum Nutzer,
+  und wie sucht man einen Spot.
+
+### 1. Zwei Antwortformen je Gegenstand: Liste und Detail
+
+Jeder Gegenstand — Kapitel, Sektion, Konzept, Chart — hat eine **schlanke
+Listenform** und eine **vollständige Detailform**. Das ist keine Bequemlichkeit,
+sondern Kontextdisziplin.
+
+Der Grund steht in AP5: Eine Lerneinheit lädt Buchtext in einen Prompt, und ein
+Prompt hat ein Token-Budget. Würde die Kapitelübersicht Volltexte mitliefern,
+zöge ein Aufruf „welche Kapitel gibt es?" das halbe Buch in den Kontext.
+Gemessen am echten Bestand: 14 Kapitel mit 367 Sektionen. Die Übersicht ist
+knapp 4 kB groß; die Volltexte dieser Sektionen zusammen liegen im
+Megabyte-Bereich.
+
+Umgesetzt heißt das:
+
+- `book_section.body` erscheint in **genau einer** Antwort: dem Sektionsdetail.
+- Die Chartliste trägt keine `matrix`. Gemessen: 16 Charts als Liste 9,5 kB;
+  **ein** Chart als Detail 15,7 kB. Alle 16 mit Matrix wären etwa 250 kB — für
+  eine Übersicht, aus der man eines auswählen will.
+- Statt des Inhalts kommt sein **Maß** mit: `bodyChars` je Sektion,
+  `cellCount` je Chart, `sectionCount`/`conceptCount`/`chartCount` je Kapitel.
+  Damit lässt sich ein Budget planen, bevor geladen wird.
+
+**Der Zellabruf ist die konsequente Fortsetzung.**
+`/charts/:id/cells/:hand` liefert eine Zeile statt 169 — gemessen unter einem
+Zehntel der Detailantwort. AP5 und AP7 stellen damit objektiv prüfbare Fragen
+(„Was macht AKs im CO bei 40bb?"), ohne eine Matrix in den Kontext zu ziehen.
+
+**Verworfen:** ein einziger Endpunkt mit `?fields=`-Parameter. Er verlagert die
+Entscheidung zum Aufrufer, und der wählt im Zweifel „alles". Zwei benannte
+Formen sind eine Zusage, ein Feldparameter nur eine Möglichkeit.
+
+### 2. Bilder gehen durch das Backend, nicht am Host-Nginx vorbei
+
+Buchinhalt ist urheberrechtlich geschützt und bleibt auf dem privaten Server.
+Der Auslieferungsweg muss den Auth-Schutz behalten.
+
+Die Topologie aus [ADR-0016](#adr-0016--frontend-assets-direkt-vom-host-nginx-kein-frontend-container)
+liefert die **Frontend-Assets** direkt vom Host-Nginx — die sind öffentlich und
+tragen nichts Schützenswertes. Für Buchbilder gilt das nicht.
+
+**Entscheidung: Das Backend liefert sie aus**, hinter `app.requireSession`.
+
+Die Alternativen und warum sie ausscheiden:
+
+- **Nginx liefert das Bildverzeichnis direkt aus.** Verliert den Auth-Schutz
+  vollständig. Wer die URL kennt, hat das Buch. Ausgeschlossen.
+- **Nginx mit `auth_request` gegen das Backend.** Behielte den Schutz, kostet
+  aber je Bild eine zusätzliche Anfrage und verteilt die Zugriffsregel auf zwei
+  Systeme — eine davon in einer Datei, die laut RUNBOOK 8.4 noch gar nicht
+  eingespielt ist und Root braucht. Der Gewinn wäre Durchsatz, den niemand
+  misst: Es geht um einen einzelnen Prüfer, nicht um Publikumsverkehr.
+- **`X-Accel-Redirect`.** Technisch der sauberste Weg für große Dateien, setzt
+  aber denselben, noch nicht eingespielten vhost voraus. Bleibt als Option, wenn
+  der Durchsatz je einmal ein Thema wird; die Route müsste dafür nur den Header
+  statt des Puffers senden.
+
+**Caching:** `private, max-age=31536000, immutable` plus ETag und
+`vary: Cookie`. `private` und nicht `public`, weil die Auslieferung an eine
+Session gebunden ist — ein gemeinsamer Zwischenspeicher dürfte das Bild nicht
+an den Nächsten weitergeben. `immutable` mit einem Jahr, weil ein Buchbild sich
+nicht ändert: Es ist über seine Asset-ID identifiziert, ein anderes Bild bekäme
+eine andere ID.
+
+**Der ETag kommt aus dem Dateiinhalt**, nicht aus Zeitstempel und Größe. Ein
+Inhalts-Hash bleibt richtig, wenn eine Datei neu kopiert wird und dabei einen
+neuen Zeitstempel bekommt. Dass zwei identische Dateien denselben ETag
+bekommen, ist harmlos — ETags sind je URL gültig.
+
+**Pfad-Sicherheit:** Angefragt wird eine **Asset-ID**, nie ein Pfad; der Pfad
+kommt aus der Datenbank. Trotzdem prüft `safeAssetPath()` den **aufgelösten**
+Pfad gegen das Wurzelverzeichnis. Ein Pfad aus der Datenbank ist kein Beweis,
+sondern nur eine wahrscheinlichere Herkunft — und `bilder/../../etc/passwd`
+sieht als Zeichenkette harmlos aus. Geprüft wird deshalb nach `resolve()`, nicht
+davor. Abgewiesen werden zusätzlich absolute Pfade, Laufwerksbuchstaben,
+Null-Bytes und Endungen, die kein Bildformat sind.
+
+### 3. Spot-Suche: anteilige Bewertung, Stacktiefe als Bereich
+
+Die Suche ist die Grundlage der Drills in AP7 und der Handanalyse in AP8. Beide
+fragen nicht „welches Chart ist das", sondern „welches passt **hier**" — und
+die Antwort ist selten exakt.
+
+**Die Stacktiefe wird als Bereich gesucht, Vorgabe ±5 bb.** Das Buch zeigt
+Charts für 10, 15, 20, 25 und 40 bb. Wer eine Hand mit 22 bb analysiert, braucht
+das 20er-Chart; eine Gleichheitssuche gäbe ihm nichts. Innerhalb der Toleranz
+fällt die Punktzahl linear ab — exakt zählt voll, am Rand halb. Gemessen am
+Bestand: HR 11 (15 bb) trifft bei `stack=15` mit `score 1`, bei 18 mit 0,91, bei
+20 mit 0,86 und fällt bei 21 heraus.
+
+**Bewertet wird anteilig.** Jedes **angegebene** Kriterium bringt Punkte
+(Position 3, Gegenposition 2, Stacktiefe 2, Aktion 1,5, Spielform 1), das
+Ergebnis ist der erreichte Anteil. Wer nur die Position angibt, bekommt alle
+Charts dieser Position mit `score = 1`; wer vier Kriterien angibt, bekommt eine
+feinere Rangfolge. Eine feste Punktzahl über alle Kriterien würde eine grobe
+Anfrage künstlich schlecht bewerten.
+
+**Die Position schließt aus, alles andere zieht nur ab.** Passt die Position des
+Helden nicht, ist das Chart kein Treffer — die Position _ist_ der Spot. Eine
+fehlende Gegenposition oder Stacktiefe in der Unterschrift dagegen schließt
+nicht aus: Am echten Bestand nennt längst nicht jede Unterschrift alles, und ein
+Chart mit unvollständiger Beschreibung kann trotzdem das richtige sein. Solche
+Treffer landen mit niedriger Punktzahl unten, und `missed` sagt im Klartext,
+was fehlt.
+
+**Keine leere Antwort ohne Erklärung.** `coverage` steht in jeder Antwort
+(abgedeckter Stacktiefen-Bereich, vorhandene Positionen und Spielformen). Bleibt
+die Trefferliste leer, nennt `explanation` die nachweisliche Ursache — „200 bb
+(±5) liegt außerhalb des abgedeckten Bereichs von 15 bis 40 bb" statt einer
+stummen Leermenge. Und weil ein schwacher Treffer irreführender sein kann als
+keiner, weist die Erklärung auch darauf hin, wenn der beste Treffer unter 75 %
+Übereinstimmung bleibt.
+
+### Folgen
+
+- Ein Folge-AP, das Volltexte oder Matrizen braucht, muss sie **einzeln**
+  anfordern. Das ist beabsichtigt.
+- Wird der Bildabruf je zum Engpass, ist `X-Accel-Redirect` der vorgesehene
+  nächste Schritt — die Route ändert sich dabei nicht.
+- Die Gewichte der Spot-Suche stehen in `spot-search.ts` an einer Stelle
+  (`WEIGHT`). Sie sind eine Annahme über das Buch, keine Naturkonstante: Zeigt
+  sich in AP7, dass die Aktionsfolge schwerer wiegen muss, wird hier geändert.
+
+**Keine neuen Dependencies.**
+
+## ADR-0036 — Vierte Prüfung: Abgleich gegen die im Bild gedruckte Legende
+
+- **Datum:** 2026-08-24
+- **Status:** angenommen
+- **Kontext:** Der Abnahme-Report aus T3.6 hat eine Lücke offengelegt, die
+  keine der drei Prüfungen aus T3.4 schließen konnte: Der Caption-Abgleich —
+  die einzige Prüfung mit externer Wahrheit — greift nur, wenn die
+  Bildunterschrift des Buchs Prozentwerte nennt. Das tut sie bei **6 von 25**
+  lesbaren Charts. Bei der manuellen Sichtung fanden sich unter den automatisch
+  bestandenen Charts **fünf mit belegbaren Abweichungen bis 11,4 pp** (HR 3, 6,
+  16, 17, 27). Sie waren `validated`, und ohne die Sichtung wären sie
+  freigegeben worden.
+
+### Entscheidung
+
+Eine vierte Prüfung `legend-match` hält die combo-gewichteten Gesamtfrequenzen
+gegen die **im Bild gedruckte Legende** — den Kasten unter dem Raster, der jede
+Farbe benennt und ihren Gesamtanteil nennt (`Call 59.65 % / Off Range 40.35 %`).
+
+**Die Abdeckung ist der ganze Punkt.** Gemessen am Bestand nach dem
+Legenden-Nachzug:
+
+| Gegenprobe                     | Charts mit verwertbarem Wert |
+| ------------------------------ | ---------------------------- |
+| Caption-Prozente (T3.1)        | 6 von 25                     |
+| Gedruckte Legende (T3.6-fix)   | 18 von 25                    |
+| **mindestens eine von beiden** | **24 von 25**                |
+
+Aus 24 % Abdeckung werden 96 %.
+
+### Die Legende wird abgelesen, nie hergeleitet
+
+Das ist die Bedingung, unter der die Prüfung überhaupt etwas wert ist. Würde
+der Legendenwert aus der Matrix berechnet, prüfte sich die Matrix gegen sich
+selbst, und der Befund aus T3.6 wiederholte sich unbemerkt. Deshalb:
+
+- Die Legendenwerte kommen als eigenes Feld (`legendenwerte`) aus dem
+  Vision-Aufruf und stehen in eigenen Spalten (`legend_totals`,
+  `legend_present`, `legend_labels`). `legendTotalsOf()` formt sie nur um.
+- Der Prompt sagt es ausdrücklich: „Lies diese Zahlen ab. Rechne sie nicht aus."
+- Steht keine Legende im Bild, ist `legendenwerte_vorhanden = false` das
+  richtige Ergebnis. Eine geschätzte Zahl wäre es nicht.
+
+### Ein Aufruf, nicht zwei
+
+Die Legende wird **im selben Vision-Aufruf** gelesen wie die Matrix
+(Template-Fassung 2). Ein zweiter Aufruf je Chart würde den Kontingentbedarf
+des Vollausbaus verdoppeln — bei 318 offenen Charts sind das rund 7 Mio Tokens,
+die nicht zur Verfügung stehen.
+
+Für die **30 vor der Umstellung** entstandenen Charts gibt es einen einmaligen
+Nachzug (`chart.legend`, `pnpm charts:validate --legende-nachziehen`): ein
+schmaler Prompt ohne Blattliste, Ausgabegrenze 2 048 statt 32 768 Token.
+Gemessen: **6 663 Tokens und 8 Sekunden** je Chart gegen 22 586 Tokens und
+122 Sekunden für eine volle Digitalisierung — ein Viertel der Tokens, ein
+Fünfzehntel der Zeit.
+
+### Toleranz: 1,5 pp — dieselbe wie beim Caption-Abgleich
+
+Der erste Entwurf stand bei 2,0 pp mit der Begründung, die abgelesene Legende
+trage dieselbe Unsicherheit wie die Matrix. **Das war falsch.** Gedruckte
+Ziffern zu lesen (`59.65 %`) ist etwas anderes, als einen Farbanteil zu
+schätzen. Der Messfehler sitzt allein in der combo-gewichteten Summe über 169
+Zellen — und für die hat [ADR-0034](#adr-0034--chart-validierung-toleranzen-heuristiken-als-warnung-zweiter-wert-gilt)
+bereits 1,5 pp begründet.
+
+Am Bestand geprüft, in beide Richtungen:
+
+- 15 der 21 automatisch bestandenen Charts trafen ihren gedruckten Wert auf
+  ≤ 0,09 pp; HR 16 nach der Korrektur auf 0,53 pp. Alle weit innerhalb.
+- Die fünf nachweislich falsch gelesenen Charts lagen zwischen **1,81 und
+  11,39 pp**. Bei 2,0 pp wäre HR 27 (1,81 pp) durchgerutscht.
+
+Die Toleranz wurde also **verschärft**, nicht aufgeweicht — und zwar aus einem
+sachlichen Grund, nicht um die Anker zu treffen.
+
+### Gültigkeitsbedingung an den Bezugswert
+
+Eine Legende beschreibt die ganze Range; ihre Anteile ergeben zusammen 100 %.
+Tut sie das nicht, ist sie unvollständig gelesen oder im Buch selbst
+widersprüchlich — dann wird sie als `legend-not-checkable` (Schweregrad `info`)
+geführt, mit ihrer Summe im Klartext.
+
+Der reale Fall: **HR 5** druckt „2.5x 23.08 %" und daneben „Fold 0 %", obwohl
+77 % des Rasters grau sind. Die Null ist dort ein Platzhalter für „nicht Teil
+der Auswahl", keine Messung. Ohne diese Bedingung würde jedes Auswahl-Chart zu
+Unrecht beanstandet.
+
+Die Bedingung ist an den Zahlen belegt und nicht am Ergebnis ausgerichtet:
+**17 der 18 gelesenen Legenden summieren auf exakt 100,00.** Die vier
+tatsächlich falsch gelesenen Charts (HR 3, 6, 17, 27) haben alle eine Legende,
+die auf 100 summiert — sie bleiben beanstandet. Toleranz der Summe: ±2 pp für
+die Rundung zweier Nachkommastellen.
+
+### Folgen
+
+- `validated` bedeutet ab jetzt für 96 % der Charts „gegen eine externe Zahl
+  gehalten" statt „nichts spricht dagegen". Die Sammelfreigabe wird damit
+  vertretbar, wo sie es vorher nicht war.
+- Die vier Prüfungen bleiben unabhängig: Frequenzsumme rechnet in der Matrix,
+  Caption prüft gegen den Buchtext, Legende gegen das Bild, Plausibilität gegen
+  Pokerwissen. Zwei externe Quellen sind besser als eine — ein Chart, das gegen
+  beide besteht, ist zweifach belegt.
+- Charts ohne jede Gegenprobe (1 von 25) bleiben ein Fall für die manuelle
+  Sichtung. Das ist ehrlicher als eine Prüfung, die nichts prüft.
+
+**Keine neuen Dependencies.**

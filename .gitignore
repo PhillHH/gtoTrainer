@@ -28,6 +28,9 @@ coverage/
 data/book-source/*
 !data/book-source/README.md
 
+# Import-Reports (AP3.T3.1) - enthalten Kapitel- und Sektionstitel aus dem Buch.
+data/reports/
+
 # Editor / OS
 .DS_Store
 Thumbs.db

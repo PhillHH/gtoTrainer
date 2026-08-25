@@ -1042,10 +1042,696 @@ docker exec gto-postgres psql -U gto -d gto -c \
   "delete from job_queue where status = 'done' and finished_at < now() - interval '30 days';"
 ```
 
-## 11. Noch nicht abgedeckt
+## 11. Buchimport (AP3.T3.1)
+
+### 11.1 Voraussetzung: die Buchquellen liegen bereit
+
+`data/book-source/` ist git-ignorierter **Pflicht-Input des Nutzers**. Kein
+Agent und kein Skript legt die Dateien an.
+
+```bash
+ls data/book-source/
+# erwartet: die Buch-Markdown-Datei (*.md) und die Bilder pXXXX_YY.jpeg
+# Die Bilder duerfen flach liegen ODER in genau einem Unterverzeichnis.
+```
+
+Fehlt etwas, bricht der Import **vor jeder Verarbeitung** ab und sagt, was:
+
+```
+[book:import] Abbruch - Vorbedingung nicht erfuellt.
+Buchquellen-Verzeichnis fehlt: /home/phillip/gto/data/book-source existiert nicht. …
+Buchquellen-Verzeichnis ist leer: … enthaelt ausser der README nichts. …
+Buch-Markdown fehlt: in … liegt keine *.md-Datei (ausser der README). …
+Bilddateien fehlen: weder in … noch in einem Unterverzeichnis liegen Bilder …
+```
+
+Was tun: die Quellen nach `data/book-source/` legen (Struktur siehe
+`data/book-source/README.md` und INTERFACES Abschnitt 5), dann erneut starten.
+Es gibt bewusst keinen Fallback und keine Beispieldaten.
+
+### 11.2 Trockenlauf — analysieren, ohne zu schreiben
+
+```bash
+pnpm book:import --dry-run
+```
+
+Braucht **keine** laufende Datenbank. Liest die Quellen, zerlegt sie, schreibt
+den Report und rührt Postgres nicht an. Der richtige erste Schritt nach dem
+Ablegen neuer Quellen.
+
+### 11.3 Import ausführen
+
+```bash
+pnpm db:up          # Postgres muss laufen
+pnpm db:migrate     # einmalig, legt book_chapter/book_section/book_asset an
+pnpm book:import
+```
+
+Weitere Schalter: `--source <verzeichnis>` (abweichende Quelle),
+`--out <datei>` (abweichender Reportpfad).
+
+Der Lauf ist **idempotent**: Ein zweiter Import über unveränderte Quellen legt
+nichts an, ändert nichts und löscht nichts (alle Zeilen „unverändert").
+Er setzt außerdem **keinen KI-Aufruf** ab — `llm_call_log` wächst nicht.
+
+### 11.4 Den Report lesen
+
+Terminal-Kurzfassung plus `data/reports/book-import.md` (git-ignoriert, weil er
+Buchinhalt enthält).
+
+| Abschnitt             | Worauf zu achten ist                                                                                      |
+| --------------------- | --------------------------------------------------------------------------------------------------------- |
+| Zählstände            | **3 Teile, 14 Kapitel.** Andere Zahlen heißen: die Struktur wurde nicht erkannt, nicht „das Buch ist so". |
+| Assets je Typ         | `hand_range` ist die Zahl, die T3.3 verarbeitet. Sie sollte etwa der Hälfte aller Bilder entsprechen.     |
+| Unterschriften        | „ohne erkennbare Struktur" und „unsichere Klassifikationen" — beides ist Handarbeit für T3.3.             |
+| Datenbank-Wirkung     | Beim zweiten Lauf müssen alle Zeilen in „unverändert" stehen.                                             |
+| Fehlende Bilddateien  | Markdown verweist auf ein Bild, das nicht da ist → Quelle unvollständig.                                  |
+| Verwaiste Bilddateien | Bild liegt da, wird aber nirgends referenziert → meist ein Exportfehler.                                  |
+| Nummerierung          | Lücken je Etikett (`Hand Range`, `Table`, …). „keine" heißt: nichts übersehen.                            |
+| Strukturmeldungen     | Leer ist gut. `chapter-count`, `part-count`, `toc-missing` sind echte Befunde.                            |
+
+### 11.5 Zahlen von Hand nachsehen
+
+```bash
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select part_number, chapter_number, title from book_chapter order by chapter_number"
+
+# Was geht in T3.3 durch die Vision-Pipeline?
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select asset_type, count(*) from book_asset where removed_at is null group by asset_type"
+
+# Unsichere Faelle ansehen
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select relative_path, classification_rule from book_asset
+   where classification_confidence = 'uncertain' order by ordinal limit 20"
+```
+
+### 11.6 Typische Fehlerbilder
+
+| Symptom                                          | Ursache                                                | Abhilfe                                                                 |
+| ------------------------------------------------ | ------------------------------------------------------ | ----------------------------------------------------------------------- |
+| `Mehrdeutige Bildablage: N Unterverzeichnisse …` | mehr als ein bildhaltiges Unterverzeichnis             | überzählige Verzeichnisse entfernen oder Bilder zusammenlegen           |
+| `Mehrdeutige Buchquelle: N Markdown-Dateien`     | zweite `*.md` im Quellverzeichnis                      | nur die Buch-Markdown dort belassen                                     |
+| Report meldet `chapter-count`                    | Kapitelstruktur nicht vollständig erkannt              | Inhaltsverzeichnis der Quelle prüfen (`# CONTENTS`, `**PART n)`-Zeilen) |
+| viele „verwaiste Bilddateien"                    | Export hat Bilder erzeugt, die im Text nicht vorkommen | Quelle neu exportieren oder als bekannt hinnehmen                       |
+| `relation "book_chapter" does not exist`         | Migration `0002` nicht eingespielt                     | `pnpm db:migrate`                                                       |
+
+## 12. Konzept-Taxonomie (AP3.T3.2)
+
+### 12.1 Voraussetzungen
+
+```bash
+# Die Buchstruktur muss importiert sein (Abschnitt 11).
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select count(*) from book_section"     # erwartet: > 0
+
+# Der Host-Runner muss laufen (Abschnitt 9.2) - sonst scheitert jeder
+# CLI-Aufruf mit Kategorie auth.
+# Der Job-Worker laeuft im Backend-Prozess (ADR-0026):
+docker compose ps backend
+```
+
+Die Generierung kostet **echtes Kontingent**: ein Aufruf je Kapitelteil, für
+dieses Buch 53 Aufrufe mit je ~4 000 Token Eingabe. Vorher Modell und
+`llm.max_concurrency` in den Einstellungen prüfen (Abschnitt 10.5).
+
+> **Zeitgrenzen vorher hochsetzen — sonst laufen alle Aufrufe ins Timeout.**
+> Ein Aufruf braucht bei Sonnet deutlich mehr als die 120 s aus der
+> Standardkonfiguration. **Drei** Stellen müssen passen, und
+> die Einstellungen-Seite allein genügt nicht:
+>
+> | Stelle                                | Wirkung                                                                     |
+> | ------------------------------------- | --------------------------------------------------------------------------- |
+> | `llm.timeout_ms` (Einstellungen / DB) | Zeitgrenze, die der Adapter mitschickt                                      |
+> | `LLM_TIMEOUT_MS` des **Host-Runners** | **deckelt** jede Anfrage (`maxTimeoutMs`) — unabhängig von der DB           |
+> | `WORKER_STALE_AFTER_MS` des Backends  | muss über der Zeitgrenze liegen, sonst wird ein laufender Job erneut geholt |
+>
+> ```bash
+> # 1. Einstellung in der Datenbank (oder über die Einstellungen-Seite)
+> docker exec -i gto-postgres psql -U gto -d gto -c \
+>   "update config set value='600000'::jsonb where key='llm.timeout_ms'"
+>
+> # 2. Host-Runner mit demselben Wert NEU starten (Abschnitt 9.2)
+> LLM_TIMEOUT_MS=600000 pnpm llm:runner
+>
+> # 3. .env: WORKER_STALE_AFTER_MS deutlich darüber, dann Backend neu erzeugen
+> docker compose up -d backend
+> ```
+>
+> **Ausgabegrenze der CLI: sie steht im Code, nicht in der Umgebung.** Die
+> Claude CLI bricht ab, wenn die Antwort ihr Token-Limit reißt
+> (`API Error: Claude's response exceeded the N output token maximum`) —
+> Kategorie `invalid`, und `invalid` ist **nicht wiederholbar**, es hilft also
+> kein Retry.
+>
+> Maßgeblich ist das `maxTokens` des jeweiligen Job-Typs: Der CLI-Adapter setzt
+> daraus je Aufruf `CLAUDE_CODE_MAX_OUTPUT_TOKENS`
+> (`apps/backend/src/llm/invocation.ts`) und **überschreibt damit, was in der
+> Umgebung des Host-Runners steht**. Wer die Grenze anheben will, ändert sie im
+> Job-Typ, nicht beim Runner:
+>
+> | Job-Typ           | `maxTokens` | Datei                                  |
+> | ----------------- | ----------: | -------------------------------------- |
+> | `concept.extract` |      16 384 | `src/jobs/handlers/concept-extract.ts` |
+> | `chart.digitize`  |      32 768 | `src/jobs/handlers/chart-digitize.ts`  |
+>
+> Für die Chart-Digitalisierung aus T3.3 ist zusätzlich eine Zeitgrenze von
+> **1 800 000 ms** nötig, nicht 600 000 (ADR-0033).
+>
+> ```bash
+> LLM_TIMEOUT_MS=1800000 pnpm llm:runner
+> ```
+>
+> **Reihenfolge beachten:** Den Runner _vor_ dem Einplanen der Jobs neu
+> starten. Wer ihn mittendrin neu startet, macht das Socket kurz unerreichbar —
+> das ergibt Kategorie `auth`, und `auth` ist nicht wiederholbar: Alle
+> wartenden Jobs landen sofort im Dead-Letter (Abschnitt 10.3).
+
+### 12.2 Trockenlauf: wie viele Jobs entstehen?
+
+```bash
+pnpm concepts:generate --plan
+# je Kapitel: Sektionen, Zeichen, Anzahl Teillaeufe - schreibt nichts
+```
+
+Ein Job verarbeitet **einen Kapitelteil** (Zeichenbudget 15 000). Lange
+Kapitel zerfallen in mehrere Teile; jeder Teil ist einzeln wiederholbar.
+
+### 12.3 Generierung starten
+
+```bash
+pnpm concepts:generate                # alle 14 Kapitel
+pnpm concepts:generate --chapter 7    # nur ein Kapitel nachziehen
+```
+
+Die Jobs landen in der Queue; der Worker arbeitet sie **nacheinander** ab und
+gibt je Teillauf eine Zeile ins Serverprotokoll:
+
+```bash
+docker logs -f gto-backend | grep Konzepte
+# Konzepte Kapitel 7 Teil 1: 9 neu, 2 Dubletten, 0 verworfen, …
+```
+
+Bei `rate_limit` legt die Queue den Job automatisch wieder vor — der Lauf
+bleibt stehen, geht aber nicht verloren. Fortschritt beobachten:
+
+```bash
+pnpm concepts:generate --report
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select status, count(*) from job_queue where job_type='concept.extract' group by status"
+```
+
+### 12.4 Chart-Zuordnung nachziehen
+
+```bash
+pnpm concepts:generate --charts
+```
+
+Verknüpft `hand_range`-Assets mit Konzepten über die gemeinsame Sektion.
+**Ohne KI-Aufruf**, beliebig oft wiederholbar (legt keine Dubletten an). Nach
+jedem Generierungslauf einmal ausführen.
+
+### 12.5 Review durchführen
+
+Oberfläche: **Konzepte** in der Hauptnavigation.
+
+1. **Auffälligkeiten oben** zuerst abarbeiten — sie stehen bewusst über der
+   Liste:
+   - _Offene Voraussetzung_ — das Modell hat einen Titel genannt, zu dem es
+     kein Konzept gibt. Entweder das Konzept fehlt (nachtragen) oder der
+     Verweis war falsch (im Formular korrigieren).
+   - _Zyklus_ — sollte nicht vorkommen; der Import speichert solche Kanten gar
+     nicht erst. Taucht einer auf, wurde von Hand in die Datenbank geschrieben.
+   - _Ohne Sektion_ — das Konzept hängt an keinem Buchtext. AP5 könnte dazu
+     nichts laden.
+   - _Kapitel ohne Konzepte_ — Teillauf fehlgeschlagen; mit
+     `--chapter <n>` nachziehen.
+2. **Bearbeiten** öffnet Titel, Kurzdefinition, Themenbereich, Level und
+   Voraussetzungen. Eine Voraussetzung, die einen Zyklus schlösse, wird mit
+   Begründung abgelehnt.
+3. **Bestätigen** einzeln oder je Kapitel (`draft` → `approved`). Erst
+   `approved` ist für AP4 verbindlich.
+
+### 12.6 Konzepte nachträglich korrigieren
+
+```bash
+# Was steht drin?
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select c.title, c.topic_area, c.state, b.chapter_number
+   from concept c join book_chapter b on b.id = c.chapter_id
+   order by b.chapter_number, c.ordinal"
+
+# Verteilung je Themenbereich (die Achsen des Skill-Ratings in AP4)
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select topic_area, count(*) from concept group by topic_area order by 2 desc"
+
+# Ein Konzept wieder auf draft setzen (Notweg; normal geht das ueber die UI)
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "update concept set state='draft' where title = 'Pot Odds'"
+```
+
+Ein **erneuter** Generierungslauf legt kein bereits vorhandenes Konzept noch
+einmal an (Dubletten-Erkennung über den normalisierten Titel). Wer wirklich
+neu beginnen will, leert die Tabellen — dabei gehen bestätigte Korrekturen
+verloren:
+
+```bash
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "truncate table concept_chart, concept_section, concept_prerequisite, concept cascade"
+```
+
+### 12.7 Typische Fehlerbilder
+
+| Symptom                                     | Ursache                                       | Abhilfe                                                        |
+| ------------------------------------------- | --------------------------------------------- | -------------------------------------------------------------- |
+| Jobs gehen sofort auf `dead`, kein Aufruf   | Backend kennt den Job-Typ nicht (alter Stand) | `docker compose build backend && docker compose up -d backend` |
+| `Kapitel N existiert nicht`                 | Buchimport fehlt                              | `pnpm book:import` (Abschnitt 11)                              |
+| Alle Aufrufe scheitern mit Kategorie `auth` | Host-Runner läuft nicht                       | Abschnitt 9.2                                                  |
+| Viele Konzepte „ohne Sektion"               | Modell hat Sektionsschlüssel nicht übernommen | Betroffenes Kapitel mit `--chapter` neu laufen lassen          |
+| Gesamtzahl deutlich unter 120               | Zerlegung zu grob                             | Zielanzahl im Template schärfen, Kapitel neu laufen lassen     |
+| `Die Antwort war kein JSON`                 | Antwort abgeschnitten (`maxTokens` zu knapp)  | `maxTokens` im Job-Typ erhöhen                                 |
+
+## 13. Chart-Digitalisierung (AP3.T3.3)
+
+### 13.1 Voraussetzungen
+
+Dieselben drei Zeitgrenzen wie bei der Konzept-Generierung (Abschnitt 12.1) —
+ein Vision-Aufruf über ein 13×13-Raster dauert **1 bis 3 Minuten** und
+erzeugt bis zu 50 000 Tokens:
+
+```bash
+# 1. Zeitgrenze in der Datenbank
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "update config set value='1800000'::jsonb where key='llm.timeout_ms'"
+
+# 2. Host-Runner mit derselben Grenze neu starten (die Ausgabegrenze kommt
+#    je Aufruf aus dem Job-Typ, nicht von hier)
+LLM_TIMEOUT_MS=1800000 pnpm llm:runner
+
+# 3. WORKER_STALE_AFTER_MS in der .env deutlich darüber, dann Backend erneuern
+docker compose up -d backend
+```
+
+> **Reihenfolge:** erst Runner, dann Jobs einplanen. Ein Runner-Neustart
+> mitten im Lauf macht das Socket kurz unerreichbar; das ergibt Kategorie
+> `auth`, und `auth` ist nicht wiederholbar — alle wartenden Jobs landen sofort
+> im Dead-Letter.
+
+Außerdem muss der Buchimport gelaufen sein (Abschnitt 11) — die Chart-Bilder
+kommen aus `data/book-source/`, die Auswahl aus `book_asset`.
+
+> **Der Container braucht die Buchbilder.** Der Job-Worker läuft im
+> Backend-Container (ADR-0026), die Bilder liegen auf dem Host. Compose hängt
+> `data/book-source/` deshalb **read-only** nach `/app/data/book-source` ein und
+> setzt `BOOK_SOURCE_DIR` darauf. Fehlt das, landen alle Chart-Jobs mit
+> `ConfigError: Repo-Wurzel nicht gefunden` im Dead-Letter. Nach einer Änderung
+> an `docker-compose.yml` den Container neu erzeugen:
+>
+> ```bash
+> docker compose up -d backend
+> docker exec gto-backend ls /app/data/book-source | head -3   # muss Bilder zeigen
+> ```
+
+### 13.2 Trockenlauf und Kostenschätzung
+
+```bash
+pnpm charts:digitize --dry-run
+# hand_range-Assets gesamt / bereits digitalisiert / unsicher übersprungen
+# in diesem Lauf: N
+# Schätzung: ~N×12 000 Tokens, ~N×1,5 Minuten
+```
+
+Der Trockenlauf setzt **keinen** Aufruf ab und plant nichts ein. Er ist vor
+jedem größeren Lauf Pflicht — 348 Charts sind der größte Massenlauf des
+Projekts.
+
+### 13.3 Kalibrierung — verbindlich vor dem Massenlauf
+
+```bash
+pnpm charts:calibrate --model claude-haiku-4-5 --model claude-sonnet-5
+```
+
+Digitalisiert die Stichprobe aus
+`apps/backend/test/chart/fixtures/calibration-reference.json` mit **jedem**
+Modell und misst gegen von Hand geprüfte Sollwerte: Vollständigkeitsquote,
+Trefferquote der Referenzzellen, Abweichung gegen die Caption-Prozente, Dauer,
+Tokens.
+
+Der Lauf schreibt **nicht** in `range_chart` — er entscheidet nur die
+Modellwahl. Ergebnis unter `data/reports/chart-calibration/ergebnis.md`
+(git-ignoriert). Die getroffene Wahl steht als [ADR-0033](./DECISIONS.md).
+
+**Ein Massenlauf ohne vorherige Kalibrierung ist ein Fehler**, auch wenn er
+technisch durchläuft: Ein falsches Modell schreibt falsche Frequenzen in die
+Datenbank, und die gelten ab da als Wahrheit.
+
+### 13.4 Massenlauf in Chargen
+
+```bash
+pnpm charts:digitize --limit 10            # erste Charge, Ergebnis sichten
+pnpm charts:digitize --status
+pnpm charts:digitize --limit 50            # hochfahren
+pnpm charts:digitize                       # Rest
+```
+
+Weitere Eingrenzungen: `--chapter <n>`, `--asset <uuid>` (mehrfach),
+`--model <id>` (überschreibt die Einstellung für diesen Lauf).
+
+Der Worker arbeitet die Jobs **nacheinander** ab (ADR-0026); bei 1–3 Minuten je
+Chart dauert der Vollausbau entsprechend lange. Das ist gewollt: Ein Job je
+Chart heißt, dass ein Abbruch höchstens den laufenden Chart verliert.
+
+Fortschritt beobachten:
+
+```bash
+docker logs -f gto-backend | grep Chart
+# Chart Hand Range 96 (p0307_01.jpeg): 169/169 Zellen, vollstaendig, 0 unsichere Stellen …
+pnpm charts:digitize --status
+```
+
+Im Frontend läuft der Fortschritt über den SSE-Kanal aus T2.5
+(`GET /api/jobs/events`, Abschnitt 10.4).
+
+### 13.5 Fortsetzen nach Abbruch oder Kontingentgrenze
+
+**Nichts weiter zu tun als den Lauf erneut zu starten.**
+
+```bash
+pnpm charts:digitize
+```
+
+`selectCandidates()` wählt nur Assets **ohne** Chart-Datensatz. Ein durch ein
+Session- oder Wochenlimit gestoppter Lauf setzt damit genau dort fort, wo er
+aufhörte; für bereits Erledigtes wird kein Kontingent verbrannt.
+
+Ein `rate_limit`-Fehler beendet die Charge **nicht**: Der betroffene Job geht
+mit Backoff zurück in die Queue (Abschnitt 10). Wer die Charge wirklich
+anhalten will, stoppt den Worker:
+
+```bash
+docker compose stop backend      # Jobs bleiben in der Queue liegen
+docker compose start backend     # macht weiter
+```
+
+Einen einzelnen Chart neu lesen lassen:
+
+```bash
+pnpm charts:digitize --asset <uuid> --redo
+```
+
+### 13.6 Ergebnis lesen
+
+```bash
+# Zustandsverteilung - in T3.3 gibt es nur raw und failed
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select state, count(*) from range_chart group by state"
+
+# Unvollstaendige Matrizen mit Grund
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select a.file_name, c.cell_count, left(c.failure_reason, 80)
+   from range_chart c join book_asset a on a.id = c.asset_id
+   where c.state = 'failed' order by a.ordinal"
+
+# Ein Chart im Detail
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select hand, action_kind, sizing, percent from range_chart_cell
+   where chart_id = '<uuid>' and hand in ('AA','AJs','72o') order by hand"
+```
+
+**In diesem Task steht kein Chart auf `approved`.** Die Freigabe hängt an der
+Validierung aus T3.4 — vorher sind die Zahlen ungeprüfte Modellausgabe.
+
+### 13.7 Typische Fehlerbilder
+
+| Symptom                                                | Ursache                                        | Abhilfe                                                        |
+| ------------------------------------------------------ | ---------------------------------------------- | -------------------------------------------------------------- |
+| Alle Jobs `dead`, Kategorie `invalid`, „8192 output"   | CLI-Ausgabegrenze zu niedrig                   | Runner mit `CLAUDE_CODE_MAX_OUTPUT_TOKENS=32000` neu starten   |
+| Jobs `dead` mit `kein verarbeitbares hand_range`       | Asset ist `table`/`diagram` oder unsicher      | richtig so — nur `hand_range`/`certain` wird verarbeitet       |
+| Viele Charts `failed`, `cell_count` < 169              | Modell liest die Matrix nicht vollständig      | Modell wechseln (`--model`), Kalibrierung wiederholen          |
+| Charts mit `cell_count = 0` und Hinweis in `uncertain` | Bild ist ein Strukturraster ohne Aktionsfarben | korrekt — 41 der 348 Bilder tragen keine Frequenzen            |
+| Lauf bricht mit `rate_limit` ab                        | Session- oder Wochenlimit                      | nichts tun; Queue legt wieder vor, sonst später erneut starten |
+| `llm_call_log` wächst stark                            | Bilder werden **nicht** protokolliert          | Prompt-Kürzung greift (ADR-0028); nur Textteil wächst          |
+
+## 14. Chart-Validierung und Review (AP3.T3.4)
+
+### 14.1 Validierung starten
+
+Die drei Prüfungen sind deterministischer Code — **kein Kontingent, kein
+Runner, keine Wartezeit**. Sie laufen auf dem Host gegen die Datenbank:
+
+```bash
+cd apps/backend
+pnpm charts:validate              # alle raw/validated Charts pruefen
+pnpm charts:validate --alle       # freigegebene mitpruefen (Befunde nachziehen)
+pnpm charts:validate --status     # nur Zaehlstaende, ohne zu schreiben
+pnpm charts:validate --limit 20   # Teillauf
+```
+
+> **`--alle` braucht man, sobald eine Prüfung hinzukommt.** Freigegebene Charts
+> werden im Normallauf nicht angefasst; ihre Befunde stammen dann noch aus der
+> Zeit vor der neuen Prüfung. Der Zustand ändert sich dadurch nicht — eine
+> Freigabe wird nie zurückgenommen —, nur die Befundliste wird aktuell.
+
+Der Lauf ist wiederholbar. `approved`, `unusable` und `failed` bleiben
+unangetastet — eine Freigabe wird nicht zurückgenommen.
+
+Einzelne Heuristiken abschalten (etwa, um die Warnungslage zu vergleichen):
+
+```bash
+pnpm charts:validate --no-monotonie --no-ausreisser --no-legende
+```
+
+Das ändert nur, was gemeldet wird. Ob ein Chart als bestanden gilt, hängt
+ausschließlich an `error`-Befunden.
+
+### 14.2 Legende nachziehen (einmalig, AP3.T3.6-fix)
+
+Charts, die **vor** Fassung 2 des Digitalisierungs-Templates entstanden sind,
+tragen keine gelesene Legende. Neue Charts bekommen sie im selben Vision-Aufruf
+wie die Matrix; für die alten gibt es einen schmalen Nachzug:
+
+```bash
+cd apps/backend
+pnpm charts:validate --legende-nachziehen        # alle offenen
+pnpm charts:validate --legende-nachziehen 10     # hoechstens 10
+```
+
+Der Aufruf ist klein: kein Raster, keine Blattliste, Ausgabegrenze 2 048 statt
+32 768 Token. Gemessen am ersten Lauf: **6 663 Tokens und 8 Sekunden je Chart**
+gegen 22 586 Tokens und 122 Sekunden für eine volle Digitalisierung. 25 Charts
+liefen in fünf Minuten durch.
+
+Der Job schreibt nur `legend_totals`, `legend_present` und `legend_labels` und
+stößt danach die Validierung an. **Die Matrix bleibt unangetastet.** Charts, die
+bereits eine Legende haben, lehnt er ab — Kontingent geht nur in Offenes.
+
+Was danach in der Datenbank steht:
+
+```bash
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select a.caption_number, c.legend_present, c.legend_labels
+     from range_chart c join book_asset a on a.id = c.asset_id
+    order by 1"
+```
+
+> **Eine Legende, die nicht auf 100 % summiert, ist als Bezugswert unbrauchbar**
+> und wird als `legend-not-checkable` geführt. Realer Fall: HR 5 druckt
+> „2.5x 23.08 %" und „Fold 0 %" neben einem zu 77 % grauen Raster. Das ist kein
+> Lesefehler, sondern eine Eigenheit des Buchs.
+
+### 14.2a Zweitdurchlauf auslösen
+
+Verarbeitet **ausschließlich** Charts mit mindestens einem `error`-Befund. Der
+Job prüft das selbst noch einmal und verweigert sich sonst — ein Tippfehler im
+Aufruf kostet kein Kontingent.
+
+```bash
+# Voraussetzung: Host-Runner laeuft mit angehobener Zeitgrenze (13.1)
+pnpm charts:validate --recheck        # alle beanstandeten
+pnpm charts:validate --recheck 5      # hoechstens 5
+```
+
+Fortschritt verfolgen:
+
+```bash
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select status, count(*) from job_queue where job_type='chart.recheck' group by status"
+```
+
+Rechnen Sie mit **3 bis 6 Minuten je Chart**. Nach dem Zweitdurchlauf laufen
+die Prüfungen automatisch erneut; das Ergebnis steht in `chart_recheck`:
+
+```bash
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select a.caption_number, r.cells_agreed, r.cells_changed, r.cells_protected, r.decision
+     from chart_recheck r join range_chart c on c.id=r.chart_id
+     join book_asset a on a.id=c.asset_id order by 1"
+```
+
+> **Wenn alle Recheck-Jobs sofort mit `UnknownJobTypeError` sterben:** Der
+> Backend-Container läuft noch mit einem Build ohne den Job-Typ.
+> `docker compose up -d --build backend`, tote Jobs löschen, neu einplanen.
+> Ein Backend-Neustart ist gefahrlos, solange keine Jobs laufen — anders als
+> ein Runner-Neustart (13.1).
+
+### 14.3 Review durchführen
+
+`/charts` im Frontend, angemeldet. Links das Original-Bild, rechts die gelesene
+Matrix als 13×13-Raster; beanstandete Zellen sind umrandet, korrigierte
+gestrichelt. Unter den Befunden steht die Gegenüberstellung „gelesen
+(combo-gewichtet)" gegen „Bildunterschrift".
+
+**Was beim Sichten tatsächlich weiterhilft:** Viele Chart-Bilder tragen unten
+eine **Legende mit Prozentwerten** („Call 59.65 % / Fold 40.35 %"), auch wenn
+die Buch-Unterschrift keine nennt. Diese Zahl gegen die Spalte „gelesen"
+halten — das ist die verlässlichste Einzelprüfung, die ein Mensch hier machen
+kann, und sie deckt Fälle auf, die `caption-match` nicht sehen kann.
+
+Eine Zelle korrigieren: im Raster anklicken, Aktionen als je eine Zeile
+`art [sizing] prozent` eintragen, speichern. Die Korrektur wird als `manual`
+mit Zeitpunkt vermerkt, danach läuft die Prüfung automatisch erneut. Weder ein
+späterer Validierungslauf noch ein Zweitdurchlauf überschreibt sie.
+
+Freigabe einzeln über **Freigeben**, oder für alle geprüften Charts über **Alle
+geprüften freigeben**.
+
+> **Die Sammelfreigabe ist der Ausnahmefall.** `validated` heißt nur, dass die
+> automatischen Prüfungen nichts gefunden haben — und `caption-match` greift
+> nur bei Charts, deren Unterschrift Prozentwerte nennt (am aktuellen Bestand:
+> 6 von 25). Wer alles auf einmal freigibt, erklärt ungeprüfte Zahlen zur
+> Wahrheit. Das ist genau Risiko R2.
+
+### 14.4 Chart als unbrauchbar markieren
+
+Im Detail unter **Unbrauchbar**: Begründung eintragen, markieren. Die Begründung
+ist Pflicht — ein leeres Feld lehnt das Backend mit `400` ab. Das ist der von
+der DoD zugelassene Rest, und er muss benannt sein, nicht nur gezählt.
+
+Typischer Fall aus dem ersten Lauf: HR 31 — das Modell hat die Legende
+vertauscht und rote Zellen durchgängig als `call` gelesen. Weil die
+Unterscheidung im Datensatz nicht mehr enthalten ist, hilft keine zellweise
+Korrektur; das Chart braucht eine erneute Digitalisierung.
+
+### 14.5 Zählstände und Approved-Quote
+
+```bash
+pnpm charts:validate --status
+```
+
+Die Quote bezieht sich auf **alle** `hand_range`-Assets, nicht auf die bereits
+digitalisierten — sonst sähe ein halb gelaufener Massenlauf gut aus.
+
+Zustandsverteilung direkt aus der Datenbank:
+
+```bash
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select state, count(*) from range_chart group by state order by state"
+
+docker exec -i gto-postgres psql -U gto -d gto -c \
+  "select check, severity, count(*) from chart_finding group by 1,2 order by 1,2"
+```
+
+## 15. Content-API prüfen (AP3.T3.5)
+
+Alle Endpunkte sind auth-geschützt und **nur lesend** — ein Prüflauf kann nichts
+kaputt machen und kostet kein Kontingent.
+
+### 15.1 Anmelden und Endpunkte abklopfen
+
+```bash
+B=http://127.0.0.1:3010
+curl -s -c cj.txt "$B/api/auth/csrf" > /dev/null
+TOK=$(grep gto_csrf cj.txt | awk '{print $7}')
+curl -s -b cj.txt -c cj.txt -X POST "$B/api/auth/login" \
+  -H 'content-type: application/json' -H "x-csrf-token: $TOK" \
+  -d '{"username":"<benutzer>","password":"<passwort>"}'
+
+# Kapitel, Sektionen, eine einzelne Sektion
+curl -s -b cj.txt "$B/api/content/chapters" | head -c 400
+curl -s -b cj.txt "$B/api/content/chapters/7/sections" | head -c 400
+curl -s -b cj.txt "$B/api/content/sections/ch07/bet-sizing" | head -c 400
+
+# Konzepte und Lernpfad
+curl -s -b cj.txt "$B/api/content/concepts?chapter=3"
+curl -s -b cj.txt "$B/api/content/concepts/learning-path"
+
+# Charts und eine einzelne Zelle
+curl -s -b cj.txt "$B/api/content/charts?chapter=1"
+curl -s -b cj.txt "$B/api/content/charts/<uuid>/cells/AKs"
+
+# Spot-Suche
+curl -s -b cj.txt "$B/api/content/spots?position=CO&stack=40"
+```
+
+> **Schnelltest des Zugriffsschutzes:** Dieselben Pfade **ohne** `-b cj.txt`
+> müssen alle `401` liefern — auch der Bildabruf.
+>
+> ```bash
+> curl -s -o /dev/null -w '%{http_code}\n' "$B/api/content/chapters"
+> ```
+
+### 15.2 Bilder und Caching prüfen
+
+```bash
+# Header ansehen
+curl -s -D - -o /dev/null -b cj.txt "$B/api/content/assets/<asset-uuid>/image"
+
+# Bedingter Abruf: muss 304 ohne Nutzlast liefern
+ETAG=$(curl -s -D - -o /dev/null -b cj.txt "$B/api/content/assets/<asset-uuid>/image" \
+       | grep -i '^etag' | tr -d '\r' | cut -d' ' -f2-)
+curl -s -o /dev/null -w '%{http_code} %{size_download}\n' \
+  -b cj.txt -H "if-none-match: $ETAG" "$B/api/content/assets/<asset-uuid>/image"
+```
+
+Erwartet: `304 0`.
+
+### 15.3 Typische Fehlerbilder
+
+| Symptom                                                               | Ursache                                                                   | Abhilfe                                                                  |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `404 "Die Bilddatei liegt auf diesem Server nicht vor"`               | Quellverzeichnis nicht eingehängt oder Datei fehlt                        | `BOOK_SOURCE_DIR` prüfen, Abschnitt 13; Mount in `docker-compose.yml`    |
+| `404 "Dieses Asset gibt es nicht"` bei einer offensichtlich echten ID | Kennung ist keine UUID (Tippfehler, Pfad statt ID)                        | ID aus `bookAsset.id` bzw. aus `imageUrl` einer Antwort nehmen           |
+| `400 "Der hinterlegte Pfad ist nicht zulässig"`                       | `book_asset.relative_path` verlässt das Bildverzeichnis — **Datenfehler** | Zeile prüfen; Import aus T3.1 wiederholen                                |
+| Chartliste leer, obwohl Charts existieren                             | keines ist `approved`                                                     | `pnpm charts:validate --status` (Abschnitt 14.5)                         |
+| Chart per ID nicht auffindbar (`404`)                                 | Chart ist nicht freigegeben                                               | absichtlich; nur die Review-Ansicht darf `includeUnapproved=true` setzen |
+| Konzeptliste fast leer                                                | Vorgabe ist `state=approved`, und T3.2 hat kaum freigegeben               | `?state=draft` zeigt den Entwurfsbestand                                 |
+| `400` mit `allowed`-Liste                                             | Filterwert außerhalb der geschlossenen Menge                              | Wert aus `allowed` nehmen                                                |
+
+### 15.4 Leeres Suchergebnis deuten
+
+Die Spot-Suche liefert nie eine stumme Leermenge. Zwei Felder sagen, was los
+ist:
+
+```bash
+curl -s -b cj.txt "$B/api/content/spots?position=BN&stack=200" \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["explanation"]); print(d["coverage"])'
+```
+
+- `explanation` nennt die nachweisliche Ursache — etwa „200bb (±5) liegt
+  außerhalb des abgedeckten Bereichs von 15 bis 40 bb".
+- `coverage` zeigt, was der freigegebene Bestand überhaupt hergibt: Positionen,
+  Stacktiefen, Spielformen, Zahl der durchsuchten Charts.
+
+Steht dort `chartsSearched: 0`, ist noch kein Chart freigegeben — dann fehlt
+nicht die Suche, sondern die Freigabe (Abschnitt 14).
+
+Bei einem Treffer mit niedriger Punktzahl weist `explanation` ausdrücklich
+darauf hin. `missed` am einzelnen Treffer sagt, welches Kriterium nicht saß —
+meist „keine Stacktiefe in der Unterschrift", weil das Buch sie nicht zu jedem
+Chart nennt.
+
+## 16. Noch nicht abgedeckt
 
 - Der Host-Nginx-vhost und das TLS-Zertifikat sind vorbereitet, aber noch nicht
   eingespielt: Beides erfordert Root auf dem Host (Abschnitte 8.4 und 8.5).
 - Der Host-Runner startet nach einem Reboot nicht automatisch (Abschnitt 9.2).
 - Die SSE-`location` im vhost ist vorbereitet, aber wie der ganze vhost noch
   nicht eingespielt (Abschnitt 10.4, Root nötig).
+- **Der Massenlauf der Chart-Digitalisierung ist nicht zu Ende gefahren.** 318
+  der 348 `hand_range`-Assets warten (Stand AP3-Abschluss). Der Ablauf steht in
+  Abschnitt 13, das Wiederaufsetzen ist der Normalfall — `selectCandidates()`
+  überspringt Erledigtes. Der Engpass ist das Wochenlimit des Kontos, nicht die
+  Pipeline: 318 Vision-Aufrufe passen nicht in ein Kontingentfenster.
+- **Der Konzept-Graph wartet auf seine Review.** 161 der 168 Konzepte stehen auf
+  `draft`; die Content-API liefert standardmäßig nur die 7 freigegebenen
+  (Abschnitt 15.3).

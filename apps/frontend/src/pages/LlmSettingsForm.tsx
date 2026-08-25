@@ -7,6 +7,7 @@ import type {
   SettingsFieldError,
 } from '@gto/shared';
 import { ApiError, apiClient } from '../api/client.js';
+import type { ApiFieldError } from '../api/client.js';
 
 /**
  * Provider- und Modellwahl samt Ping-Test (AP2.T2.6).
@@ -280,8 +281,27 @@ function NumberField({ id, label, value, range, error, onChange }: NumberFieldPr
   );
 }
 
-function toFieldErrors(fields: readonly SettingsFieldError[]): FieldErrors {
+/**
+ * Ordnet feldweise Ablehnungen den Formularfeldern zu.
+ *
+ * `ApiError.fields` traegt seit AP3.T3.2 die Feldnamen mehrerer Vertraege und
+ * ist deshalb `string`-breit. Hier wird auf die Felder dieses Formulars
+ * verengt; alles andere gehoert nicht hierher und wird uebersprungen.
+ */
+function toFieldErrors(fields: readonly ApiFieldError[]): FieldErrors {
+  const known = new Set<string>(SETTINGS_FIELDS);
   const result: FieldErrors = {};
-  for (const entry of fields) result[entry.field] = entry.message;
+  for (const entry of fields) {
+    if (known.has(entry.field)) result[entry.field as SettingsFieldError['field']] = entry.message;
+  }
   return result;
 }
+
+/** Felder, die dieses Formular kennt. */
+const SETTINGS_FIELDS = [
+  'provider',
+  'model',
+  'timeoutMs',
+  'maxConcurrency',
+  'maxAttempts',
+] as const satisfies readonly SettingsFieldError['field'][];

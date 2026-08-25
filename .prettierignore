@@ -15,3 +15,11 @@ docs/ap/
 # stattdessen durch die Golden-Tests abgesichert.
 apps/backend/prompts/
 apps/backend/test/prompts/golden/
+
+# Buch-Fixtures (AP3.T3.1): Prettier normalisiert Markdown-Kursiv von `*` auf
+# `_` und wuerde damit genau die Syntax veraendern, die der Parser erkennen
+# soll. Die Fixtures bilden die Buchquelle nach und bleiben unangetastet.
+apps/backend/test/book/fixtures/
+
+# Import-Reports (git-ignoriert, hier zusaetzlich fuer lokale Laeufe).
+data/reports/

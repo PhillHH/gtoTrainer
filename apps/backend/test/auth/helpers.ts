@@ -31,16 +31,28 @@ export interface TestContext {
   close(): Promise<void>;
 }
 
+/** Zusatzoptionen, die einzelne Testsuiten an `buildApp` durchreichen. */
+export interface TestContextOptions {
+  /** Quellverzeichnis der Buchbilder - die Review-Ansicht liest daraus. */
+  readonly bookSourceDir?: string;
+}
+
 /** Baut App + DB-Verbindung fuer einen Test. */
 export async function createTestContext(
   authConfig: AuthConfig = testAuthConfig(),
+  options: TestContextOptions = {},
 ): Promise<TestContext> {
   const handle = createDb(TEST_DATABASE_URL, { max: 3 });
   const limiter = new LoginRateLimiter({
     maxAttempts: authConfig.loginMaxAttempts,
     windowMs: authConfig.loginWindowMs,
   });
-  const app = await buildApp({ db: handle.db, authConfig, rateLimiter: limiter });
+  const app = await buildApp({
+    db: handle.db,
+    authConfig,
+    rateLimiter: limiter,
+    ...(options.bookSourceDir === undefined ? {} : { bookSourceDir: options.bookSourceDir }),
+  });
   await app.ready();
 
   return {

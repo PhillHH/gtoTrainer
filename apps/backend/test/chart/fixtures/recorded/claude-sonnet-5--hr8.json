@@ -1,0 +1,1604 @@
+{
+  "model": "claude-sonnet-5",
+  "handRange": 8,
+  "zellen": [
+    {
+      "hand": "AA",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "AKs",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "AQs",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "AJs",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "ATs",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "A9s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "A8s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "A7s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "A6s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "A5s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "A4s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "A3s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "A2s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "AKo",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "KK",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "KQs",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "KJs",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "KTs",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "K9s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "K8s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "K7s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "K6s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "K5s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "K4s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "K3s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "K2s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "AQo",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "KQo",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "QQ",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "QJs",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "QTs",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "Q9s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "Q8s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "Q7s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "Q6s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "Q5s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "Q4s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "Q3s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "Q2s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "AJo",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "KJo",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "QJo",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "JJ",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "JTs",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "J9s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "J8s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "J7s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "J6s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "J5s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "J4s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "J3s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "J2s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "ATo",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "KTo",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "QTo",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "JTo",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "TT",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "T9s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "T8s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "T7s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "T6s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "T5s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "T4s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "T3s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "T2s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "A9o",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "K9o",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "Q9o",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "J9o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "T9o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "99",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "98s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "97s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "96s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "95s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "94s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "93s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "92s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "A8o",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "K8o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "Q8o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "J8o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "T8o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "98o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "88",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "87s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "86s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "85s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "84s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "83s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "82s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "A7o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "K7o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "Q7o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "J7o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "T7o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "97o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "87o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "77",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "76s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "75s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "74s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "73s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "72s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "A6o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "K6o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "Q6o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "J6o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "T6o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "96o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "86o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "76o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "66",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "65s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "64s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "63s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "62s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "A5o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "K5o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "Q5o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "J5o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "T5o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "95o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "85o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "75o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "65o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "55",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "54s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "53s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "52s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "A4o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "K4o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "Q4o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "J4o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "T4o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "94o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "84o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "74o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "64o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "54o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "44",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "43s",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "42s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "A3o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "K3o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "Q3o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "J3o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "T3o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "93o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "83o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "73o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "63o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "53o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "43o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "33",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    },
+    {
+      "hand": "32s",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "A2o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "K2o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "Q2o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "J2o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "T2o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "92o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "82o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "72o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "62o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "52o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "42o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "32o",
+      "aktionen": [
+        {
+          "art": "fold",
+          "prozent": 100
+        }
+      ]
+    },
+    {
+      "hand": "22",
+      "aktionen": [
+        {
+          "art": "raise",
+          "prozent": 100,
+          "sizing": "2.25x"
+        }
+      ]
+    }
+  ],
+  "unsicher": [
+    "Widerspruch in den Daten: Meine Zellz\u00e4hlung ergibt 70 von 169 Zellen als Raise (\u224841,4%) und 99 Zellen als Fold (\u224858,6%). Das weicht von der Bildunterschrift ab, die 31,2% Raise / 68,8% Fold angibt. Ich melde diesen Widerspruch, \u00e4ndere aber die abgelesenen Zellfarben nicht, da die Aufgabe verlangt, exakt das Raster abzulesen und keine Werte an die Unterschrift anzupassen.",
+    "Alle Zellen im Bild erscheinen einfarbig (rot oder grau), es sind keine gemischten Frequenzen erkennbar. Sollte eine Zelle im Original doch eine feine Mischfarbe enthalten, die in der Bildaufl\u00f6sung nicht erkennbar war, w\u00e4re das nicht erfasst."
+  ],
+  "legende": ["rot = raise 2.25x", "grau = fold"],
+  "durationMs": 83000,
+  "totalTokens": 17546
+}

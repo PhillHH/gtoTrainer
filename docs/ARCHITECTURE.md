@@ -603,6 +603,270 @@ Job-Worker mit Retry und Dead-Letter, zentrales Aufruf-Protokoll, SSE-Statuskana
 und die Einstellungen-Seite mit Testaufruf. Die fachlichen Job-Typen und
 Lern-Templates entstehen ab AP3/AP5.
 
+## 3g. Content-Pipeline (neu in AP3.T3.1)
+
+Die Buchquelle wird zur abfragbaren Wissensbasis. Der erste Schritt ist
+**deterministisch und ohne jeden KI-Aufruf** — er entscheidet nur, _was_
+später überhaupt an ein Modell geht.
+
+```
+data/book-source/            (git-ignoriert, vom Nutzer befüllt, nur gelesen)
+   │  <buch>.md  +  Bilder pXXXX_YY.jpeg
+   ▼
+src/book/source.ts           Vorbedingung: Verzeichnis, Markdown, Bilder da?
+   │                         Struktur tolerant: flach ODER ein Unterverzeichnis
+   │                         fehlt etwas -> BookSourceError, sauberer Abbruch
+   ▼
+src/book/parser.ts           Inhaltsverzeichnis -> Teile + Kapitel (Soll)
+   │                         Fließtext -> Kapitelanker, Sektionen, Seitenmarker
+   │                         Bildbezüge -> Assets
+   ├── caption.ts            Unterschrift -> Etikett, Nummer, Spot, Prozente
+   └── classify.ts           Regeltabelle -> hand_range | table | diagram |
+                             formula | other  (+ certain/uncertain)
+   ▼
+src/book/import.ts           Upsert über fachliche Schlüssel, Hash-Vergleich
+   │                         unverändert -> nichts anfassen
+   │                         entfallen  -> removed_at, kein DELETE
+   ▼
+book_chapter -> book_section -> book_asset
+   │
+   ├── T3.2  Konzepte je Sektion
+   ├── T3.3  Vision-Pipeline, gefiltert auf asset_type = 'hand_range'
+   └── T3.5  Content-API (Sektionen gezielt, Charts, Asset-Serving)
+```
+
+Der **Import-Report** (`src/book/report.ts`) fällt bei jedem Lauf an: Terminal
+plus `data/reports/book-import.md`. Er ist git-ignoriert, weil er Kapitel- und
+Sektionstitel aus dem Buch enthält.
+
+Zwei Eigenschaften sind für die Folge-APs wesentlich:
+
+- **Der Filter spart Kontingent.** Von 855 Bildern der Quelle sind 348
+  Range-Charts. T3.3 verarbeitet nur diese — ohne die Typisierung wären es
+  2,5× so viele Vision-Aufrufe.
+- **Assets überleben den Re-Import.** `book_asset.id` bleibt stabil, solange
+  das Asset in der Quelle steht. Chart-Daten aus T3.3/T3.4 hängen daran und
+  gehen bei einem erneuten Buchimport nicht verloren.
+
+## 3h. Konzept-Graph (neu in AP3.T3.2)
+
+Aus den Sektionstexten wird das Rückgrat des Lernpfads. Anders als T3.1 ist
+dieser Schritt **KI-gestützt** — aber nur an einer Stelle: Das Modell schlägt
+vor, der Code prüft, ordnet ein und räumt auf.
+
+```
+book_section (T3.1)
+   │  ein Job je Kapitelteil (Zeichenbudget 15 000)
+   ▼
+jobs/handlers/concept-extract.ts      ← der EINZIGE KI-Anteil
+   │  Job-Queue (T2.5) → Provider-Registry (T2.3) → llm_call_log
+   │  Template task/concept-taxonomy (T2.4), Persona persona/taxonomist
+   ▼
+concept/normalize.ts     Themenbereich prüfen · Dubletten über Slug
+concept/resolve.ts       Titel → Konzept-IDs · Sektionsschlüssel → Sektions-IDs
+concept/graph.ts         Zyklenprüfung · Kanten auswählen
+concept/store.ts         schreiben, verknüpfen, Befunde sammeln
+   ▼
+concept ──< concept_prerequisite   (gerichteter, zyklenfreier Graph)
+   ├──< concept_section            → AP5 lädt gezielt den richtigen Buchtext
+   └──< concept_chart              → AP5/AP7 verankern Fragen an Charts
+   ▼
+/api/concepts (Review)  →  Seite „Konzepte" im Frontend
+   │  bearbeiten · bestätigen einzeln und je Kapitel
+   ▼
+state: draft → approved     ← AP4 baut Mastery und Skill-Ratings darauf auf
+```
+
+Drei Eigenschaften, auf die sich Folge-APs verlassen können:
+
+- **Ein Themenbereich je Konzept**, aus einer festen Liste von zwölf
+  ([ADR-0031](./DECISIONS.md)). Das sind die Achsen des Skill-Ratings in AP4;
+  eine Mehrfachzuordnung würde jede Kennzahl unscharf machen.
+- **Der Prerequisite-Graph ist jederzeit zyklenfrei.** Eine Kante, die einen
+  Zyklus schlösse, wird gar nicht erst gespeichert — weder beim Import noch
+  über die Review-Ansicht. Der Konflikt geht trotzdem nicht verloren: Er
+  erscheint als Befund.
+- **Deterministisches bleibt deterministisch.** Zyklenprüfung,
+  Referenzauflösung, Dubletten-Erkennung und Chart-Zuordnung sind Code. Kein
+  zweiter Modellaufruf prüft den ersten.
+
+Der Trennstrich zu T3.5: `/api/concepts` ist die **Prüfoberfläche** für die
+Vorschläge. Die Content-API für Folge-APs (gezielter Abruf, Spot-Suche,
+Asset-Auslieferung) liegt seit T3.5 unter `/api/content` (Abschnitt 3k).
+
+## 3i. Chart-Pipeline (neu in AP3.T3.3)
+
+Aus Bildern werden Zahlen. Ab hier sind diese Zahlen die **einzige
+Wahrheitsquelle** für jede objektiv prüfbare Frage im Tool — deshalb ist der
+Weg dorthin an jeder Stelle belegpflichtig.
+
+```
+book_asset  (asset_type = 'hand_range', confidence = 'certain')   ← T3.1
+   │  ein Job je Chart, Auswahl ueber selectCandidates()
+   ▼
+jobs/handlers/chart-digitize.ts            ← der EINZIGE KI-Anteil
+   │  Job-Queue (T2.5) → Provider-Registry (T2.3) → llm_call_log
+   │  Template task/chart-digitize (T2.4), Persona persona/chart-reader
+   │  Nachricht = Aufgabentext + Bildbaustein { type:'image', mediaType, data }
+   ├── chart/spot.ts        Caption → Spot und Legende (deterministisch)
+   └── chart/store.ts       Matrix pruefen, schreiben, Fortschritt zaehlen
+   ▼
+range_chart ──< range_chart_cell   (chart, hand, action_kind, sizing, percent)
+   │  state: raw
+   ▼
+T3.4  Validierung  →  validated  →  approved
+                   ↘  unusable (von Hand verworfen, mit Begruendung)
+   ▼
+T3.5 Content-API (/api/content/*)  ← der einzige Lesezugriff ab hier
+   ▼
+AP5 Unterricht / AP6 Renderer / AP7 Drills / AP8 Analyse
+     lesen ausschliesslich `approved`
+```
+
+Vier Eigenschaften, auf die sich Folge-APs verlassen können:
+
+- **Vollständigkeit ist erzwungen.** Eine Matrix mit weniger als 169 Zellen,
+  einer unbekannten Aktion oder einer Frequenz außerhalb 0–100 wird abgelehnt;
+  der Chart landet als `failed` mit Begründung, nicht als stiller Teilerfolg.
+- **Zellen sind einzeln abfragbar.** `range_chart_cell` ist eine eigene Tabelle
+  mit Index auf `(hand, action_kind)` — die Spot-Suche aus T3.5 und die Drills
+  aus AP7 fragen „was macht AJs hier?", ohne das ganze Chart zu laden.
+- **Der Spot kommt nicht vom Modell.** Position, Stacktiefe, Aktionsfolge und
+  Sizings liest `chart/spot.ts` deterministisch aus der Bildunterschrift. Das
+  Modell bekommt sie als Kontext und liest nur die Farben.
+- **Wiederaufnahme ist der Normalfall.** Ein zweiter Lauf wählt nur Assets ohne
+  Chart-Datensatz. Ein durch ein Wochenlimit gestoppter Lauf setzt fort, wo er
+  aufhörte, ohne Kontingent für Erledigtes zu verbrennen.
+
+Vor dem Massenlauf steht der **Kalibrierungslauf** (`pnpm charts:calibrate`,
+Scope-Delta 3): dieselbe Stichprobe mit mehreren Modellen, gemessen gegen von
+Hand geprüfte Sollwerte. Er schreibt nicht in `range_chart` — er entscheidet
+nur die Modellwahl ([ADR-0033](./DECISIONS.md)).
+
+## 3j. Validierungsstufe der Chart-Pipeline (neu in AP3.T3.4)
+
+Zwischen „das Modell hat etwas gelesen" und „das gilt als Wahrheit" liegt eine
+eigene Stufe. Sie ist die Gegenmaßnahme zu Risiko R2: ein falsch gelesenes
+Chart, das unbemerkt zur Grundlage von Drills und Analysen wird.
+
+```
+range_chart (state = 'raw')
+   │
+   ▼
+chart/validate.ts            VIER UNABHAENGIGE PRUEFUNGEN, ohne KI
+   ├── frequency-sum   Summe je Zelle ~ 100 %        (rechnet IN der Matrix)
+   ├── caption-match   combo-gewichtet 6/4/12 gegen  (externe Wahrheit aus
+   │                   die Caption-Prozente aus T3.1   T3.1; 6 von 25 Charts)
+   ├── legend-match    dieselbe Rechnung gegen die   (zweite externe Wahrheit,
+   │                   im BILD gedruckte Legende       abgelesen; 18 von 25)
+   └── plausibility    Vollstaendigkeit / Monotonie / (Pokerwissen, unabhaengig
+                       Ausreisser                       von allem anderen)
+   │
+   ▼
+chart/validation-store.ts    Befunde persistieren, Zustand setzen
+   │  chart_finding (check, kind, severity, hand, measured, expected, detail)
+   │
+   ├── kein error-Befund ──────────────────► validated
+   └── mindestens ein error-Befund ────────► bleibt raw
+              │
+              ▼
+        jobs/handlers/chart-recheck.ts     ← der EINZIGE KI-Anteil in T3.4
+              │  nur beanstandete Charts; geschaerfter Prompt mit der
+              │  konkreten Beanstandung; Job-Queue → Provider-Registry
+              │  chart_recheck protokolliert den Vergleich beider Ablesungen
+              ▼
+        Pruefungen laufen erneut
+              │
+              ▼
+   chart/review-routes.ts     Review-Ansicht: Bild neben Matrix
+        │  manuelle Korrektur (source = 'manual', corrected_at)
+        ▼
+   approved   ── oder ──   unusable (mit Begruendung)
+        │
+        ▼
+   T3.5 Content-API / AP6 / AP7 / AP8 lesen ausschliesslich `approved`
+```
+
+Warum die drei Prüfungen getrennt bleiben: Sie greifen auf **verschiedene
+Wahrheitsquellen** zu. `frequency-sum` rechnet nur innerhalb der Matrix,
+`caption-match` hält sie gegen Zahlen, die kein Modell je gesehen hat, und
+`plausibility` prüft die Form gegen Pokerwissen. Würde man den Caption-Abgleich
+aus denselben Daten speisen, die er prüfen soll, bestätigte er nur sich selbst.
+
+Zwei Eigenschaften, die für Folge-APs zählen:
+
+- **Kein zweiter Weg nach `approved`.** Die Freigabe liegt ausschließlich in
+  `validation-store.ts` und verlangt den Zustand `validated`. Ein erneuter
+  Validierungslauf nimmt eine Freigabe nicht zurück und vergibt selbst nie eine.
+- **Menschliche Korrekturen bleiben erkennbar und überleben.** `source` und
+  `corrected_at` je Zelle; der Zweitdurchlauf überspringt sie, ein erneuter
+  Validierungslauf überschreibt sie nicht.
+
+**Zwei externe Gegenproben, nicht eine.** Die Buch-Unterschrift nennt nur bei 6
+von 25 Charts Prozentwerte; die im Bild gedruckte Legende bei 18. Zusammen
+decken sie **24 von 25** ab. Bis T3.6 gab es nur die erste — und die Sichtung
+fand fünf automatisch bestandene Charts mit Abweichungen bis 11,4 pp. Die
+vierte Prüfung schließt genau diese Lücke ([ADR-0036](./DECISIONS.md)).
+
+Die Legendenwerte werden **abgelesen, nie hergeleitet**: eigenes Feld im
+Vision-Aufruf, eigene Spalten (`legend_totals`, `legend_present`,
+`legend_labels`). Würden sie aus der Matrix berechnet, prüfte sich die Matrix
+gegen sich selbst.
+
+## 3k. Content-Service (neu in AP3.T3.5)
+
+Die Wissensbasis aus T3.1 bis T3.4 bekommt eine Tür. Ab hier greift **kein
+Folge-AP mehr direkt auf die Tabellen zu** — AP5 unterrichtet, AP6 rendert, AP7
+baut Drills und AP8 analysiert Hände, alle über dieselbe Schnittstelle.
+
+```
+                       /api/content/*        alles hinter app.requireSession (T1.3)
+                              │
+   content/routes.ts ─────────┴─────────── nur GET; dieser Task schreibt nichts
+        │
+        ├── content/book-queries.ts     Kapitel, Sektionen
+        │     Uebersicht ohne Volltexte │ Sektionsdetail MIT Volltext
+        │
+        ├── content/concept-queries.ts  Konzepte, Lernpfad
+        │     Vorgabe state='approved'  │ Kahn, ebenenweise
+        │
+        ├── content/chart-queries.ts    Charts, Zellabruf
+        │     ┌─────────────────────────────────────────────────┐
+        │     │  stateCondition()  — die Approved-Regel, EINMAL │
+        │     │  ohne includeUnapproved: state = 'approved'     │
+        │     └─────────────────────────────────────────────────┘
+        │
+        ├── content/spot-search.ts      Spot-Suche
+        │     anteilige Bewertung │ Stacktiefe als Bereich │ Erklaerung
+        │
+        └── content/assets.ts           Bilder
+              safeAssetPath() │ Inhalts-ETag │ private, immutable
+```
+
+Vier Eigenschaften, auf die sich Folge-APs verlassen können:
+
+- **Zuschnitt statt Vollausgabe.** `book_section.body` erscheint in genau einer
+  Antwort: dem Sektionsdetail. Eine Kapitelübersicht liefert Zählstände, eine
+  Chartliste Metadaten. Das ist Kontextdisziplin: Ein Prompt in AP5 hat ein
+  Token-Budget, und ein versehentlich mitgeliefertes Kapitel sprengt es.
+- **Die Approved-Regel liegt an einer Stelle.** `stateCondition()` in
+  `chart-queries.ts` ist der einzige Ort, an dem über die Sichtbarkeit eines
+  Charts entschieden wird. Liste, Detail, Zellabruf, Spot-Suche und das
+  Konzeptdetail gehen alle hindurch — es gibt keinen zweiten Weg zu
+  ungeprüften Frequenzen.
+- **Der Zellabruf ist der schmalste Weg zu einer Zahl.**
+  `/charts/:id/cells/:hand` liefert eine Zeile statt 169. Damit stellen AP5 und
+  AP7 objektiv prüfbare Fragen, ohne eine Matrix in den Kontext zu ziehen.
+- **Bilder verlassen den Server nur an eine Session.** Der Weg führt durch das
+  Backend, nicht am Host-Nginx vorbei — nur das Backend kennt die Session
+  ([ADR-0035](./DECISIONS.md)).
+
+**Abgrenzung zur Review-Ansicht aus T3.4:** `/api/charts/*` ist die
+Prüfoberfläche und darf schreiben; `/api/content/*` ist der Lesezugriff für
+Folge-APs und darf es nicht. Beide leben nebeneinander, weil sie verschiedene
+Fragen beantworten — und weil die Review-Ansicht der einzige Aufrufer ist, der
+`includeUnapproved` überhaupt setzen darf.
+
 ## 4. Querschnitts-Entscheidungen
 
 - **Node 20.19.6**, fixiert in `.nvmrc`; `engines.node >= 20.19.0`.
@@ -618,7 +882,6 @@ Begründungen siehe [DECISIONS.md](./DECISIONS.md).
 
 - Host-Nginx-vhost und TLS sind vorbereitet, aber noch nicht eingespielt —
   beides erfordert Root auf dem Host (siehe `docs/status/AP01.md`).
-- Ingestion-Pipeline für `data/book-source/` (AP3)
 - Der Host-seitige CLI-Runner aus [ADR-0022](./DECISIONS.md) läuft außerhalb
   von Compose. Sein Neustart nach einem Reboot ist noch nicht abgesichert
   (siehe `docs/RUNBOOK.md` 9.2).

@@ -445,18 +445,32 @@ Zugehörige Skripte (Root): `db:up`, `db:down`, `db:generate`, `db:migrate`,
 
 ### Erwarteter Inhalt
 
-| Datei           | Beschreibung                                   |
-| --------------- | ---------------------------------------------- |
-| `*.md`          | Buch-Volltext als eine Markdown-Datei          |
-| `pXXXX_YY.jpeg` | Chart-/Abbildungs-Bilder, flach im Verzeichnis |
+| Datei           | Beschreibung                          |
+| --------------- | ------------------------------------- |
+| `*.md`          | Buch-Volltext als eine Markdown-Datei |
+| `pXXXX_YY.jpeg` | Chart-/Abbildungs-Bilder              |
 
 `XXXX` = vierstellige Seitenzahl mit führenden Nullen, `YY` = zweistelliger
 Zähler der Abbildung auf dieser Seite, beginnend bei `01`.
 Beispiel: `p0042_01.jpeg`.
 
+**Ablage der Bilder (präzisiert in T3.1):** Der Parser erkennt zwei Formen und
+nennt die gefundene im Import-Report:
+
+| Form           | Bedingung                                                                   |
+| -------------- | --------------------------------------------------------------------------- |
+| `flat`         | Die Bilder liegen direkt in `data/book-source/`.                            |
+| `subdirectory` | Kein Bild liegt flach, dafür **genau ein** Unterverzeichnis enthält welche. |
+
+Mehr als ein bildhaltiges Unterverzeichnis ist ein Abbruchgrund — dann ist die
+Struktur mehrdeutig. Die tatsächlich vorliegende Quelle nutzt `subdirectory`
+(ein Verzeichnis `<Buchtitel>_images/`), weil der PDF-nach-Markdown-Export die
+Bilder so ablegt und die Bildbezüge im Markdown genau dorthin zeigen.
+
 > **Pflicht:** Das Verzeichnis muss **vor dem Start von AP3** vollständig
 > befüllt sein. Andernfalls kann AP3 nicht beginnen — es gibt keinen Fallback
-> und keine mitgelieferten Beispieldaten.
+> und keine mitgelieferten Beispieldaten. `resolveBookSource()` bricht mit
+> `BookSourceError` ab und nennt Pfad und erwarteten Inhalt.
 
 Details siehe [`data/book-source/README.md`](../data/book-source/README.md).
 
@@ -1040,3 +1054,945 @@ und ihre eigenen Routen.
    bricht die Übersetzung.
 3. Prüfung in `validate()` ergänzen, Default in `defaultsFrom()`.
 4. Feld im Formular ergänzen und einen Frontend-Test dafür schreiben.
+
+---
+
+## 12. Buch-Wissensbasis — Schema und Zugriff (AP3.T3.1)
+
+Quelle der Wahrheit ist `apps/backend/src/db/schema.ts`; Migration
+`0002_cold_amphibian.sql`. Die Namens- und Typkonventionen aus Abschnitt 3
+gelten unverändert.
+
+### Gemeinsame Bauprinzipien der drei Tabellen
+
+| Spalte           | Zweck                                                                                                                                     |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| fachl. Schlüssel | `chapter_number` / `section_key` / `relative_path`, jeweils mit Unique-Index. Der Re-Import findet Zeilen darüber wieder.                 |
+| `content_hash`   | SHA-256 über den fachlichen Inhalt. Gleicher Hash ⇒ die Zeile wird **nicht angefasst**, auch `updated_at` bleibt stehen.                  |
+| `removed_at`     | Quellen, die verschwunden sind, werden markiert statt gelöscht. Ein Re-Import wirft damit **keine** nachgelagerten Daten (T3.3/T3.4) weg. |
+
+> **Regel für alle Folge-APs:** `book_asset.id` ist stabil, solange das Asset in
+> der Quelle steht. Chart-Daten, Konzeptbezüge und Review-Zustände dürfen daran
+> hängen. Wer `book_asset` löscht und neu anlegt, bricht diese Zusage.
+
+### `book_chapter`
+
+| Spalte                       | Typ                | Hinweis                                     |
+| ---------------------------- | ------------------ | ------------------------------------------- |
+| `id`                         | `uuid` PK          |                                             |
+| `part_number` / `part_title` | `integer` / `text` | Teil des Buches (1–3)                       |
+| `chapter_number`             | `integer`          | 1–14, eindeutig (`book_chapter_number_key`) |
+| `title`                      | `text`             |                                             |
+| `ordinal`                    | `integer`          | Reihenfolge im Buch, 0-basiert              |
+| `page_start` / `page_end`    | `integer` NULL     | aus den Seitenmarkern `<!-- page N -->`     |
+| `content_hash`, `removed_at` | s. o.              |                                             |
+| `created_at`, `updated_at`   | `timestamptz`      |                                             |
+
+### `book_section`
+
+| Spalte                       | Typ                        | Hinweis                                                                   |
+| ---------------------------- | -------------------------- | ------------------------------------------------------------------------- |
+| `id`                         | `uuid` PK                  |                                                                           |
+| `chapter_id`                 | `uuid` FK → `book_chapter` | `ON DELETE CASCADE`                                                       |
+| `section_key`                | `text`                     | z. B. `ch07/small-blind-pfi-strategy`, eindeutig (`book_section_key_key`) |
+| `title`                      | `text`                     |                                                                           |
+| `level`                      | `integer`                  | Überschriftsebene der Quelle (2 = `##`, 3 = `###`)                        |
+| `ordinal`                    | `integer`                  | Reihenfolge im Kapitel                                                    |
+| `body`                       | `text`                     | Volltext des Abschnitts, unverändert                                      |
+| `page_start` / `page_end`    | `integer` NULL             | Belegstellen („Seite X") ab AP5                                           |
+| `content_hash`, `removed_at` | s. o.                      |                                                                           |
+
+`section_key` enthält **bewusst keine laufende Nummer**: Ein eingeschobener
+Abschnitt würde sonst die Schlüssel aller folgenden Sektionen verschieben und
+beim nächsten Import alles neu anlegen.
+
+### `book_asset`
+
+| Spalte                       | Typ                        | Hinweis                                                             |
+| ---------------------------- | -------------------------- | ------------------------------------------------------------------- |
+| `id`                         | `uuid` PK                  | **stabil** über Re-Importe                                          |
+| `relative_path`              | `text`                     | Pfad relativ zur Quellwurzel, eindeutig (`book_asset_path_key`)     |
+| `file_name`                  | `text`                     | `pXXXX_YY.jpeg`                                                     |
+| `section_id`                 | `uuid` FK → `book_section` | `ON DELETE SET NULL`; NULL im Vorspann des Buches                   |
+| `page`, `index_on_page`      | `integer` NULL             | aus dem Dateinamen                                                  |
+| `caption_raw`                | `text` NULL                | **Rohtext der Unterschrift, verlustfrei** — Gegenprobe in T3.4      |
+| `caption_label`              | `text` NULL                | `Hand Range`, `Table`, `Diagram`, `Heatmap`                         |
+| `caption_number`             | `integer` NULL             | z. B. 96                                                            |
+| `caption_spot`               | `text` NULL                | Spot-Beschreibung, z. B. `SB vs BB (25bb)`                          |
+| `caption_actions`            | `jsonb`                    | `[{ "action": "Fold", "percent": 17.9 }]`, Default `[]`             |
+| `asset_type`                 | `text`                     | CHECK: `hand_range` \| `table` \| `diagram` \| `formula` \| `other` |
+| `classification_confidence`  | `text`                     | CHECK: `certain` \| `uncertain`                                     |
+| `classification_rule`        | `text`                     | Name der Regel, die den Typ gesetzt hat                             |
+| `file_present`               | `boolean`                  | ist die referenzierte Datei tatsächlich da?                         |
+| `ordinal`                    | `integer`                  | Reihenfolge im Buch                                                 |
+| `content_hash`, `removed_at` | s. o.                      |                                                                     |
+
+Die zulässigen Werte für `asset_type` und `classification_confidence` stehen als
+Vertrag in `packages/shared/src/book.ts` (`BOOK_ASSET_TYPES`,
+`BOOK_ASSET_CONFIDENCES`). In `schema.ts` sind sie dupliziert, weil drizzle-kit
+das Workspace-Paket beim Bündeln nicht auflöst; `test/book/schema.test.ts` hält
+beide Listen deckungsgleich.
+
+### Klassifikationsregeln (Scope-Delta 2)
+
+**Regelbasiert, ohne KI-Aufruf.** Erste passende Regel gewinnt; ihr Name landet
+in `classification_rule`. Quelle: `apps/backend/src/book/classify.ts`.
+
+| #   | Regel                   | Bedingung                                               | Typ          | Sicherheit  |
+| --- | ----------------------- | ------------------------------------------------------- | ------------ | ----------- |
+| 1   | `caption-label`         | Unterschrift trägt ein bekanntes Etikett                | s. Zuordnung | `certain`   |
+| 2   | `caption-actions`       | kein Etikett, aber Aktions-Prozente in der Unterschrift | `hand_range` | `uncertain` |
+| 3   | `front-matter`          | Asset liegt vor dem ersten Kapitel (Cover, Impressum)   | `other`      | `certain`   |
+| 4   | `formula-lead-in`       | keine Unterschrift, Absatz davor endet auf `:`          | `formula`    | `certain`   |
+| 5   | `formula-where`         | keine Unterschrift, Absatz danach beginnt mit `where`   | `formula`    | `certain`   |
+| 6   | `caption-without-label` | Unterschrift ohne erkennbare Struktur                   | `other`      | `uncertain` |
+| 7   | `unclassified`          | nichts davon trifft zu                                  | `other`      | `uncertain` |
+
+Etikett-Zuordnung: `Hand Range` → `hand_range`; `Table` → `table`;
+`Diagram`, `Heatmap`, `Figure`, `Chart` → `diagram`.
+
+Unsichere Fälle werden **nicht geraten**: Sie landen als `other`/`uncertain` im
+Report und sind dort gezählt. T3.3 behandelt sie bewusst, statt sie stillschweigend
+mitlaufen zu lassen.
+
+### Wie T3.3 die Range-Charts abruft
+
+```ts
+import { and, eq, isNull } from 'drizzle-orm';
+import { bookAsset } from '../db/schema.js';
+
+const charts = await db
+  .select({ id: bookAsset.id, path: bookAsset.relativePath, caption: bookAsset.captionRaw })
+  .from(bookAsset)
+  .where(
+    and(
+      eq(bookAsset.assetType, 'hand_range'),
+      eq(bookAsset.filePresent, true),
+      isNull(bookAsset.removedAt),
+    ),
+  )
+  .orderBy(bookAsset.ordinal);
+```
+
+- Der Index `book_asset_type_idx (asset_type, ordinal)` bedient genau diese Abfrage.
+- **Nur `hand_range`** geht durch die Vision-Pipeline. Jede weitere Kategorie
+  kostet Kontingent ohne Nutzen.
+- Die Sollwerte für die Gegenprobe in T3.4 stehen in `caption_actions`;
+  `caption_raw` bleibt daneben als unveränderter Beleg stehen.
+
+### Wie eine einzelne Sektion geladen wird
+
+Kontextdisziplin: Folge-APs laden **eine** Sektion, nicht ein ganzes Kapitel.
+
+```ts
+const [section] = await db
+  .select()
+  .from(bookSection)
+  .where(
+    and(eq(bookSection.sectionKey, 'ch07/small-blind-pfi-strategy'), isNull(bookSection.removedAt)),
+  );
+```
+
+Für ein Inhaltsverzeichnis ohne Volltext reicht eine Projektion ohne `body`
+(`select({ key, title, level, ordinal, pageStart })`) — der `body` ist die
+größte Spalte des Schemas und wird nur geholt, wenn er gebraucht wird.
+Der Index `book_section_chapter_idx (chapter_id, ordinal)` bedient die
+Kapitelübersicht.
+
+### Import ausführen
+
+`pnpm book:import` (Import) bzw. `pnpm book:import --dry-run` (nur Analyse,
+ohne Datenbank). Betrieb und Reportdeutung: RUNBOOK 11.
+
+---
+
+## 13. Konzept-Graph — Schema, Invarianten und Zugriff (AP3.T3.2)
+
+Quelle der Wahrheit ist `apps/backend/src/db/schema.ts`; Migration
+`0003_lively_lilith.sql`. Vertragskonstanten in `packages/shared/src/concept.ts`.
+
+### Die vier Tabellen
+
+**`concept`** — eine fachliche Lerneinheit, nicht eine Gliederungsüberschrift.
+
+| Spalte                     | Typ                        | Hinweis                                                     |
+| -------------------------- | -------------------------- | ----------------------------------------------------------- |
+| `id`                       | `uuid` PK                  |                                                             |
+| `chapter_id`               | `uuid` FK → `book_chapter` | `ON DELETE CASCADE`                                         |
+| `slug`                     | `text`                     | normalisierter Titel, eindeutig (`concept_slug_key`)        |
+| `title`                    | `text`                     | Fachbegriff wie im Buch                                     |
+| `summary`                  | `text`                     | knappe, prüfbare Definition — **ohne Frequenzen**           |
+| `topic_area`               | `text`                     | CHECK gegen die feste Liste unten                           |
+| `min_level`                | `text`                     | CHECK: `einsteiger` \| `fortgeschritten` \| `experte`       |
+| `state`                    | `text`                     | CHECK: `draft` \| `approved`                                |
+| `origin`                   | `text`                     | CHECK: `ai` \| `manual`                                     |
+| `ordinal`                  | `integer`                  | Reihenfolge im Kapitel                                      |
+| `unresolved_prerequisites` | `jsonb`                    | Titel-Referenzen ohne Treffer — offene Punkte, Default `[]` |
+| `created_at`, `updated_at` | `timestamptz`              |                                                             |
+
+**`concept_prerequisite`** — gerichtete Kante `prerequisite_id → concept_id`.
+Primärschlüssel über beide Spalten; CHECK `concept_id <> prerequisite_id`.
+
+**`concept_section`** — `(concept_id, section_id)`, mehrfach möglich.
+
+**`concept_chart`** — `(concept_id, asset_id)` plus `source` (aktuell
+`section`), mehrfach möglich.
+
+### Invarianten
+
+| #   | Invariante                                                    | Durchgesetzt von                                                 |
+| --- | ------------------------------------------------------------- | ---------------------------------------------------------------- |
+| 1   | Jedes Konzept hat **genau einen** Themenbereich aus der Liste | CHECK `concept_topic_area_check`                                 |
+| 2   | `min_level`, `state`, `origin` stammen aus festen Listen      | CHECK je Spalte                                                  |
+| 3   | Keine Voraussetzungskante auf sich selbst                     | CHECK `concept_prerequisite_no_self_check`                       |
+| 4   | Jede Kante höchstens einmal                                   | Primärschlüssel                                                  |
+| 5   | **Der Prerequisite-Graph ist zyklenfrei**                     | `src/concept/graph.ts` — geprüft, nicht erzwingbar (siehe unten) |
+| 6   | Ein Titel ergibt genau ein Konzept (Dubletten-Erkennung)      | `concept_slug_key` + `conceptSlug()`                             |
+
+Zu 5: Zyklenfreiheit ist eine Eigenschaft des **ganzen** Graphen und lässt sich
+nicht als Constraint schreiben. Stattdessen wird jede neue Kante gegen den
+bestehenden Graphen geprüft (`selectAcyclicEdges`, `replacePrerequisites`);
+eine Kante, die einen Zyklus schlösse, wird **nicht gespeichert** und erscheint
+als Befund. Die Datenbank ist damit jederzeit zyklenfrei — ein Lernpfad ist
+immer ableitbar.
+
+### Feste Themenbereiche
+
+Die Achsen des Skill-Ratings in AP4. Quelle: `CONCEPT_TOPIC_AREAS` in
+`packages/shared/src/concept.ts`. Begründung: [ADR-0031](./DECISIONS.md).
+
+| Kennung                 | Bezeichnung               | Deckt ab (Kapitel) |
+| ----------------------- | ------------------------- | ------------------ |
+| `grundlagen-mathematik` | Grundlagen und Mathematik | 1                  |
+| `spieltheorie`          | Spieltheorie              | 2                  |
+| `software-werkzeuge`    | Software und Werkzeuge    | 3                  |
+| `preflop-ranges`        | Preflop-Ranges            | 4, 5, 7            |
+| `preflop-verteidigung`  | Preflop-Verteidigung      | 5, 8               |
+| `spiel-gegen-3bets`     | Spiel gegen 3-Bets        | 9                  |
+| `turnier-metriken-icm`  | Turnier-Metriken und ICM  | 6                  |
+| `postflop-grundlagen`   | Postflop-Grundlagen       | 10                 |
+| `flop-spiel`            | Flop-Spiel                | 11, 12             |
+| `turn-spiel`            | Turn                      | 13                 |
+| `river-spiel`           | River                     | 14                 |
+| `mental-game`           | Mental Game               | 6                  |
+
+**Regel:** Ein Wert außerhalb dieser Liste wird abgelehnt, nicht auf einen
+Default umgebogen — weder beim Import noch über die Review-Ansicht.
+
+### Wie AP4 Konzepte und Themenbereiche liest
+
+Mastery, Wiederholungs-Queue und Skill-Ratings hängen an `concept.id`.
+**Nur `approved` Konzepte** sind für AP4 verbindlich; `draft` ist ungeprüfter
+Modellvorschlag.
+
+```ts
+import { and, asc, eq } from 'drizzle-orm';
+import { concept } from '../db/schema.js';
+
+// Alle bestätigten Konzepte eines Themenbereichs - eine Rating-Achse.
+const achse = await db
+  .select({ id: concept.id, title: concept.title, minLevel: concept.minLevel })
+  .from(concept)
+  .where(and(eq(concept.topicArea, 'flop-spiel'), eq(concept.state, 'approved')))
+  .orderBy(asc(concept.ordinal));
+```
+
+Der Index `concept_topic_area_idx` bedient genau diese Abfrage,
+`concept_state_idx` die Filterung nach Zustand.
+
+Die Lernreihenfolge ergibt sich aus `concept_prerequisite`: eine topologische
+Sortierung über die Kanten `prerequisite_id → concept_id`. Sie terminiert,
+weil der Graph zyklenfrei ist (Invariante 5).
+
+### Wie AP5 über `concept_section` gezielt Buchtext lädt
+
+Kontextdisziplin: **ein Konzept, seine Sektionen** — nicht ein ganzes Kapitel.
+
+```ts
+const texte = await db
+  .select({ key: bookSection.sectionKey, title: bookSection.title, body: bookSection.body })
+  .from(conceptSection)
+  .innerJoin(bookSection, eq(conceptSection.sectionId, bookSection.id))
+  .where(and(eq(conceptSection.conceptId, conceptId), isNull(bookSection.removedAt)))
+  .orderBy(asc(bookSection.ordinal));
+```
+
+Für die Charts eines Konzepts entsprechend über `concept_chart` auf
+`book_asset`. Die Zuordnung ist nach T3.2 **grob** (alles, was in derselben
+Sektion steht) und wird in T3.3/T3.4 mit Spot-Metadaten verfeinert.
+
+### Review-Endpunkte (nicht die Content-API)
+
+Prüfoberfläche für die Vorschläge. Die Content-API für Folge-APs entsteht in
+T3.5 unter `/api/content`; sie ist hier bewusst nicht vorweggenommen.
+
+| Endpunkt                                  | Zweck                                          |
+| ----------------------------------------- | ---------------------------------------------- |
+| `GET /api/concepts`                       | alle Konzepte nach Kapitel, samt Befunden      |
+| `PATCH /api/concepts/:id`                 | Titel, Definition, Einordnung, Voraussetzungen |
+| `POST /api/concepts/:id/approve`          | ein Konzept bestätigen                         |
+| `POST /api/concepts/chapters/:nr/approve` | Sammelaktion je Kapitel                        |
+
+Alle auth-geschützt; die schreibenden zusätzlich über den CSRF-Hook aus T1.3.
+Ablehnungen kommen feldweise als `{ error: 'invalid_concept', fields: [...] }` —
+dasselbe Muster wie die Einstellungen aus T2.6, und im Frontend über dieselbe
+Auswertung in `ApiError.fields`.
+
+Befundarten in `GET /api/concepts` (`ConceptIssueKind`):
+`unresolved-prerequisite`, `cycle`, `duplicate`, `without-section`,
+`chapter-empty`.
+
+### Generierung anstoßen
+
+`pnpm concepts:generate [--plan] [--chapter <n>] [--charts] [--report]`.
+Ein Job je Kapitelteil (Zeichenbudget 15 000) über die Queue; Betrieb siehe
+RUNBOOK 12.
+
+---
+
+## 14. Chart-Daten — Schema, Zustandsmodell und Zugriff (AP3.T3.3)
+
+Quelle der Wahrheit ist `apps/backend/src/db/schema.ts`; Migration
+`0004_milky_living_lightning.sql`. Vertragskonstanten in
+`packages/shared/src/chart.ts`.
+
+> **Die wichtigste Regel dieses Abschnitts:** Folge-APs lesen **ausschließlich
+> Charts im Zustand `approved`**. `raw` ist ungeprüfte Modellausgabe,
+> `validated` hat nur die automatischen Prüfungen aus T3.4 bestanden. Wer
+> `raw` verwendet, baut auf Zahlen, die niemand geprüft hat.
+>
+> Und `validated` ist **nicht** dasselbe wie „extern bestätigt": Der
+> Caption-Abgleich greift nur, wenn die Bildunterschrift Prozentwerte nennt —
+> am echten Bestand traf das auf 6 von 25 lesbaren Charts zu. Deshalb führt der
+> Weg nach `approved` in der Regel über die Review-Ansicht, nicht über die
+> Sammelfreigabe. Vollständiges Zustandsmodell: Abschnitt 15.
+
+### Das 13×13-Raster
+
+`CHART_HANDS` enthält die 169 Blätter in Rasterreihenfolge: Diagonale = Paare
+(`AA`), oberhalb = suited (`AKs`), unterhalb = offsuit (`AKo`). Die Reihenfolge
+ist die Lesereihenfolge des Charts. `handComboWeight(hand)` liefert das
+Combo-Gewicht (Paare 6, suited 4, offsuit 12) — dieselbe Gewichtung, mit der
+das Buch seine Caption-Prozente bildet, und die Grundlage der gewichteten
+Gegenprobe in T3.4.
+
+### Aktionen
+
+`CHART_ACTION_KINDS` ist eine **geschlossene Menge**:
+`fold`, `check`, `call`, `limp`, `bet`, `raise`, `three_bet`, `four_bet`,
+`five_bet`, `all_in`. Die Größenangabe steht daneben als normalisierte
+Zeichenkette (`2.5x`, `10bb`, `pot`) und ist `null`, wenn das Chart keine
+nennt. Begründung und Herleitung aus den tatsächlichen Bildunterschriften:
+[ADR-0032](./DECISIONS.md).
+
+### `range_chart`
+
+| Spalte                    | Typ                      | Hinweis                                                                |
+| ------------------------- | ------------------------ | ---------------------------------------------------------------------- |
+| `id`                      | `uuid` PK                |                                                                        |
+| `asset_id`                | `uuid` FK → `book_asset` | **eindeutig** — genau ein Chart je Bild                                |
+| `state`                   | `text`                   | CHECK: `raw` \| `validated` \| `approved` \| `failed` \| `unusable`    |
+| `model`                   | `text`                   | Modell, das die Matrix gelesen hat (Herkunft)                          |
+| `run_id`                  | `text`                   | Lauf, in dem der Datensatz entstand                                    |
+| `actions`                 | `jsonb`                  | Legende: `[{ kind, sizing }]`                                          |
+| `spot`                    | `jsonb`                  | deterministisch aus der Unterschrift, siehe unten                      |
+| `uncertain`               | `jsonb`                  | vom Modell gemeldete Lücken plus seine Legendenzuordnung               |
+| `cell_count`              | `integer`                | 169 = vollständig                                                      |
+| `failure_reason`          | `text` NULL              | gesetzt, wenn `state = 'failed'`                                       |
+| `unusable_reason`         | `text` NULL              | Pflicht, wenn `state = 'unusable'` (T3.4)                              |
+| `legend_totals`           | `jsonb`                  | die im Bild gedruckte Legende als `{ aktionsart: prozent }` (T3.6-fix) |
+| `legend_present`          | `boolean`                | trägt das Bild überhaupt eine Legende mit Prozenten?                   |
+| `legend_labels`           | `jsonb`                  | die Beschriftungen im Wortlaut des Bildes — Beleg der Ablesung         |
+| `validated_at`            | `timestamptz` NULL       | letzter Validierungslauf (T3.4)                                        |
+| `approved_at`             | `timestamptz` NULL       | Zeitpunkt der Freigabe (T3.4)                                          |
+| `duration_ms`, `*_tokens` | `integer` NULL           | Verbrauch des Aufrufs                                                  |
+
+### `range_chart_cell`
+
+| Spalte        | Typ                       | Hinweis                                    |
+| ------------- | ------------------------- | ------------------------------------------ |
+| `chart_id`    | `uuid` FK → `range_chart` | `ON DELETE CASCADE`                        |
+| `hand`        | `text`                    | `AA`, `AKs`, `AKo`                         |
+| `action_kind` | `text`                    | CHECK gegen die geschlossene Menge         |
+| `sizing`      | `text`                    | `''` wenn ohne — Teil des Primärschlüssels |
+| `percent`     | `double precision`        | CHECK `>= 0 and <= 100`                    |
+
+Primärschlüssel `(chart_id, hand, action_kind, sizing)`, Index
+`range_chart_cell_hand_idx (hand, action_kind)`.
+
+**Warum eine eigene Tabelle und kein JSON-Blob:** Die Spot-Suche aus T3.5 und
+die Drills aus AP7 fragen gezielt nach einzelnen Blättern. Mit der Tabelle
+beantwortet das ein Index; mit einem Blob müsste jedes Mal das ganze Chart
+geladen und geparst werden.
+
+### Spot-Metadaten
+
+`ChartSpot` in `packages/shared/src/chart.ts`: `format`, `heroPosition`,
+`villainPosition`, `stackDepthBb`, `actionSequence`, `sizings`. Alles
+**deterministisch** aus der Bildunterschrift gelesen
+(`apps/backend/src/chart/spot.ts`) — das Modell bekommt die Angaben als
+Kontext, bestimmt sie aber nicht. Was die Unterschrift nicht hergibt, bleibt
+`null`.
+
+### Zustandsmodell
+
+| Zustand     | Bedeutung                                              | Entsteht in |
+| ----------- | ------------------------------------------------------ | ----------- |
+| `raw`       | vom Modell gelesen, strukturell vollständig, ungeprüft | T3.3        |
+| `validated` | automatische Prüfungen bestanden                       | T3.4        |
+| `approved`  | menschlich freigegeben — **nur das ist sichtbar**      | T3.4        |
+| `failed`    | nicht verwertbar; `failure_reason` nennt den Grund     | T3.3        |
+| `unusable`  | von Hand verworfen; `unusable_reason` ist Pflicht      | T3.4        |
+
+T3.3 setzt ausschließlich `raw` und `failed`. Die Übergänge nach `validated`,
+`approved` und `unusable` liegen alle in T3.4, an **einer** Stelle
+(`chart/validation-store.ts`); die vollständige Übergangstabelle steht in
+Abschnitt 15.
+
+**`failed` und `unusable` sind nicht dasselbe.** `failed` heißt: Die Pipeline
+konnte aus dem Bild keine verwertbare Matrix lesen — meist, weil das Bild gar
+kein Aktionsraster trägt. `unusable` heißt: Ein Mensch hat eine Matrix gesehen
+und sie verworfen. Das erste ist eine technische Feststellung, das zweite ein
+Urteil.
+
+### Wie T3.4 die Rohdaten abholt
+
+```ts
+import { and, asc, eq } from 'drizzle-orm';
+import { rangeChart, rangeChartCell } from '../db/schema.js';
+
+// Alle ungeprueften Charts eines Laufs.
+const offen = await db
+  .select()
+  .from(rangeChart)
+  .where(eq(rangeChart.state, 'raw'))
+  .orderBy(asc(rangeChart.createdAt));
+
+// Die Matrix eines Charts.
+const zellen = await db.select().from(rangeChartCell).where(eq(rangeChartCell.chartId, chartId));
+```
+
+Für die gewichtete Gegenprobe stehen die Caption-Prozente unverändert in
+`book_asset.caption_actions` (T3.1) und das Combo-Gewicht in
+`handComboWeight()`. Die Prüfregeln selbst — Frequenzsumme je Hand, Toleranz
+gegen die Caption, Plausibilität — entstehen in T3.4 und **nicht** hier.
+
+### Wie Folge-APs Charts abfragen
+
+```ts
+// Alle freigegebenen Charts eines Spots.
+const charts = await db
+  .select()
+  .from(rangeChart)
+  .where(
+    and(
+      eq(rangeChart.state, 'approved'), // ← Pflicht
+      sql`${rangeChart.spot}->>'heroPosition' = 'SB'`,
+      sql`(${rangeChart.spot}->>'stackDepthBb')::int = 15`,
+    ),
+  );
+
+// Was macht ein bestimmtes Blatt in diesem Chart?
+const aktion = await db
+  .select({
+    kind: rangeChartCell.actionKind,
+    sizing: rangeChartCell.sizing,
+    percent: rangeChartCell.percent,
+  })
+  .from(rangeChartCell)
+  .where(and(eq(rangeChartCell.chartId, chartId), eq(rangeChartCell.hand, 'AJs')));
+```
+
+**`eq(rangeChart.state, 'approved')` ist nicht optional.** Die Content-API aus
+T3.5 setzt diesen Filter als Standard; wer die Tabellen direkt liest, setzt ihn
+selbst.
+
+### Vision-Requests über die Template-Registry
+
+`renderRequest()` nimmt seit T3.3 eine Option `images`:
+
+```ts
+const request = templates.renderRequest('task/chart-digitize', werte, {
+  model,
+  maxTokens: 16384,
+  images: [{ type: 'image', mediaType: 'image/jpeg', data: base64OhnePraefix }],
+});
+```
+
+Der Request entsteht damit weiterhin **an einer Stelle** — das Bild ist
+Nutzlast, keine Prompt-Fassung, und gehört nicht in die Template-Datei. Im
+Aufruf-Protokoll erscheint es als Kurzvermerk (ADR-0028), nicht im Klartext.
+
+### Läufe steuern
+
+`pnpm charts:digitize [--dry-run] [--status] [--limit n] [--chapter n]
+[--asset uuid] [--model id] [--redo]` und
+`pnpm charts:calibrate --model a --model b`. Betrieb: RUNBOOK 13.
+
+### Buchbilder im Container
+
+Der Job-Worker läuft im Backend-Container (ADR-0026), die Bilder liegen auf dem
+Host. Compose hängt `data/book-source/` **read-only** nach
+`/app/data/book-source` ein und setzt `BOOK_SOURCE_DIR` darauf;
+`resolveBookSource()` bevorzugt diese Variable vor der Repo-Wurzel. Auf dem
+Host bleibt sie leer — dort wird die Wurzel gefunden.
+
+| Umgebungsvariable      | Wo             | Bedeutung                             |
+| ---------------------- | -------------- | ------------------------------------- |
+| `BOOK_SOURCE_HOST_DIR` | Host / Compose | Quellverzeichnis, das eingehängt wird |
+| `BOOK_SOURCE_DIR`      | Container      | absoluter Pfad im Container           |
+
+### Zustände unterscheiden: `failed` ist nicht gleich `failed`
+
+`cell_count = 0` mit `failure_reason` „Kein Aktionsraster im Bild erkannt"
+heißt: Das Bild trägt gar keine Strategie (41 der 348 Bilder sind
+Struktur- oder Beispielraster). Das ist **kein** Modellfehler und braucht keine
+Wiederholung. `cell_count` zwischen 1 und 168 heißt dagegen: Das Modell hat die
+Matrix nicht zu Ende gelesen — dieser Fall gehört in einen zweiten Durchlauf.
+`pnpm charts:digitize --status` weist beides getrennt aus.
+
+## 15. Chart-Validierung — Befundmodell, Zustandsübergänge, Review (AP3.T3.4)
+
+Quelle der Wahrheit: `apps/backend/src/db/schema.ts`, Migration
+`0005_worthless_exodus.sql`. Vertragskonstanten in
+`packages/shared/src/validation.ts`.
+
+> **Verbindliche Regel für alle Folge-APs:** Es wird **ausschließlich aus
+> Charts im Zustand `approved`** gelesen — Content-API (T3.5), Renderer (AP6),
+> Drills (AP7), Analyse (AP8). `validated` bedeutet nur, dass die drei
+> automatischen Prüfungen keinen Fehler gefunden haben; ein Mensch hat das
+> Chart dann noch nicht gesehen. Der Filter ist nicht optional.
+
+### Die vier Prüfungen
+
+Alle vier sind **deterministischer Code** in `apps/backend/src/chart/validate.ts`
+und kosten kein Kontingent. Sie bleiben getrennt, weil sie verschiedene
+Wahrheitsquellen anzapfen.
+
+| Prüfung         | Wahrheitsquelle                       | Befundarten                                  | Schweregrad |
+| --------------- | ------------------------------------- | -------------------------------------------- | ----------- |
+| `frequency-sum` | die Matrix selbst                     | `frequency-sum-off`                          | `error`     |
+| `caption-match` | `book_asset.caption_actions` (T3.1)   | `caption-mismatch`, `caption-missing-action` | `error`     |
+|                 |                                       | `caption-not-checkable`                      | `info`      |
+| `plausibility`  | Pokerwissen über die Form einer Range | `incomplete-matrix`, `empty-cell`            | `error`     |
+|                 |                                       | `monotonicity`, `outlier`                    | `warning`   |
+
+> **Warum es vier sind und nicht drei:** Der Caption-Abgleich greift nur, wenn
+> die Bildunterschrift Prozentwerte nennt — bei 6 von 25 Charts. Die im Bild
+> gedruckte Legende gibt es bei 18 von 25. Zusammen decken beide **24 von 25**
+> ab. Die vierte Prüfung ist damit die wirksamste, nicht weil sie schärfer
+> wäre, sondern weil sie fast immer etwas zu vergleichen hat
+> ([ADR-0036](./DECISIONS.md)).
+
+Toleranzen und die Auswahl der Heuristiken: [ADR-0034](./DECISIONS.md),
+für die Legende [ADR-0036](./DECISIONS.md).
+`CHART_TOLERANCES` in `packages/shared/src/validation.ts` ist die einzige
+Stelle, an der die Zahlen stehen.
+
+Jede Heuristik lässt sich einzeln abschalten (`ChartCheckOptions`, CLI-Flags
+`--no-summe`, `--no-caption`, `--no-legende`, `--no-vollstaendigkeit`,
+`--no-monotonie`, `--no-ausreisser`). Das ändert nur, was gemeldet wird — nie, was als bestanden
+gilt.
+
+**Die Gegenprobe rechnet combo-gewichtet.** `weightedTotals()` gewichtet jede
+Zelle mit `handComboWeight()` (Paare 6, suited 4, offsuit 12, Summe 1326) —
+dieselbe Rechnung, mit der das Buch seine Caption-Prozente bildet. Eine
+ungewichtete Mittelung über 169 Zellen liegt systematisch daneben; der Test
+`Combo-Gewichtung > rechnet mit 6/4/12 und nicht ungewichtet` hält beide
+Rechenwege gegeneinander.
+
+### `chart_finding`
+
+Ein Befund je Zeile. Der Bestand wird bei jedem Validierungslauf für das
+betroffene Chart **ersetzt**, nicht ergänzt — es gibt keine Altlasten.
+
+| Spalte        | Typ                       | Hinweis                                                                 |
+| ------------- | ------------------------- | ----------------------------------------------------------------------- |
+| `id`          | `uuid` PK                 |                                                                         |
+| `chart_id`    | `uuid` FK → `range_chart` | `on delete cascade`                                                     |
+| `check`       | `text`                    | CHECK: `frequency-sum` \| `caption-match` \| `plausibility`             |
+| `kind`        | `text`                    | die Befundart aus der Tabelle oben                                      |
+| `severity`    | `text`                    | CHECK: `error` \| `warning` \| `info`                                   |
+| `hand`        | `text` NULL               | betroffenes Blatt — **zellgenau**, damit der Zweitdurchlauf zielen kann |
+| `action_kind` | `text` NULL               | betroffene Aktion, wenn der Befund eine nennt                           |
+| `measured`    | `real` NULL               | was gemessen wurde                                                      |
+| `expected`    | `real` NULL               | was erwartet war                                                        |
+| `detail`      | `text`                    | Klartext für die Review-Ansicht                                         |
+
+### Zustandsübergänge
+
+`raw` → `validated` → `approved` ist der Normalweg. Alle Übergänge liegen an
+**einer** Stelle: `apps/backend/src/chart/validation-store.ts`.
+
+| Von                                | Auslöser                                 | Nach        |
+| ---------------------------------- | ---------------------------------------- | ----------- |
+| `raw` / `validated`                | Validierung ohne `error`-Befund          | `validated` |
+| `raw` / `validated`                | Validierung mit mindestens einem `error` | `raw`       |
+| `validated`                        | `approveChart` / Sammelfreigabe          | `approved`  |
+| beliebig außer `failed`            | `markUnusable(reason)`                   | `unusable`  |
+| `approved` / `unusable` / `failed` | erneute Validierung                      | unverändert |
+
+Drei Regeln, die im Code festgeschrieben sind:
+
+- **`validateAndStore` vergibt `approved` nie.** Die Freigabe ist ein eigener,
+  ausdrücklicher Schritt.
+- **`approveChart` verlangt `validated`.** Bei jedem anderen Zustand wirft es
+  `ApprovalRefused` mit der Zahl der offenen Fehlerbefunde; die Route antwortet
+  mit `400` und `error: 'invalid_chart'`.
+- **Eine Freigabe wird nicht stillschweigend zurückgenommen.** `approved`,
+  `unusable` und `failed` sind gegen erneute Läufe eingefroren; die Befunde
+  werden für sie trotzdem fortgeschrieben.
+
+`markUnusable` verlangt eine nichtleere Begründung. Das ist der von der DoD
+zugelassene Rest — er muss benannt sein, nicht nur gezählt.
+
+### Wie manuelle Korrekturen erkennbar bleiben
+
+`range_chart_cell` trägt seit T3.4 zwei zusätzliche Spalten:
+
+| Spalte         | Typ                | Hinweis                                              |
+| -------------- | ------------------ | ---------------------------------------------------- |
+| `source`       | `text`             | CHECK: `model` \| `manual`, Default `model`          |
+| `corrected_at` | `timestamptz` NULL | gesetzt, sobald ein Mensch die Zelle geschrieben hat |
+
+Daraus folgen zwei Zusicherungen:
+
+- **Ein erneuter Validierungslauf überschreibt sie nicht.** Die Validierung
+  liest Zellen, sie schreibt keine.
+- **Der Zweitdurchlauf überspringt sie.** `chart_recheck.cells_protected` zählt,
+  wie viele Zellen deshalb unangetastet blieben.
+
+`ReviewChartSummary.manualCells` weist die Zahl in Liste und Detail aus.
+
+### `chart_recheck` — der Vergleich beider Ablesungen
+
+Eine Zeile je Zweitdurchlauf. Ohne sie wäre „der zweite Wert gilt" ein stilles
+Überschreiben.
+
+| Spalte                                                   | Typ                       | Hinweis                                                    |
+| -------------------------------------------------------- | ------------------------- | ---------------------------------------------------------- |
+| `chart_id`                                               | `uuid` FK → `range_chart` |                                                            |
+| `model`, `run_id`                                        | `text`                    | Herkunft der zweiten Ablesung                              |
+| `flagged_hands`                                          | `jsonb`                   | die Blätter, auf die der geschärfte Prompt hingewiesen hat |
+| `cells_compared` / `_agreed` / `_changed` / `_protected` | `integer`                 | Ergebnis des Zellvergleichs                                |
+| `decision`                                               | `text`                    | die Entscheidung im Klartext                               |
+
+Zwei Zellen gelten als übereinstimmend, wenn dieselben Aktionen mit höchstens
+**5 pp** Unterschied auftreten. Stimmen alle überein, ist der Befund vermutlich
+echt und das Chart bleibt beanstandet. Unterscheiden sie sich, gilt der zweite
+Wert — er entstand mit einem Prompt, der die Schwachstelle benannt hat.
+Begründung: [ADR-0034](./DECISIONS.md).
+
+### Job-Typ `chart.legend` — der einmalige Legenden-Nachzug
+
+| Feld      | Typ      | Pflicht | Hinweis                             |
+| --------- | -------- | ------- | ----------------------------------- |
+| `chartId` | `string` | ja      | ein Chart **ohne** gelesene Legende |
+| `runId`   | `string` | ja      | Kennung des Nachzug-Laufs           |
+| `model`   | `string` | nein    | überschreibt die Modellwahl         |
+
+**Nur für Charts aus der Zeit vor Fassung 2 des Digitalisierungs-Templates.**
+Neue Charts bekommen die Legende im selben Vision-Aufruf wie die Matrix — ein
+zweiter Aufruf je Chart würde den Kontingentbedarf verdoppeln. Der Job prüft
+selbst, ob die Legende schon gelesen ist, und verweigert sich sonst.
+
+Template `task/chart-legend`, Ausgabegrenze **2 048** Token (gegen 32 768 bei
+`chart.digitize`); ohne Blattliste, ohne Rasterarbeit. Gemessen: 6 663 Tokens
+und 8 Sekunden je Chart. Der Job schreibt ausschließlich die Legendenspalten —
+**die Matrix bleibt unangetastet** — und stößt danach die Validierung an.
+
+### Job-Typ `chart.recheck`
+
+| Feld      | Typ      | Pflicht | Hinweis                          |
+| --------- | -------- | ------- | -------------------------------- |
+| `chartId` | `string` | ja      | das beanstandete Chart           |
+| `runId`   | `string` | ja      | Kennung des Zweitdurchlauf-Laufs |
+| `model`   | `string` | nein    | überschreibt die Modellwahl      |
+
+Der Job prüft **selbst**, ob das Chart einen `error`-Befund hat, und wirft
+sonst `JobPayloadError` — Kontingent geht nur in Beanstandetes, auch wenn der
+Aufrufer sich irrt. Template `task/chart-recheck`, Persona
+`persona/chart-reader`, Ausgabegrenze 32 768 Token (wie `chart.digitize`).
+
+### Review-Endpunkte
+
+Alle auth-geschützt (`app.requireSession`); die schreibenden zusätzlich
+CSRF-pflichtig. **Abgrenzung:** Das ist die Prüfoberfläche, nicht die
+Content-API — die liegt seit T3.5 unter `/api/content` (Abschnitt 16).
+
+| Methode | Pfad                            | Zweck                                             |
+| ------- | ------------------------------- | ------------------------------------------------- |
+| `GET`   | `/api/charts`                   | Liste mit Zuständen, Befundzahlen, Approved-Quote |
+| `GET`   | `/api/charts/:id`               | Matrix, Befunde, beide Gesamtfrequenzen, Bild-URL |
+| `GET`   | `/api/charts/:id/image`         | das Original-Bild, `cache-control: no-store`      |
+| `PATCH` | `/api/charts/:id/cells`         | manuelle Korrektur, danach erneute Prüfung        |
+| `POST`  | `/api/charts/:id/validate`      | Prüfung eines Charts erneut fahren                |
+| `POST`  | `/api/charts/:id/approve`       | Einzelfreigabe                                    |
+| `POST`  | `/api/charts/approve-validated` | Sammelfreigabe aller `validated`                  |
+| `POST`  | `/api/charts/:id/unusable`      | verwerfen, Begründung Pflicht                     |
+
+Fehlerantwort der schreibenden Routen:
+`{ error: 'invalid_chart', message, fields: [{ field, message }] }` — dasselbe
+Muster wie bei den LLM-Einstellungen und der Konzept-Review; der API-Client
+erkennt es über `isChartErrorResponse`.
+
+**Das Bild verlässt den Server nur an den angemeldeten Prüfer.** `no-store`
+verhindert, dass ein Zwischenspeicher Buchinhalte vorhält.
+
+### Läufe steuern
+
+`pnpm charts:validate [--status] [--recheck [n]] [--approve] [--limit n]`
+plus die Abschalt-Flags der Heuristiken. Betrieb: RUNBOOK 14.
+
+## 16. Content-API — Endpunkt-Referenz für AP5 bis AP8 (AP3.T3.5)
+
+Vertrag in `packages/shared/src/content.ts`, Umsetzung in
+`apps/backend/src/content/`. **Dieser Abschnitt ist das Nachschlagewerk**: Wer
+in AP5, AP6, AP7 oder AP8 an Buchinhalte, Konzepte oder Charts will, kommt hier
+her und nicht an die Tabellen.
+
+> **Drei Regeln gelten ausnahmslos:**
+>
+> 1. **Alles hängt am Auth-Guard aus T1.3.** Es gibt keine öffentliche
+>    Content-Route, auch nicht für Bilder. Ohne Session: `401`.
+> 2. **Nur lesend.** Ausschließlich `GET`. Wer Zustände ändern will, nimmt die
+>    Review-Ansicht aus T3.4.
+> 3. **Nur `approved` Charts** — siehe „Die Approved-Regel" weiter unten.
+
+### Überblick
+
+| Methode | Pfad                                  | Liefert                                             |
+| ------- | ------------------------------------- | --------------------------------------------------- |
+| `GET`   | `/api/content/chapters`               | alle Kapitel mit Zählständen, **ohne** Volltexte    |
+| `GET`   | `/api/content/chapters/:nr/sections`  | Sektionen eines Kapitels, **ohne** Volltexte        |
+| `GET`   | `/api/content/sections/*`             | eine Sektion **mit** Volltext, Konzepten, Assets    |
+| `GET`   | `/api/content/concepts`               | Konzeptliste, gefiltert                             |
+| `GET`   | `/api/content/concepts/learning-path` | gültige Unterrichtsreihenfolge                      |
+| `GET`   | `/api/content/concepts/:slugOrId`     | Konzept mit Voraussetzungen in **beide** Richtungen |
+| `GET`   | `/api/content/charts`                 | Chartliste, **ohne** Matrizen                       |
+| `GET`   | `/api/content/charts/:id`             | Chart mit vollständiger 13×13-Matrix                |
+| `GET`   | `/api/content/charts/:id/cells/:hand` | **eine** Zelle statt 169                            |
+| `GET`   | `/api/content/spots`                  | Spot-Suche mit Rangfolge und Erklärung              |
+| `GET`   | `/api/content/assets/:assetId/image`  | das Buchbild, mit ETag und Caching                  |
+
+Fehlerantwort durchgängig:
+`{ error: 'invalid_request' | 'not_found', message, allowed? }`. `allowed`
+nennt bei einem ungültigen Filterwert die zulässige Menge — das spart eine
+Runde durch die Doku. Erkennung im Frontend über `isContentErrorResponse`.
+
+### Kontextdisziplin: wie man gezielt eine Sektion lädt
+
+Das ist der Grund für den Zuschnitt. AP5 lädt für eine Lerneinheit **einzelne
+Sektionen** in den Prompt, nicht ganze Kapitel:
+
+```ts
+// 1. Zum Konzept die zugehoerigen Sektionen holen - der Konzeptgraph aus T3.2
+//    weiss, welcher Buchtext zum Thema gehoert.
+const konzept = await get<ContentConceptDetail>('/api/content/concepts/pot-odds');
+//    konzept.sections = [{ id, sectionKey, title, chapterNumber }, …]
+
+// 2. Genau die eine Sektion laden, die gebraucht wird.
+const sektion = await get<SectionDetail>(`/api/content/sections/${konzept.sections[0].sectionKey}`);
+//    sektion.body ist der Volltext - und nur dieser eine.
+```
+
+Der Weg über die Kapitelübersicht ist der **falsche**, wenn ein Text gebraucht
+wird: Sie liefert absichtlich keinen. Sie ist für Navigation da.
+
+**`bodyChars` ist die Budgetplanung.** Jede `SectionSummary` nennt die Länge
+ihres Volltexts in Zeichen, ohne ihn zu liefern. Wer weiß, dass er 6 000
+Zeichen unterbringen kann, sucht sich damit die passenden Sektionen aus, bevor
+er lädt.
+
+Der Wildcard im Pfad (`sections/*`) ist nötig, weil der fachliche Schlüssel
+selbst einen Schrägstrich trägt (`ch07/bet-sizing`). Eine UUID geht ebenso.
+
+### Kapitel und Sektionen
+
+`GET /api/content/chapters` → `ChapterListResponse`
+
+```jsonc
+{
+  "chapters": [
+    {
+      "chapterNumber": 1,
+      "partNumber": 1,
+      "partTitle": "…",
+      "title": "…",
+      "ordinal": 0,
+      "pageStart": 21,
+      "pageEnd": 93,
+      "sectionCount": 48,
+      "conceptCount": 16,
+      "chartCount": 9,
+    },
+  ],
+  "totals": { "chapters": 14, "sections": 367, "concepts": 168, "approvedCharts": 16 },
+}
+```
+
+`chartCount` zählt **nur freigegebene** Charts — dieselbe Regel wie überall.
+
+`GET /api/content/chapters/:nr/sections` → `SectionListResponse` mit
+`{ chapter, sections }`. Je Sektion: `sectionKey`, `title`, `level`, `ordinal`,
+`pageStart`/`pageEnd`, `bodyChars`, `conceptCount`, `assetCount`. Ein unbekanntes
+Kapitel ergibt `404`, keine leere Liste — der Unterschied zwischen „gibt es
+nicht" und „ist leer" bleibt sichtbar.
+
+`GET /api/content/sections/*` → `SectionDetail`: alles aus der Liste, dazu
+`body`, `chapterTitle`, `partNumber`, `concepts` und `assets`. Jedes Asset trägt
+`imageUrl`, und — falls digitalisiert — `chartId` mit `chartState`. Frequenzen
+liefert das Sektionsdetail **nicht**; dafür geht es über den Chart-Abruf, und
+damit über die Approved-Regel.
+
+### Konzepte
+
+`GET /api/content/concepts?chapter=&topicArea=&state=&level=`
+
+| Filter      | Werte                                    | Vorgabe      |
+| ----------- | ---------------------------------------- | ------------ |
+| `chapter`   | Kapitelnummer                            | alle         |
+| `topicArea` | `CONCEPT_TOPIC_AREA_IDS`                 | alle         |
+| `state`     | `draft` \| `approved`                    | **approved** |
+| `level`     | `einsteiger`/`fortgeschritten`/`experte` | alle         |
+
+**`level` ist eine Obergrenze, kein exakter Wert.** Wer nach `fortgeschritten`
+fragt, bekommt auch Einsteiger-Konzepte — sie sind für ihn ebenfalls geeignet.
+Andersherum nicht.
+
+`GET /api/content/concepts/:slugOrId` → `ContentConceptDetail`:
+
+- `prerequisites` — was vorher verstanden sein muss,
+- `dependents` — was darauf aufbaut (**die Gegenrichtung**; AP5 weiß damit nach
+  einer Lerneinheit, was jetzt freigeschaltet ist),
+- `unresolvedPrerequisites` — vorgeschlagene Voraussetzungen ohne Treffer im
+  Graphen, aus T3.2 aufbewahrt statt verworfen,
+- `sections`, `charts` (letztere wieder nur `approved`).
+
+`GET /api/content/concepts/learning-path` → `LearningPathResponse`. Topologische
+Ordnung (Kahn, ebenenweise) über die gefilterte Menge:
+
+```jsonc
+{ "steps": [ { "step": 1, "tier": 0, "concept": { … } } ],
+  "cyclic": [], "totals": { "steps": 7, "tiers": 3 } }
+```
+
+`tier` ist die eigentlich nützliche Angabe: Konzepte derselben Ebene sind
+untereinander unabhängig und in beliebiger Reihenfolge unterrichtbar.
+Voraussetzungen **außerhalb** der gefilterten Menge werden ignoriert — sonst
+blockierte ein einzelnes nicht freigegebenes Konzept den ganzen Pfad. `cyclic`
+ist leer, solange der Graph zyklenfrei ist (T3.2 prüft das).
+
+### Charts
+
+`GET /api/content/charts?chapter=&concept=&includeUnapproved=` →
+`ChartListResponse`. Je Chart Metadaten **ohne** Matrix: `spot`, `actions`,
+`cellCount`, `model`, `manualCells`, `chapterNumber`, `sectionKey`, `imageUrl`.
+
+`GET /api/content/charts/:id` → `ChartDetail`: zusätzlich
+
+- `matrix` — genau die vorhandenen Zellen in Rasterreihenfolge (`CHART_HANDS`),
+  jede mit `actions` und `source` (`model` \| `manual`),
+- `uncertain` — vom Modell gemeldete Lücken,
+- `weightedTotals` — combo-gewichtet (6/4/12),
+- `captionTotals` — die Prozentwerte der Bildunterschrift aus T3.1 als
+  unabhängige Gegenprobe,
+- `approvedAt`.
+
+**Herkunft ist Teil der Antwort.** `model` sagt, welches Modell gelesen hat;
+`manualCells` und `source` sagen, wo ein Mensch korrigiert hat. Ein Folge-AP
+kann damit unterscheiden, wie belastbar eine Zahl ist.
+
+### Ein einzelnes Blatt abfragen
+
+`GET /api/content/charts/:id/cells/:hand` → `CellResponse`
+
+```jsonc
+{ "chartId": "…", "hand": "AKs",
+  "actions": [ { "kind": "raise", "sizing": "2.25x", "percent": 100 } ],
+  "source": "model", "correctedAt": null,
+  "spot": { "heroPosition": "CO", "stackDepthBb": 40, … },
+  "state": "approved" }
+```
+
+Das ist der Baustein für **objektiv prüfbare Fragen** in AP5 und AP7: „Was macht
+AKs im CO bei 40bb?" beantwortet sich aus gespeicherten Zahlen, ohne Modell und
+ohne die ganze Matrix. Der `spot` kommt mit, damit die Antwort für sich allein
+verständlich ist. Eine unbekannte Blattbezeichnung ergibt `400` mit Hinweis auf
+die Schreibweise des Rasters.
+
+### Spot-Suche
+
+`GET /api/content/spots?position=&vs=&stack=&tolerance=&action=&format=&limit=`
+
+| Parameter   | Bedeutung                                                  |
+| ----------- | ---------------------------------------------------------- |
+| `position`  | Position des Helden (`CHART_POSITIONS`)                    |
+| `vs`        | Gegenposition                                              |
+| `stack`     | Stacktiefe in bb — **als Bereich gesucht**                 |
+| `tolerance` | Umgebung um `stack`, Vorgabe `SPOT_STACK_TOLERANCE_BB` = 5 |
+| `action`    | Aktionsfolge; `unopened`/`rfi`/`open` meint Eröffnung      |
+| `format`    | `cash` \| `mtt`                                            |
+
+Antwort: `matches` (nach `score` sortiert), `query`, `coverage`, `explanation`.
+
+Jeder Treffer trägt `matched` und `missed` im Klartext — **`missed` ist so
+wichtig wie `matched`**: Ein Chart, dessen Unterschrift keine Stacktiefe nennt,
+passt vielleicht trotzdem, und der Aufrufer soll das entscheiden können.
+
+`coverage` steht in **jeder** Antwort, nicht nur in der leeren: abgedeckter
+Stacktiefen-Bereich, vorhandene Positionen und Spielformen, Zahl der
+durchsuchten Charts. Wer nach 200bb sucht und liest, dass der Bestand bei 40bb
+endet, weiß sofort, woran es lag.
+
+`explanation` erklärt eine leere Antwort — und weist auch auf einen **nur
+schwachen** besten Treffer hin, statt ihn kommentarlos auszuliefern.
+Suchlogik und Gewichte: [ADR-0035](./DECISIONS.md).
+
+### Bilder
+
+`GET /api/content/assets/:assetId/image`
+
+| Header          | Wert                                   |
+| --------------- | -------------------------------------- |
+| `content-type`  | aus der Dateiendung, nur Bildformate   |
+| `cache-control` | `private, max-age=31536000, immutable` |
+| `etag`          | starker ETag aus dem **Dateiinhalt**   |
+| `last-modified` | Zeitstempel der Datei                  |
+| `vary`          | `Cookie`                               |
+
+Ein bedingter Abruf mit `if-none-match` beantwortet sich mit `304` ohne
+Nutzlast. `private` statt `public`, weil die Auslieferung an eine Session
+gebunden ist — ein gemeinsamer Zwischenspeicher dürfte das Bild nicht an den
+Nächsten weitergeben.
+
+**Angefragt wird eine ID, nie ein Pfad.** Der Dateipfad stammt aus der
+Datenbank und wird trotzdem gegen das Bildverzeichnis geprüft
+(`safeAssetPath()`) — ein Pfad aus der Datenbank ist kein Beweis, nur eine
+wahrscheinlichere Herkunft. Eine Kennung, die keine UUID ist, ergibt `404`.
+
+### Die Approved-Regel
+
+> **Verbindlich für AP5 bis AP8: Es werden ausschließlich Charts im Zustand
+> `approved` geliefert.** Der Parameter `includeUnapproved=true` öffnet die
+> Antwort für `raw`, `validated`, `failed` und `unusable` — er ist **allein der
+> Review-Ansicht aus T3.4 vorbehalten**. Ein Folge-AP, der ihn nicht setzt,
+> kann gar nicht versehentlich auf ungeprüfte Frequenzen zugreifen.
+
+Die Regel steht im Code an **einer** Stelle: `stateCondition()` in
+`apps/backend/src/content/chart-queries.ts`. Sie greift in
+
+- `GET /api/content/charts` (Liste),
+- `GET /api/content/charts/:id` (Detail),
+- `GET /api/content/charts/:id/cells/:hand` (Zellabruf),
+- `GET /api/content/spots` (Suche),
+- `ContentConceptDetail.charts` (Charts am Konzept),
+- `ChapterSummary.chartCount` (Zählstand).
+
+Ein Chart, das nach `unusable` zurückgezogen wird, verschwindet damit sofort aus
+allen Antworten — ohne dass irgendwo eine zweite Bedingung nachgezogen werden
+müsste.
+
+**Was `validated` nicht heißt:** dass ein Mensch die Zahlen gesehen hat. Der
+Zustandsvertrag steht in Abschnitt 15; die Content-API liefert `validated`
+deshalb genauso wenig aus wie `raw`.

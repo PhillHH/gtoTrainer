@@ -1,0 +1,118 @@
+{
+  "$comment": [
+    "Sollwerte des Kalibrierungslaufs (AP3.T3.3, Scope-Delta 3).",
+    "",
+    "Ausschliesslich Zahlen und Blattbezeichnungen - keine Bildkopien, keine",
+    "Buchtexte. 'captionPercent' stammt aus der Bildunterschrift und ist damit",
+    "unabhaengig von jeder Vision-Auswertung; 'cells' habe ich von Hand aus dem",
+    "Bild abgelesen (Datum 2026-08-24). Beides dient zugleich als",
+    "Regressionsgrundlage fuer spaetere Prompt- oder Modellwechsel."
+  ],
+  "charts": [
+    {
+      "handRange": 1,
+      "file": "p0025_01.jpeg",
+      "bauart": "Strukturraster ohne Aktionsfarben (Legende: Suited/Pocket Pair/Offsuit)",
+      "warum": "Ehrlichkeitsprobe: 41 der 348 Charts tragen keine Aktions-Prozente. Erwartet wird eine leere Matrix mit Begruendung, keine erfundene Strategie.",
+      "erwartung": "leer",
+      "captionPercent": {},
+      "cells": []
+    },
+    {
+      "handRange": 7,
+      "file": "p0051_01.jpeg",
+      "bauart": "3 Aktionen, dichte Mischfrequenzen (BB-Verteidigung)",
+      "warum": "Dichtester Fall der Stichprobe - hier scheitern schwache Modelle an den Anteilen mehrfarbiger Zellen.",
+      "erwartung": "matrix",
+      "captionPercent": { "three_bet": 9.7, "call": 56.8, "fold": 33.5 },
+      "cells": []
+    },
+    {
+      "handRange": 8,
+      "file": "p0052_01.jpeg",
+      "bauart": "2 Aktionen, zweifarbig ohne Mischzellen (CO RFI 40bb)",
+      "warum": "Einfachster Fall - wer den nicht sauber liest, scheidet sofort aus.",
+      "erwartung": "matrix",
+      "captionPercent": { "raise": 31.2, "fold": 68.8 },
+      "cells": [
+        { "hand": "AA", "kind": "raise", "percent": 100 },
+        { "hand": "AKs", "kind": "raise", "percent": 100 },
+        { "hand": "A2s", "kind": "raise", "percent": 100 },
+        { "hand": "KK", "kind": "raise", "percent": 100 },
+        { "hand": "22", "kind": "raise", "percent": 100 },
+        { "hand": "76s", "kind": "raise", "percent": 100 },
+        { "hand": "A9o", "kind": "raise", "percent": 100 },
+        { "hand": "A7o", "kind": "fold", "percent": 100 },
+        { "hand": "K4s", "kind": "fold", "percent": 100 },
+        { "hand": "Q5s", "kind": "fold", "percent": 100 },
+        { "hand": "J9o", "kind": "fold", "percent": 100 },
+        { "hand": "72s", "kind": "fold", "percent": 100 }
+      ]
+    },
+    {
+      "handRange": 11,
+      "file": "p0064_01.jpeg",
+      "bauart": "2 Aktionen, Call/Fold gegen Rejam (BN 15bb)",
+      "warum": "Zweiter einfacher Fall, aber andere Aktionsmenge (Call statt Raise) - prueft, ob die Legende gelesen und nicht geraten wird.",
+      "erwartung": "matrix",
+      "captionPercent": { "call": 48, "fold": 52 },
+      "cells": []
+    },
+    {
+      "handRange": 96,
+      "file": "p0307_01.jpeg",
+      "bauart": "3 Aktionen, Push/Limp/Fold (SB vs BB 15bb)",
+      "warum": "Typischer Turnier-Chart mit drei Farben und vielen schmalen Mischanteilen am linken Zellenrand.",
+      "erwartung": "matrix",
+      "captionPercent": { "all_in": 23.7, "limp": 61.5, "fold": 14.8 },
+      "cells": [
+        { "hand": "AA", "kind": "limp", "percent": 100 },
+        { "hand": "KK", "kind": "limp", "percent": 100 },
+        { "hand": "99", "kind": "limp", "percent": 100 },
+        { "hand": "76o", "kind": "limp", "percent": 100 },
+        { "hand": "AKo", "kind": "all_in", "percent": 100 },
+        { "hand": "A2s", "kind": "all_in", "percent": 100 },
+        { "hand": "22", "kind": "all_in", "percent": 100 },
+        { "hand": "32o", "kind": "fold", "percent": 100 },
+        { "hand": "92o", "kind": "fold", "percent": 100 }
+      ]
+    },
+    {
+      "handRange": 99,
+      "file": "p0310_01.jpeg",
+      "bauart": "4 Aktionen mit Sizing-Kennung (SB vs BB 25bb, Raise 3.3x)",
+      "warum": "Einziger Fall der Stichprobe mit vier Aktionen und einer Groessenangabe - prueft, ob Sizing und Aktionsart getrennt erfasst werden.",
+      "erwartung": "matrix",
+      "captionPercent": { "all_in": 1.8, "raise": 30, "limp": 50.3, "fold": 17.9 },
+      "cells": [
+        { "hand": "AA", "kind": "raise", "percent": 100 },
+        { "hand": "AKs", "kind": "raise", "percent": 100 },
+        { "hand": "AKo", "kind": "raise", "percent": 100 },
+        { "hand": "KK", "kind": "raise", "percent": 100 },
+        { "hand": "QQ", "kind": "raise", "percent": 100 },
+        { "hand": "66", "kind": "limp", "percent": 100 },
+        { "hand": "55", "kind": "limp", "percent": 100 },
+        { "hand": "32o", "kind": "fold", "percent": 100 },
+        { "hand": "92o", "kind": "fold", "percent": 100 },
+        { "hand": "T2o", "kind": "fold", "percent": 100 }
+      ]
+    },
+    {
+      "handRange": 300,
+      "file": "p0552_01.jpeg",
+      "bauart": "3 Aktionen, Reaktion auf 3-Bet (CO 25bb)",
+      "warum": "Spot mit Aktionsfolge in der Unterschrift - prueft nebenbei die deterministische Spot-Erkennung.",
+      "erwartung": "matrix",
+      "captionPercent": { "all_in": 19.7, "call": 39.5, "fold": 40.8 },
+      "cells": []
+    },
+    {
+      "handRange": 348,
+      "file": "p0708_01.jpeg",
+      "bauart": "4 Aktionen, extrem fold-lastig (BN vs UTG 20bb, Fold 82.9%)",
+      "warum": "Randfall der Verteilung: Eine Aktion mit 0,3 % Anteil geht leicht unter, und ein Modell, das 'alles Fold' antwortet, liegt scheinbar fast richtig.",
+      "erwartung": "matrix",
+      "captionPercent": { "all_in": 4.6, "three_bet": 0.3, "call": 12.2, "fold": 82.9 }
+    }
+  ]
+}

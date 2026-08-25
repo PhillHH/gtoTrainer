@@ -28,8 +28,17 @@ export function isLlmModelId(value: unknown): value is LlmModelId {
 
 /** Zulaessige Spanne je Zahlenfeld - Grundlage der serverseitigen Pruefung. */
 export const LLM_SETTINGS_RANGES = {
-  /** Ein Vision-Aufruf aus AP3 braucht deutlich mehr als ein Textaufruf. */
-  timeoutMs: { min: 5_000, max: 600_000 },
+  /**
+   * Ein Vision-Aufruf aus AP3 braucht deutlich mehr als ein Textaufruf.
+   *
+   * Obergrenze in T3.3 von 600 000 auf 1 800 000 ms angehoben: Der
+   * Kalibrierungslauf zeigte, dass `claude-sonnet-5` bei den dichtesten
+   * 13x13-Rastern die 600 s reisst (4 von 8 Charts der Stichprobe), waehrend
+   * dieselben Charts bei `claude-haiku-4-5` in unter 200 s durchlaufen. Ohne
+   * Luft nach oben waere die Modellwahl nicht durch Qualitaet, sondern durch
+   * eine Zeitgrenze entschieden (ADR-0033).
+   */
+  timeoutMs: { min: 5_000, max: 1_800_000 },
   /** Der Host ist geteilt; mehr als eine Handvoll CLI-Prozesse waere unfair. */
   maxConcurrency: { min: 1, max: 8 },
   /** Mehr Versuche verbrennen bei echter Stoerung nur Kontingent. */

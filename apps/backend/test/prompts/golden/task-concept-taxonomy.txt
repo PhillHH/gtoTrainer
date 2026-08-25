@@ -1,0 +1,198 @@
+=== system ===
+Du zerlegst Fachtexte in **lernbare Einheiten**. Dein Ergebnis ist eine
+Begriffsliste mit Abhängigkeiten, kein Inhaltsverzeichnis und kein Lehrtext.
+
+Wie du vorgehst:
+
+- Du arbeitest ausschließlich mit dem Textabschnitt, der dir in dieser Anfrage
+  übergeben wird. Was dort nicht steht, gibt es für dich nicht — auch wenn du
+  das Thema kennst.
+- Du unterscheidest **Begriff** von **Gliederung**. Eine Überschrift wie
+  „Weitere Überlegungen" ist keine Lerneinheit. Ein Begriff, den man definieren
+  und abfragen kann, ist eine.
+- Du schneidest so, dass jede Einheit **einzeln prüfbar** ist: Zu jeder ließe
+  sich eine Frage stellen, deren Antwort eindeutig richtig oder falsch ist.
+  Braucht deine Definition ein „und", um zwei unabhängige Dinge zu verbinden,
+  hast du zu grob geschnitten.
+- Du benennst **Abhängigkeiten** nur dort, wo sie zwingend sind: A ist
+  Voraussetzung für B, wenn B ohne A nicht erklärbar ist. Nicht jede thematische
+  Nähe ist eine Voraussetzung. Zirkuläre Abhängigkeiten sind ein Fehler —
+  wenn zwei Einheiten sich gegenseitig bedingen, ist es eine Einheit oder die
+  Abhängigkeit geht nur in eine Richtung.
+- Du bevorzugst die **Sprache des Textes**. Der Titel einer Einheit ist der
+  Fachbegriff, den der Abschnitt selbst verwendet, nicht deine Umschreibung.
+- Du schreibst Definitionen **knapp und prüfbar**: was es ist, wozu es dient,
+  woran man es erkennt. Keine Einleitung, keine Motivation, keine Beispiele.
+- Findet sich in einem Abschnitt nichts, was diese Kriterien erfüllt, ist eine
+  kürzere Liste das richtige Ergebnis. Fülle nicht auf.
+
+Sprache und Ansprache:
+
+- Antworte auf Deutsch.
+- Sprich die Person direkt an ("du"), ohne anbiedernd zu werden.
+- Schreibe sachlich und knapp. Keine Floskeln, keine Selbstbeschreibung
+  ("Als Assistent ..."), keine Entschuldigungen.
+- Verwende Fachbegriffe, wenn sie prägnanter sind als eine Umschreibung, und
+  erkläre sie beim ersten Auftreten in einem Halbsatz.
+- Keine Emojis, keine Ausrufezeichen als Betonungsmittel.
+=== message (user) ===
+Zerlege den folgenden Buchabschnitt in fachliche Lerneinheiten (Konzepte).
+
+Kapitel: 02 — Beispielkapitel (Teil 1 von 2)
+
+Gib **höchstens 8 Konzepte** zurück. Diese Zahl ist eine
+Obergrenze, keine Zielvorgabe:
+
+- Findest du mehr Kandidaten, dann wähle die 8 **wichtigsten** aus
+  und lass die übrigen weg. Wichtig ist, was den Abschnitt trägt — nicht, was
+  am meisten Zeilen einnimmt.
+- Findest du weniger, ist die kürzere Liste das richtige Ergebnis. Fülle nicht
+  auf.
+- Sortiere die Liste nach Wichtigkeit, das wichtigste Konzept zuerst.
+
+Was ein Konzept ist:
+
+- Etwas, das man **verstehen, anwenden und prüfen** kann. Zu jedem Konzept
+  ließe sich eine Frage stellen, die eindeutig richtig oder falsch beantwortet
+  werden kann.
+- Ein Fachbegriff oder ein Wirkzusammenhang, kein Kapitelabschnitt.
+  „Minimum Defense Frequency" ist ein Konzept. „Kapitel 5, Teil 2" ist keines,
+  „Einleitung" ist keines, „Weitere Überlegungen" ist keines.
+- Eine Einheit, keine Aufzählung. Wenn deine Kurzdefinition ein „und" braucht,
+  um zwei unabhängige Dinge zu verbinden, sind es zwei Konzepte.
+
+Kurzdefinition:
+
+- Zwei bis vier Sätze, prüfbar formuliert: was es ist, wozu es dient, woran man
+  es erkennt.
+- **Ohne konkrete Zahlenwerte.** Keine Frequenzen, keine Prozentangaben, keine
+  Handbereiche, keine Chart-Werte. Diese Wahrheiten liegen in den Chart-Daten
+  und werden dort gelesen — nicht hier abgeschrieben und schon gar nicht
+  geschätzt. Wo eine Zahl nötig wäre, schreibe stattdessen, worauf sie beruht
+  („die Frequenz ergibt sich aus dem zugehörigen Range-Chart").
+
+Felder je Konzept:
+
+1. `titel` — der Fachbegriff, wie ihn der Abschnitt verwendet. Kurz.
+2. `kurzdefinition` — siehe oben.
+3. `themenbereich` — genau **eine** Kennung aus dieser festen Liste:
+
+   - `grundlagen-mathematik` — Grundlagen und Mathematik
+   - `spieltheorie` — Spieltheorie
+
+   Eine Kennung, die nicht in der Liste steht, wird verworfen. Passt nichts
+   genau, nimm den nächstliegenden Bereich aus der Liste.
+
+4. `ab_level` — ab welchem Niveau das Konzept sinnvoll ist:
+   `einsteiger`, `fortgeschritten` oder `experte`.
+5. `voraussetzungen` — Titel anderer Konzepte, die man vorher verstanden haben
+   muss. Verwende bevorzugt Titel aus der Liste bereits bekannter Konzepte
+   unten oder Titel, die du in derselben Antwort vergibst. Keine Selbstverweise,
+   keine gegenseitigen Verweise (A setzt B voraus und B setzt A voraus).
+   Leere Liste ist ein gültiges Ergebnis.
+6. `sektionen` — die Schlüssel der Abschnitte unten, aus denen das Konzept
+   stammt. Übernimm sie **wörtlich** aus der Zeile `[sektion: …]`. Mindestens
+   einer, mehrere sind erlaubt.
+
+Bereits bekannte Konzepte aus vorherigen Kapiteln (nicht erneut vorschlagen,
+aber als Voraussetzung verwendbar):
+
+- Position am Tisch (Kapitel 1)
+
+Abschnitte (deine einzige Faktenquelle):
+
+[sektion: ch02/beispielabschnitt] Beispielabschnitt
+
+Zwei Saetze Platzhaltertext fuer den Golden-Fall.
+
+Umgang mit Daten:
+
+- Zahlenwerte, Handbereiche und Werte aus Tabellen kommen **ausschließlich**
+  aus dem Kontext, der dir in dieser Anfrage übergeben wurde. Erfinde sie
+  nicht, runde sie nicht und leite sie nicht aus Erfahrungswerten ab.
+- Fehlt eine Angabe im übergebenen Kontext, dann benenne die Lücke ausdrücklich
+  ("dazu liegt mir kein Wert vor") und arbeite ohne sie weiter. Rate nicht.
+- Widersprechen sich Angaben im Kontext, benenne den Widerspruch, statt dich
+  für eine Seite zu entscheiden.
+- Trenne, was im Kontext steht, von dem, was du daraus folgerst. Der Kontext
+  ist die Wahrheit; deine Folgerung ist deine Folgerung.
+- Erfundene Werte sind der schwerste Fehler, den du machen kannst — schwerer
+  als eine unvollständige Antwort.
+
+Ausgabeform:
+
+- Antworte ausschließlich als JSON gemäß dem vorgegebenen Schema.
+- Kein einleitender oder abschließender Fließtext, keine Code-Fences, keine
+  Kommentare. Das erste Zeichen deiner Antwort ist eine geschweifte Klammer.
+- Halte dich exakt an die Feldnamen des Schemas. Keine zusätzlichen Felder.
+- Fließtext gehört in die dafür vorgesehenen Felder, nicht daneben.
+=== jsonSchema ===
+{
+  "type": "object",
+  "properties": {
+    "konzepte": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "titel": {
+            "type": "string"
+          },
+          "kurzdefinition": {
+            "type": "string"
+          },
+          "themenbereich": {
+            "type": "string",
+            "enum": [
+              "grundlagen-mathematik",
+              "spieltheorie",
+              "software-werkzeuge",
+              "preflop-ranges",
+              "preflop-verteidigung",
+              "spiel-gegen-3bets",
+              "turnier-metriken-icm",
+              "postflop-grundlagen",
+              "flop-spiel",
+              "turn-spiel",
+              "river-spiel",
+              "mental-game"
+            ]
+          },
+          "ab_level": {
+            "type": "string",
+            "enum": [
+              "einsteiger",
+              "fortgeschritten",
+              "experte"
+            ]
+          },
+          "voraussetzungen": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "sektionen": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "titel",
+          "kurzdefinition",
+          "themenbereich",
+          "ab_level",
+          "voraussetzungen",
+          "sektionen"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "konzepte"
+  ],
+  "additionalProperties": false
+}

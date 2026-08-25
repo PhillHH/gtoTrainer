@@ -21,6 +21,11 @@ Dieses Verzeichnis ist der **einzige** Ablageort für die Buchquelle, aus der ab
 
 ## Erwartete Verzeichnisstruktur
 
+Die Ingestion aus AP3.T3.1 erkennt **zwei** Ablageformen und nennt die
+gefundene im Import-Report.
+
+**A) flach** — die ursprünglich vorgesehene Form:
+
 ```
 data/book-source/
 ├── README.md          # versioniert (diese Datei)
@@ -30,7 +35,23 @@ data/book-source/
 └── p0137_01.jpeg      # Abbildung 1 auf Seite 137
 ```
 
-Die Bilder liegen **flach** in diesem Verzeichnis, nicht in Unterordnern.
+**B) Bilder in genau einem Unterverzeichnis** — so liefert es der
+PDF-nach-Markdown-Export, und so zeigen dann auch die Bildbezüge im Markdown
+(`![…](<verzeichnis>/p0042_01.jpeg)`):
+
+```
+data/book-source/
+├── README.md
+├── <Buchtitel>.md
+└── <Buchtitel>_images/
+    ├── p0042_01.jpeg
+    └── p0137_01.jpeg
+```
+
+Beides ist zulässig. **Nicht** zulässig ist mehr als ein Unterverzeichnis mit
+Bildern oder mehr als eine Buch-Markdown-Datei — dann ist die Struktur
+mehrdeutig, und der Import bricht mit einer entsprechenden Meldung ab, statt
+zu raten.
 
 ## Zeitpunkt
 
@@ -44,6 +65,9 @@ Die Bilder liegen **flach** in diesem Verzeichnis, nicht in Unterordnern.
 - Keine Buchdaten ins Git-Repository committen — die Quelle ist urheberrechtlich
   geschützt und bleibt lokal.
 - Dateinamen der Bilder exakt nach dem Schema `pXXXX_YY.jpeg`; abweichende
-  Namen werden von der AP3-Ingestion nicht zugeordnet.
+  Namen werden von der AP3-Ingestion nicht zugeordnet (Seitenzahl und Zähler
+  werden aus dem Dateinamen gelesen).
+- Die Ingestion liest dieses Verzeichnis **ausschließlich**; sie schreibt hier
+  niemals. Der Import-Report landet unter `data/reports/book-import.md`.
 - Der Coding-Agent liest hier **niemals Volltexte am Stück** ein
   (siehe `docs/AGENT_GUIDE.md`, Abschnitt Kontextdisziplin).

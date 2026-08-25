@@ -4,8 +4,18 @@ import {
   JOB_EVENT_NAME,
   isAuthErrorResponse,
   isJobEvent,
+  isChartErrorResponse,
+  isConceptErrorResponse,
   isLlmSettingsErrorResponse,
   type AuthErrorCode,
+  type ConceptApproveResponse,
+  type ConceptListResponse,
+  type ConceptUpdate,
+  type ConceptUpdateResponse,
+  type ChartApproveResponse,
+  type ChartCellUpdateRequest,
+  type ReviewChartDetail,
+  type ReviewListResponse,
   type CsrfTokenResponse,
   type JobEvent,
   type JobRetryResponse,
@@ -20,7 +30,6 @@ import {
   type LoginResponse,
   type LogoutResponse,
   type MeResponse,
-  type SettingsFieldError,
 } from '@gto/shared';
 
 /**
@@ -46,6 +55,12 @@ export const API_BASE_URL: string = import.meta.env['VITE_API_BASE_URL'] ?? '';
 /** Methoden, die laut Vertrag ein CSRF-Token brauchen. */
 const STATE_CHANGING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
+/** Feldweise Begruendung einer Ablehnung. */
+export interface ApiFieldError {
+  readonly field: string;
+  readonly message: string;
+}
+
 /** Fehlerarten, die der Aufrufer unterscheiden koennen muss. */
 export type ApiErrorKind =
   'unauthenticated' | 'rate_limited' | 'csrf_failed' | 'client' | 'server' | 'network';
@@ -57,17 +72,21 @@ export class ApiError extends Error {
   /** Fehlercode des Backends, falls die Antwort dem Auth-Vertrag entsprach. */
   readonly code: AuthErrorCode | undefined;
   /**
-   * Feldweise Ablehnungen der Einstellungen (AP2.T2.6). Leer bei allen
-   * anderen Fehlern - die Oberflaeche zeigt sie am jeweiligen Feld an.
+   * Feldweise Ablehnungen: Einstellungen (AP2.T2.6) und Konzept-Review
+   * (AP3.T3.2) melden beide nach diesem Muster. Leer bei allen anderen
+   * Fehlern - die Oberflaeche zeigt sie am jeweiligen Feld an.
+   *
+   * Bewusst `string` statt `keyof LlmSettings`: Der Typ traegt inzwischen die
+   * Feldnamen mehrerer Verträge. `SettingsFieldError` bleibt zuweisbar.
    */
-  readonly fields: readonly SettingsFieldError[];
+  readonly fields: readonly ApiFieldError[];
 
   constructor(
     kind: ApiErrorKind,
     status: number,
     message: string,
     code?: AuthErrorCode,
-    fields: readonly SettingsFieldError[] = [],
+    fields: readonly ApiFieldError[] = [],
   ) {
     super(message);
     this.name = 'ApiError';
@@ -168,6 +187,16 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   if (!response.ok) {
     const kind = kindForStatus(response.status);
     if (isLlmSettingsErrorResponse(payload)) {
+      throw new ApiError(kind, response.status, payload.message, undefined, payload.fields);
+    }
+    // Die Review-Ansicht des Konzept-Graphen (AP3.T3.2) lehnt nach demselben
+    // Muster feldweise ab - dieselbe Auswertung, anderer Fehlercode.
+    if (isConceptErrorResponse(payload)) {
+      throw new ApiError(kind, response.status, payload.message, undefined, payload.fields);
+    }
+    // Die Review-Ansicht der Chart-Validierung (AP3.T3.4) lehnt nach demselben
+    // Muster feldweise ab.
+    if (isChartErrorResponse(payload)) {
       throw new ApiError(kind, response.status, payload.message, undefined, payload.fields);
     }
     if (isAuthErrorResponse(payload)) {
@@ -278,6 +307,90 @@ export function pingLlm(body: LlmPingRequest = {}): Promise<LlmPingResponse> {
   return request<LlmPingResponse>('/api/llm/settings/ping', { method: 'POST', body });
 }
 
+/* -------------------------------------------------------------------------
+ * Konzept-Graph: Review-Ansicht (AP3.T3.2)
+ * ---------------------------------------------------------------------- */
+
+/** Liest alle Konzepte nach Kapitel gruppiert, samt Auffaelligkeiten. */
+export function fetchConcepts(): Promise<ConceptListResponse> {
+  return request<ConceptListResponse>('/api/concepts');
+}
+
+/**
+ * Aendert ein Konzept. Bei serverseitiger Ablehnung wirft der Aufruf einen
+ * `ApiError`; die feldweisen Begruendungen stehen in `fields`.
+ */
+export function updateConcept(id: string, patch: ConceptUpdate): Promise<ConceptUpdateResponse> {
+  return request<ConceptUpdateResponse>(`/api/concepts/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: patch,
+  });
+}
+
+/** Bestaetigt ein einzelnes Konzept (draft -> approved). */
+export function approveConcept(id: string): Promise<ConceptApproveResponse> {
+  return request<ConceptApproveResponse>(`/api/concepts/${encodeURIComponent(id)}/approve`, {
+    method: 'POST',
+  });
+}
+
+/** Bestaetigt alle offenen Konzepte eines Kapitels. */
+export function approveChapter(chapterNumber: number): Promise<ConceptApproveResponse> {
+  return request<ConceptApproveResponse>(`/api/concepts/chapters/${chapterNumber}/approve`, {
+    method: 'POST',
+  });
+}
+
+/* -------------------------------------------------------------------------
+ * Chart-Validierung: Review-Ansicht (AP3.T3.4)
+ * ---------------------------------------------------------------------- */
+
+/** Liste aller digitalisierten Charts samt Zustand und Befundzahlen. */
+export function fetchCharts(): Promise<ReviewListResponse> {
+  return request<ReviewListResponse>('/api/charts');
+}
+
+/** Ein Chart mit Matrix, Befunden und Bild-URL. */
+export function fetchChart(id: string): Promise<ReviewChartDetail> {
+  return request<ReviewChartDetail>(`/api/charts/${encodeURIComponent(id)}`);
+}
+
+/**
+ * Korrigiert einzelne Zellen von Hand.
+ *
+ * Die Korrektur startet serverseitig die Pruefung neu - die Antwort traegt
+ * daher schon den neuen Zustand und die verbliebenen Befunde.
+ */
+export function correctChartCells(
+  id: string,
+  body: ChartCellUpdateRequest,
+): Promise<ReviewChartDetail> {
+  return request<ReviewChartDetail>(`/api/charts/${encodeURIComponent(id)}/cells`, {
+    method: 'PATCH',
+    body,
+  });
+}
+
+/** Gibt ein einzelnes Chart frei. Scheitert, solange Fehlerbefunde offen sind. */
+export function approveChart(id: string): Promise<ChartApproveResponse> {
+  return request<ChartApproveResponse>(`/api/charts/${encodeURIComponent(id)}/approve`, {
+    method: 'POST',
+  });
+}
+
+/** Gibt alle Charts im Zustand `validated` frei. */
+export function approveValidatedCharts(): Promise<ChartApproveResponse> {
+  return request<ChartApproveResponse>('/api/charts/approve-validated', { method: 'POST' });
+}
+
+/** Verwirft ein Chart mit Begruendung - der dokumentierte Rest. */
+export function markChartUnusable(id: string, reason: string): Promise<ReviewChartDetail> {
+  return request<ReviewChartDetail>(`/api/charts/${encodeURIComponent(id)}/unusable`, {
+    method: 'POST',
+    body: { reason },
+  });
+}
+
 export const apiClient = {
   fetchCsrfToken,
   login,
@@ -290,4 +403,14 @@ export const apiClient = {
   fetchLlmSettings,
   saveLlmSettings,
   pingLlm,
+  fetchConcepts,
+  updateConcept,
+  approveConcept,
+  approveChapter,
+  fetchCharts,
+  fetchChart,
+  correctChartCells,
+  approveChart,
+  approveValidatedCharts,
+  markChartUnusable,
 } as const;

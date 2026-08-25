@@ -55,6 +55,8 @@ const TEXT_CASES: readonly TextCase[] = [
   },
   { name: 'persona-grader', templateId: 'persona/grader' },
   { name: 'persona-analyst', templateId: 'persona/analyst' },
+  { name: 'persona-taxonomist', templateId: 'persona/taxonomist' },
+  { name: 'persona-chart-reader', templateId: 'persona/chart-reader' },
 ];
 
 interface RequestCase {
@@ -64,6 +66,66 @@ interface RequestCase {
 }
 
 const REQUEST_CASES: readonly RequestCase[] = [
+  {
+    // Chart-Digitalisierung (AP3.T3.3). Bewusst ohne Bild: Das Bild ist
+    // Nutzlast, keine Prompt-Fassung - der Golden-Fall sichert den Text.
+    name: 'task-chart-digitize',
+    templateId: 'task/chart-digitize',
+    values: {
+      unterschrift:
+        '*Hand Range 96: SB vs BB (15bb)*\n*• All-in 23.7% / • Limp 61.5% / • Fold 14.8%*',
+      spot: ['- Position: SB', '- Gegenposition: BB', '- Stacktiefe: 15bb'].join('\n'),
+      aktionen: ['- `all_in` — All-in', '- `limp` — Limp', '- `fold` — Fold'].join('\n'),
+      blattliste: 'AA AKs AQs …\nAKo KK KQs …',
+    },
+  },
+  {
+    // Reiner Legenden-Nachzug (AP3.T3.6-fix). Bewusst schmal: kein Raster,
+    // keine Blattliste - der Aufruf soll wenig kosten.
+    name: 'task-chart-legend',
+    templateId: 'task/chart-legend',
+    values: {
+      unterschrift: '*Hand Range 16: A Capped Range*',
+      aktionen: ['- `call` — Call', '- `fold` — Off Range'].join('\n'),
+    },
+  },
+  {
+    // Gezielter Zweitdurchlauf (AP3.T3.4). Derselbe Spot wie oben, zusaetzlich
+    // die Beanstandung - so ist im Golden-Fall sichtbar, dass der geschaerfte
+    // Prompt auf konkrete Blaetter hinweist, ohne eine Zahl vorzugeben.
+    name: 'task-chart-recheck',
+    templateId: 'task/chart-recheck',
+    values: {
+      unterschrift:
+        '*Hand Range 96: SB vs BB (15bb)*\n*• All-in 23.7% / • Limp 61.5% / • Fold 14.8%*',
+      spot: ['- Position: SB', '- Gegenposition: BB', '- Stacktiefe: 15bb'].join('\n'),
+      aktionen: ['- `all_in` — All-in', '- `limp` — Limp', '- `fold` — Fold'].join('\n'),
+      blattliste: 'AA AKs AQs …\nAKo KK KQs …',
+      beanstandung: [
+        '- Zelle AA: Frequenzen ergeben 60.0 % statt 100 % (Toleranz ±2 pp).',
+        '',
+        'Besonders zu prüfende Blätter: AA, AKs',
+      ].join('\n'),
+    },
+  },
+  {
+    // Konzept-Taxonomie (AP3.T3.2). Die Werte sind bewusst erfunden und kurz -
+    // Buchtext gehoert nicht in eine versionierte Golden-Datei.
+    name: 'task-concept-taxonomy',
+    templateId: 'task/concept-taxonomy',
+    values: {
+      kapitel: '02 — Beispielkapitel (Teil 1 von 2)',
+      zielanzahl: '8',
+      themenbereiche: [
+        '   - `grundlagen-mathematik` — Grundlagen und Mathematik',
+        '   - `spieltheorie` — Spieltheorie',
+      ].join('\n'),
+      bekannte_konzepte: '- Position am Tisch (Kapitel 1)',
+      abschnitte:
+        '[sektion: ch02/beispielabschnitt] Beispielabschnitt\n\n' +
+        'Zwei Saetze Platzhaltertext fuer den Golden-Fall.',
+    },
+  },
   {
     name: 'task-concept-explanation',
     templateId: 'task/concept-explanation',
