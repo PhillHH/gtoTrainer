@@ -512,7 +512,18 @@ docker compose ps
 
 ```bash
 sudo ./deploy/nginx/enable-site.sh
+# mit Ablaufwarnungen von Let's Encrypt:
+EMAIL=du@example.com sudo -E ./deploy/nginx/enable-site.sh
 ```
+
+> **Stufe A allein reicht für den Betrieb nicht.** Über reines HTTP ist die App
+> zwar erreichbar, aber **niemand kann sich anmelden**: `COOKIE_SECURE` steht in
+> `docker-compose.yml` per Vorgabe auf `true`, und ein Cookie mit `Secure`-Flag
+> speichert kein Browser über eine unverschlüsselte Verbindung. Sichtbar wird
+> das als `403 csrf_failed` mit „CSRF-Cookie fehlt", obwohl der Aufruf von
+> `/api/auth/csrf` mit 200 beantwortet wurde. Das Skript prüft deshalb am Ende
+> ausdrücklich, ob das Cookie über HTTPS ankommt — `/healthz` allein beweist
+> nichts, denn dafür braucht es keine Session.
 
 Das Skript prüft zuerst den DNS-Eintrag gegen die eigene Server-IP (ein
 Zertifikat „auf Verdacht" zählt auch im Fehlerfall auf das

@@ -14,6 +14,9 @@
 set -Eeuo pipefail
 
 DOMAIN="${DOMAIN:-gto.growento.com}"
+# Adresse fuer die Ablaufwarnungen von Let's Encrypt. Ohne sie registriert
+# certbot anonym - dann kommt keine Mail, wenn die Erneuerung klemmt.
+EMAIL="${EMAIL:-}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CONF="${DOMAIN}.conf"
 AVAILABLE="/etc/nginx/sites-available/${CONF}"
@@ -81,25 +84,49 @@ if [[ -d "/etc/letsencrypt/live/${DOMAIN}" ]]; then
   log "Zertifikat existiert bereits - certbot wird nicht erneut aufgerufen."
 else
   log "Fordere Zertifikat an (certbot --nginx) ..."
-  certbot --nginx -d "${DOMAIN}" --redirect --non-interactive --agree-tos \
-    --register-unsafely-without-email || fail "certbot fehlgeschlagen."
+  if [[ -n "$EMAIL" ]]; then
+    certbot --nginx -d "${DOMAIN}" --redirect --non-interactive --agree-tos \
+      -m "$EMAIL" || fail "certbot fehlgeschlagen."
+  else
+    log "WARNUNG: Keine EMAIL gesetzt - anonyme Registrierung, keine"
+    log "         Ablaufwarnungen. Fuer den Dauerbetrieb: EMAIL=... sudo -E $0"
+    certbot --nginx -d "${DOMAIN}" --redirect --non-interactive --agree-tos \
+      --register-unsafely-without-email || fail "certbot fehlgeschlagen."
+  fi
 fi
 
 log "HTTPS-Probe ..."
 curl -fsS --max-time 10 "https://${DOMAIN}/healthz" && echo
 
+# --- 6. Der Test, der wirklich zaehlt --------------------------------------
+# /healthz kommt auch ohne Session durch. Ob sich jemand anmelden kann, haengt
+# am Session-Cookie - und das traegt `Secure`, wird ueber http also gar nicht
+# erst gespeichert. Genau daran scheitert der Betrieb ueber Stufe A.
+log "Pruefe, ob das CSRF-Cookie ueber HTTPS ankommt ..."
+JAR="$(mktemp)"
+trap 'rm -f "$JAR"' EXIT
+curl -fsS -c "$JAR" --max-time 10 "https://${DOMAIN}/api/auth/csrf" >/dev/null
+if grep -q gto_csrf "$JAR"; then
+  log "Cookie wird gesetzt und gespeichert - Anmeldung ist moeglich."
+else
+  fail "Das CSRF-Cookie kam nicht an. Ohne es ist keine Anmeldung moeglich."
+fi
+
 cat <<EOF
 
-[vhost] FERTIG. ${DOMAIN} laeuft ueber HTTPS.
+[vhost] FERTIG. ${DOMAIN} laeuft ueber HTTPS, das Session-Cookie kommt an.
 
-Noch ein Schritt als normaler Nutzer, damit das Session-Cookie das
-Secure-Flag traegt und CSRF die Origin akzeptiert:
+COOKIE_SECURE steht bereits auf true (Vorgabe der docker-compose.yml) - das
+ist ab jetzt richtig und war der Grund, warum die Anmeldung ueber reines HTTP
+nicht funktionieren konnte.
+
+Optional noch schaerfer stellen: die erlaubte Origin fuer die CSRF-Pruefung
+festnageln. Ohne diesen Schritt laeuft die App bereits.
 
   cd ${REPO_ROOT}
-  sed -i 's|^COOKIE_SECURE=.*|COOKIE_SECURE=true|' .env
-  grep -q '^COOKIE_SECURE=' .env || echo 'COOKIE_SECURE=true' >> .env
-  sed -i 's|^ALLOWED_ORIGINS=.*|ALLOWED_ORIGINS=https://${DOMAIN}|' .env
-  grep -q '^ALLOWED_ORIGINS=' .env || echo 'ALLOWED_ORIGINS=https://${DOMAIN}' >> .env
+  grep -q '^ALLOWED_ORIGINS=' .env \
+    && sed -i 's|^ALLOWED_ORIGINS=.*|ALLOWED_ORIGINS=https://${DOMAIN}|' .env \
+    || echo 'ALLOWED_ORIGINS=https://${DOMAIN}' >> .env
   ./deploy/deploy.sh --no-pull
 
 EOF
