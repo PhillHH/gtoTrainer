@@ -41,6 +41,16 @@ const REVIEW_SOURCE = readFileSync(
   'utf8',
 );
 
+/** Und seit T4.5 fuer Ratings und Level-Kalibrierung. */
+const RATING_SOURCE = readFileSync(
+  fileURLToPath(new URL('../../src/learning/rating.ts', import.meta.url)),
+  'utf8',
+);
+const LEVEL_SOURCE = readFileSync(
+  fileURLToPath(new URL('../../src/learning/level.ts', import.meta.url)),
+  'utf8',
+);
+
 /** Kommentarzeilen zaehlen nicht - die Regel steht dort im Klartext. */
 function codeLines(source: string): string[] {
   return source.split('\n').filter((line) => {
@@ -65,6 +75,15 @@ describe('Determinismus der Ableitungen (AP4.T4.2)', () => {
     // Der Bezugszeitpunkt der Ueberfaelligkeit kommt als Argument herein.
     expect(REVIEW_SOURCE).toContain('asOf: Date');
     expect(REVIEW_SOURCE).not.toMatch(/from '\.\.\/db\//);
+  });
+
+  it('gilt auch fuer Ratings und Level aus T4.5', () => {
+    expect(forbiddenCalls(RATING_SOURCE)).toEqual([]);
+    expect(forbiddenCalls(LEVEL_SOURCE)).toEqual([]);
+    // Die Frist der manuellen Level-Setzung wird gegen ein Argument gemessen.
+    expect(LEVEL_SOURCE).toContain('readonly asOf: Date;');
+    expect(RATING_SOURCE).not.toMatch(/from '\.\.\/db\//);
+    expect(LEVEL_SOURCE).not.toMatch(/from '\.\.\/db\//);
   });
 
   it('gilt auch fuer die Mastery-Formel aus T4.3', () => {

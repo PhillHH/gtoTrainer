@@ -12,6 +12,8 @@ import type {
 import { computeMasteryState } from './mastery.js';
 import type { MasterySignal } from './mastery.js';
 import { INITIAL_REVIEW_STATE, reviewOrigin, scheduleReview } from './review.js';
+import { foldRating, foldRatingSnapshots } from './rating.js';
+import type { RatingProjection, RatingSignal, RatingSnapshot } from './rating.js';
 
 /**
  * Die Ableitungen des Lernstands (AP4.T4.2) - **reine Funktionen**.
@@ -111,6 +113,9 @@ function rawOutcome(event: StoredLearningEvent): number | null {
       return total > 0 ? correct / total : 0;
     }
     case 'manual_correction':
+    case 'level_set':
+      // Meta-Ereignisse: Sie veraendern die Wirkung anderer Ereignisse oder
+      // den globalen Zustand, tragen selbst aber kein Ergebnis bei.
       return null;
   }
 }
@@ -213,12 +218,6 @@ export function foldConceptMastery(effective: readonly EffectiveEvent[]): Master
 function readDifficulty(event: StoredLearningEvent): number {
   const value = event.payload['difficulty'];
   return typeof value === 'number' && Number.isFinite(value) ? value : DEFAULT_DIFFICULTY;
-}
-
-/** Haelt Rundungsreste sicher innerhalb der CHECK-Constraints aus T4.1. */
-function clampRatio(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.min(1, Math.max(0, value));
 }
 
 /* -------------------------------------------------------------------------
@@ -343,6 +342,11 @@ function describe(entry: EffectiveEvent): string {
       return `Wiederholung nicht bestanden${suffix}.`;
     case 'manual_correction':
       return `Korrektur${suffix}.`;
+    case 'level_set':
+      // Erreicht diesen Zweig nie: `level_set` hat kein Konzept und damit kein
+      // Ergebnis. Der Fall steht hier, damit der Compiler die Vollstaendigkeit
+      // prueft, wenn ein neuer Ereignistyp dazukommt.
+      return `Level von Hand gesetzt${suffix}.`;
   }
 }
 
@@ -374,17 +378,12 @@ export function foldErrorLog(effective: readonly EffectiveEvent[]): readonly Err
  * Schritt 2d: Skill-Rating je Themenbereich
  * ---------------------------------------------------------------------- */
 
-export interface RatingProjection {
-  readonly rating: number;
-  readonly eventCount: number;
-  readonly updatedAt: Date;
-}
-
 /**
- * PLATZHALTER - T4.5 ersetzt die Formel durch eine EWMA mit
- * Schwierigkeitsgewicht und ergaenzt die Level-Kalibrierung.
+ * Skill-Rating je Themenbereich - die Formel steht seit T4.5 in `rating.ts`.
  *
- * Hier: das arithmetische Mittel aller Ergebnisse des Themenbereichs.
+ * Auch hier nur noch **Verdrahtung**: Ereignisstrom in Signale uebersetzen und
+ * an die reine Berechnung weiterreichen. Dieselbe Stelle, an der T4.3 die
+ * Mastery-Formel und T4.4 die Wiederholungssteuerung getauscht haben.
  *
  * `null` = im Themenbereich gab es nichts; die Achse bleibt auf ihrem
  * Startwert und wird **nicht angefasst**. Wuerde sie mit einem Zeitstempel
@@ -392,15 +391,27 @@ export interface RatingProjection {
  * replayten - ohne dass ein Ereignis dahinterstuende.
  */
 export function foldSkillRating(effective: readonly EffectiveEvent[]): RatingProjection | null {
-  const relevant = contributing(effective);
-  if (relevant.length === 0) return null;
+  return foldRating(toRatingSignals(effective));
+}
 
-  const sum = relevant.reduce((acc, entry) => acc + (entry.outcome as number), 0);
-  const last = relevant[relevant.length - 1] as EffectiveEvent;
+/**
+ * Der Verlauf einer Achse: ein Punkt je Kalendertag (T4.5).
+ *
+ * Die Verdichtung haelt den Verlauf endlich - hoechstens 12 x 365 Zeilen im
+ * Jahr statt einer je Ereignis.
+ */
+export function foldSkillRatingSnapshots(
+  effective: readonly EffectiveEvent[],
+): readonly RatingSnapshot[] {
+  return foldRatingSnapshots(toRatingSignals(effective));
+}
 
-  return {
-    rating: clampRatio(sum / relevant.length),
-    eventCount: relevant.length,
-    updatedAt: last.event.occurredAt,
-  };
+/** Uebersetzt den Ereignisstrom in Rating-Signale. */
+function toRatingSignals(effective: readonly EffectiveEvent[]): RatingSignal[] {
+  return contributing(effective).map((entry) => ({
+    signalClass: entry.event.signalClass,
+    outcome: entry.outcome as number,
+    difficulty: readDifficulty(entry.event),
+    occurredAt: entry.event.occurredAt,
+  }));
 }

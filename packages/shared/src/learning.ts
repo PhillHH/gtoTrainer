@@ -57,6 +57,8 @@ export function isLearningSignalClass(value: unknown): value is LearningSignalCl
  * - `hand_analyzed` — eine Hand wurde analysiert (AP8).
  * - `review_performed` — eine fällige Wiederholung wurde durchgeführt (T4.4).
  * - `manual_correction` — nachträgliche Korrektur eines früheren Ereignisses.
+ * - `level_set` — der Lernende setzt sein Level selbst (T4.5). Das einzige
+ *   Ereignis **ohne** Konzeptbezug.
  */
 export const LEARNING_EVENT_TYPES = [
   'question_answered',
@@ -65,8 +67,21 @@ export const LEARNING_EVENT_TYPES = [
   'hand_analyzed',
   'review_performed',
   'manual_correction',
+  'level_set',
 ] as const;
 export type LearningEventType = (typeof LEARNING_EVENT_TYPES)[number];
+
+/**
+ * Ereignistypen **ohne** Konzeptbezug — globale Ereignisse am Lernenden.
+ *
+ * Für sie ist `conceptId` verboten, für alle anderen Pflicht. In der Datenbank
+ * erzwingt das der CHECK `learning_event_scope_check` (Migration `0010`).
+ */
+export const GLOBAL_LEARNING_EVENT_TYPES: readonly LearningEventType[] = ['level_set'];
+
+export function isGlobalLearningEventType(value: LearningEventType): boolean {
+  return GLOBAL_LEARNING_EVENT_TYPES.includes(value);
+}
 
 export function isLearningEventType(value: unknown): value is LearningEventType {
   return typeof value === 'string' && (LEARNING_EVENT_TYPES as readonly string[]).includes(value);
@@ -129,6 +144,10 @@ export function isLearningErrorSeverity(value: unknown): value is LearningErrorS
  */
 export const LEARNER_LEVELS = CONCEPT_LEVELS;
 export type LearnerLevel = ConceptLevel;
+
+export function isLearnerLevel(value: unknown): value is LearnerLevel {
+  return typeof value === 'string' && (LEARNER_LEVELS as readonly string[]).includes(value);
+}
 
 /* -------------------------------------------------------------------------
  * Startwerte der Ersteinrichtung
@@ -372,6 +391,19 @@ export interface ManualCorrectionPayload {
   readonly replacementOutcome?: number | null;
 }
 
+/**
+ * Der Lernende setzt sein Level selbst (T4.5).
+ *
+ * Wird für {@link MANUAL_LEVEL_GRACE_DAYS} Tage respektiert; danach greift die
+ * Automatik wieder. Ohne diese Frist überschriebe der nächste Lauf die
+ * Korrektur sofort.
+ */
+export interface LevelSetPayload {
+  readonly level: LearnerLevel;
+  /** Warum von Hand gesetzt — steht später in der Nachschau. */
+  readonly reason?: string;
+}
+
 /** Zuordnung Ereignistyp → Nutzdaten. Der Vertrag für AP5 bis AP9. */
 export interface LearningEventPayloadMap {
   readonly question_answered: QuestionAnsweredPayload;
@@ -380,6 +412,7 @@ export interface LearningEventPayloadMap {
   readonly hand_analyzed: HandAnalyzedPayload;
   readonly review_performed: ReviewPerformedPayload;
   readonly manual_correction: ManualCorrectionPayload;
+  readonly level_set: LevelSetPayload;
 }
 
 export type LearningEventPayload = LearningEventPayloadMap[LearningEventType];
@@ -401,7 +434,8 @@ export interface RecordLearningEventInput<TType extends LearningEventType = Lear
   readonly eventType: TType;
   readonly source: LearningEventSource;
   readonly signalClass: LearningSignalClass;
-  readonly conceptId: string;
+  /** Pflicht für alle Ereignisse außer `level_set`. */
+  readonly conceptId?: string;
   /** ISO-Zeitstempel des Geschehens. Fehlt er, setzt der Service „jetzt". */
   readonly occurredAt?: string;
   /** Chart, gegen das geprüft wurde — Beleg eines objektiven Signals. */
@@ -423,7 +457,8 @@ export type RecordEventStatus = (typeof RECORD_EVENT_STATUSES)[number];
 export interface RecordLearningEventResponse {
   readonly status: RecordEventStatus;
   readonly eventId: string;
-  readonly conceptId: string;
+  /** `null` bei globalen Ereignissen wie `level_set`. */
+  readonly conceptId: string | null;
 }
 
 /** Feldweise Ablehnung — dasselbe Muster wie Konzept-Review und Einstellungen. */
@@ -495,6 +530,7 @@ export function validateLearningEventPayload(
     hand_analyzed: ['correct', 'handRef', 'mistake', 'difficulty'],
     review_performed: ['correct', 'difficulty'],
     manual_correction: ['reason', 'replacementOutcome'],
+    level_set: ['level', 'reason'],
   };
 
   for (const key of Object.keys(payload)) {
@@ -506,7 +542,7 @@ export function validateLearningEventPayload(
     }
   }
 
-  if (eventType !== 'manual_correction') {
+  if (eventType !== 'manual_correction' && eventType !== 'level_set') {
     const difficulty = payload['difficulty'];
     if (difficulty !== undefined && !isRatio(difficulty)) {
       fields.push({
@@ -561,6 +597,16 @@ export function validateLearningEventPayload(
         });
       }
       optionalString(payload, 'drillId', fields);
+      break;
+    }
+    case 'level_set': {
+      if (!isLearnerLevel(payload['level'])) {
+        fields.push({
+          field: 'payload.level',
+          message: `Unbekanntes Level. Erlaubt: ${LEARNER_LEVELS.join(', ')}.`,
+        });
+      }
+      optionalString(payload, 'reason', fields);
       break;
     }
     case 'manual_correction': {
@@ -817,4 +863,90 @@ export interface UpcomingReviewsResponse {
   readonly items: readonly UpcomingReviewItem[];
   /** Wie viele im Zeitfenster liegen — unabhängig von `limit`. */
   readonly total: number;
+}
+
+/* -------------------------------------------------------------------------
+ * Skill-Ratings und Level (AP4.T4.5)
+ *
+ * Die zweite Dimension neben dem Kapitelfortschritt: **wo stehe ich fachlich**
+ * (F09) und **auf welchem Niveau wird unterrichtet** (F07).
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Wie lange eine manuelle Level-Setzung Vorrang vor der Automatik hat.
+ *
+ * 30 Tage: lang genug, dass eine Serie von Sitzungen die Korrektur nicht
+ * sofort wieder einkassiert; kurz genug, dass eine falsche Selbsteinschätzung
+ * nicht dauerhaft bleibt. In dieser Zeit sammelt sich Beleglage an — wenn die
+ * Frist abläuft, steht die Automatik auf festerem Grund als am Tag der
+ * Korrektur.
+ */
+export const MANUAL_LEVEL_GRACE_DAYS = 30;
+
+/** Woher das aktuelle Level stammt. */
+export const LEVEL_SOURCES = ['automatic', 'manual'] as const;
+export type LevelSource = (typeof LEVEL_SOURCES)[number];
+
+/**
+ * Die Kennzahlen, aus denen sich das Level ergibt.
+ *
+ * Bewusst drei unabhängige Größen statt einer: Ein hoher Durchschnitt allein
+ * kann aus zwei gut gelaufenen Themenbereichen kommen, und eine hohe Zahl
+ * beherrschter Konzepte allein sagt nichts über die Belastbarkeit der Belege.
+ */
+export interface LevelSignals {
+  /** Mittel der Ratings über die Themenbereiche **mit Datenlage**. */
+  readonly averageRating: number;
+  /** Wie viele Themenbereiche überhaupt Daten haben (von zwölf). */
+  readonly coveredTopicAreas: number;
+  /** Konzepte mit belastbarer Mastery (Score und Konfidenz über der Marke). */
+  readonly masteredConcepts: number;
+  /** Anteil objektiver Signale an allen Signalen, 0 bis 1. */
+  readonly objectiveShare: number;
+  /** Alle bisher eingeflossenen Signale. */
+  readonly totalSignals: number;
+}
+
+/**
+ * Das Ergebnis der Level-Kalibrierung — **Bausteine, keine Sätze**, dasselbe
+ * Prinzip wie bei `AdvanceDecision`.
+ */
+export interface LevelCalibration {
+  readonly level: LearnerLevel;
+  /** Das Level vor dieser Kalibrierung. */
+  readonly previousLevel: LearnerLevel;
+  readonly changed: boolean;
+  readonly source: LevelSource;
+  /**
+   * Bis wann eine manuelle Setzung gilt. `null`, wenn keine wirkt.
+   */
+  readonly manualUntil: string | null;
+  /**
+   * Welches Level die Kennzahlen allein hergäben — auch während einer
+   * manuellen Setzung sichtbar, damit AP6 den Unterschied anzeigen kann.
+   */
+  readonly automaticLevel: LearnerLevel;
+  readonly signals: LevelSignals;
+}
+
+/** Ein Themenbereich mit seinem aktuellen Stand — die Achsen für AP6. */
+export interface SkillRatingView {
+  readonly topicArea: ConceptTopicArea;
+  readonly label: string;
+  readonly rating: number;
+  readonly eventCount: number;
+  readonly updatedAt: string;
+}
+
+/** Ein Punkt im Verlauf einer Achse. */
+export interface SkillRatingHistoryPoint {
+  /** Kalendertag in UTC, `YYYY-MM-DD`. */
+  readonly day: string;
+  readonly rating: number;
+}
+
+/** Der Verlauf einer Achse über die Zeit. */
+export interface SkillRatingHistory {
+  readonly topicArea: ConceptTopicArea;
+  readonly points: readonly SkillRatingHistoryPoint[];
 }

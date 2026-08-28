@@ -1,7 +1,9 @@
-import { and, asc, eq, gt, inArray, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, lte, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import {
+  CONCEPT_TOPIC_AREAS,
   LEARNING_THRESHOLD_RANGES,
+  isGlobalLearningEventType,
   isLearningEventSource,
   isLearningEventType,
   isLearningSignalClass,
@@ -10,6 +12,12 @@ import {
 import type {
   AdvanceDecision,
   ConceptTopicArea,
+  LearnerLevel,
+  LevelCalibration,
+  LevelSetPayload,
+  LevelSignals,
+  SkillRatingHistory,
+  SkillRatingView,
   DueReviewsQuery,
   DueReviewsResponse,
   ReviewQueueOrigin,
@@ -33,6 +41,7 @@ import {
   rangeChart,
   reviewQueue,
   skillRating,
+  skillRatingSnapshot,
 } from '../db/schema.js';
 import { evaluateAdvance } from './mastery.js';
 import { overdueDays, prioritizeReviews } from './review.js';
@@ -43,8 +52,11 @@ import {
   foldErrorLog,
   foldReviewQueue,
   foldSkillRating,
+  foldSkillRatingSnapshots,
   inEventOrder,
 } from './derive.js';
+import { snapshotId, startOfUtcDay } from './rating.js';
+import { MASTERED_CONFIDENCE, MASTERED_SCORE, calibrateLevel } from './level.js';
 import type { StoredLearningEvent } from './derive.js';
 
 /**
@@ -102,8 +114,10 @@ interface ValidatedEvent {
   readonly eventType: LearningEventType;
   readonly source: string;
   readonly signalClass: string;
-  readonly conceptId: string;
-  readonly topicArea: ConceptTopicArea;
+  /** `null` bei globalen Ereignissen wie `level_set`. */
+  readonly conceptId: string | null;
+  /** `null`, wenn das Ereignis kein Konzept betrifft. */
+  readonly topicArea: ConceptTopicArea | null;
   readonly occurredAt: Date;
   readonly chartId: string | null;
   readonly correctsEventId: string | null;
@@ -175,10 +189,22 @@ async function validate(
     }
   }
 
-  // Das Konzept muss existieren - und wir brauchen ohnehin seinen
-  // Themenbereich fuer die Rating-Achse.
-  let topicArea: ConceptTopicArea | undefined;
-  if (typeof input?.conceptId === 'string' && UUID_PATTERN.test(input.conceptId)) {
+  // Ein Ereignis ist entweder ein Lernereignis an einem Konzept oder ein
+  // globales Ereignis am Lernenden (`level_set`). Dieselbe Bedingung erzwingt
+  // der CHECK `learning_event_scope_check` in der Datenbank.
+  const global =
+    isLearningEventType(input?.eventType) && isGlobalLearningEventType(input.eventType);
+  let topicArea: ConceptTopicArea | null = null;
+  let conceptId: string | null = null;
+
+  if (global) {
+    if (input?.conceptId !== undefined && input.conceptId !== null) {
+      fields.push({
+        field: 'conceptId',
+        message: `Ein Ereignis vom Typ "${input.eventType}" bezieht sich auf kein Konzept.`,
+      });
+    }
+  } else if (typeof input?.conceptId === 'string' && UUID_PATTERN.test(input.conceptId)) {
     const [row] = await db
       .select({ topicArea: concept.topicArea })
       .from(concept)
@@ -187,6 +213,7 @@ async function validate(
       fields.push({ field: 'conceptId', message: `Konzept "${input.conceptId}" existiert nicht.` });
     } else {
       topicArea = row.topicArea as ConceptTopicArea;
+      conceptId = input.conceptId;
     }
   } else {
     fields.push({ field: 'conceptId', message: 'Die Konzept-ID muss eine UUID sein.' });
@@ -229,8 +256,8 @@ async function validate(
     eventType: input.eventType,
     source: input.source,
     signalClass: input.signalClass,
-    conceptId: input.conceptId,
-    topicArea: topicArea as ConceptTopicArea,
+    conceptId,
+    topicArea,
     occurredAt,
     chartId: input.chartId ?? null,
     correctsEventId,
@@ -286,8 +313,14 @@ export async function recordLearningEvent(
       return { status: 'duplicate', eventId: event.id, conceptId: event.conceptId };
     }
 
-    await projectConcept(tx, event.conceptId);
-    await projectTopicArea(tx, event.topicArea);
+    if (event.conceptId !== null && event.topicArea !== null) {
+      await projectConcept(tx, event.conceptId);
+      await projectTopicArea(tx, event.topicArea);
+    }
+    // Das Level haengt am Gesamtbild, nicht an einem Konzept - es wird nach
+    // jedem Ereignis neu kalibriert. Bezugszeitpunkt ist der Zeitpunkt des
+    // Ereignisses, nicht die Systemzeit (Determinismus-Regel).
+    await projectLearnerLevel(tx, event.occurredAt);
 
     return { status: 'recorded', eventId: event.id, conceptId: event.conceptId };
   });
@@ -382,6 +415,22 @@ async function projectTopicArea(tx: Transaction, topicArea: ConceptTopicArea): P
   const effective = applyCorrections(inEventOrder(rows as unknown as StoredLearningEvent[]));
   const rating = foldSkillRating(effective);
 
+  // Der Verlauf wird bei jedem Lauf ersetzt statt fortgeschrieben: Eine
+  // Korrektur kann einen alten Punkt gegenstandslos machen. Die IDs sind aus
+  // Themenbereich und Tag abgeleitet, deshalb entsteht dabei kein Rauschen.
+  await tx.delete(skillRatingSnapshot).where(eq(skillRatingSnapshot.topicArea, topicArea));
+  const snapshots = foldSkillRatingSnapshots(effective);
+  if (snapshots.length > 0) {
+    await tx.insert(skillRatingSnapshot).values(
+      snapshots.map((point) => ({
+        id: snapshotId(topicArea, point.capturedAt),
+        topicArea,
+        rating: point.rating,
+        capturedAt: point.capturedAt,
+      })),
+    );
+  }
+
   if (rating === null) {
     // Kein Ereignis im Bereich: Startwerte, aber `updated_at` bleibt stehen -
     // sonst unterschiede sich ein replayter Bestand von einem geseedeten.
@@ -426,7 +475,7 @@ export async function replayLearningState(db: Database): Promise<ReplayResult> {
     await tx.delete(errorLog);
     await tx.delete(reviewQueue);
     await tx.delete(conceptMastery);
-    await tx.execute(sql`delete from skill_rating_snapshot`);
+    await tx.delete(skillRatingSnapshot);
     await tx.execute(sql`update skill_rating set rating = 0, event_count = 0`);
 
     const conceptRows = await tx
@@ -435,7 +484,9 @@ export async function replayLearningState(db: Database): Promise<ReplayResult> {
       .innerJoin(concept, eq(learningEvent.conceptId, concept.id));
 
     for (const row of conceptRows) {
-      await projectConcept(tx, row.conceptId);
+      // `level_set`-Ereignisse haben kein Konzept; der Join haelt sie ohnehin
+      // heraus, die Pruefung macht es fuer den Compiler sichtbar.
+      if (row.conceptId !== null) await projectConcept(tx, row.conceptId);
     }
 
     const areas = [...new Set(conceptRows.map((row) => row.topicArea as ConceptTopicArea))];
@@ -770,4 +821,191 @@ async function attachPrerequisites(
     ...candidate,
     prerequisiteIds: byConcept.get(candidate.conceptId) ?? [],
   }));
+}
+
+/* -------------------------------------------------------------------------
+ * Skill-Ratings und Level (AP4.T4.5)
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Sammelt die Kennzahlen, aus denen sich das Level ergibt.
+ *
+ * Drei unabhaengige Groessen: Wie gut laeuft es im Schnitt, wie viele Konzepte
+ * sitzen belastbar, und wie viel davon ist objektiv belegt. Jede fuer sich
+ * waere zu leicht zu erreichen - der Durchschnitt aus zwei guten Bereichen,
+ * die Konzeptzahl aus lauter Modellurteilen.
+ */
+async function collectLevelSignals(tx: Transaction): Promise<LevelSignals> {
+  const [ratings] = await tx
+    .select({
+      average: sql<
+        number | null
+      >`avg(${skillRating.rating}) filter (where ${skillRating.eventCount} > 0)`,
+      covered: sql<number>`count(*) filter (where ${skillRating.eventCount} > 0)::int`,
+    })
+    .from(skillRating);
+
+  const [mastery] = await tx
+    .select({
+      mastered: sql<number>`count(*) filter (where ${conceptMastery.score} >= ${MASTERED_SCORE}
+        and ${conceptMastery.confidence} >= ${MASTERED_CONFIDENCE})::int`,
+      objective: sql<number>`coalesce(sum(${conceptMastery.objectiveSignals}), 0)::int`,
+      total: sql<number>`coalesce(sum(${conceptMastery.objectiveSignals}
+        + ${conceptMastery.aiJudgedSignals} + ${conceptMastery.selfReportedSignals}), 0)::int`,
+    })
+    .from(conceptMastery);
+
+  const totalSignals = mastery?.total ?? 0;
+
+  return {
+    averageRating: Number(ratings?.average ?? 0),
+    coveredTopicAreas: ratings?.covered ?? 0,
+    masteredConcepts: mastery?.mastered ?? 0,
+    objectiveShare: totalSignals === 0 ? 0 : (mastery?.objective ?? 0) / totalSignals,
+    totalSignals,
+  };
+}
+
+/** Die juengste manuelle Level-Setzung aus dem Ereignisstrom, falls es eine gibt. */
+async function latestManualLevel(
+  tx: Transaction,
+): Promise<{ level: LearnerLevel; setAt: Date } | undefined> {
+  const [row] = await tx
+    .select({ payload: learningEvent.payload, occurredAt: learningEvent.occurredAt })
+    .from(learningEvent)
+    .where(eq(learningEvent.eventType, 'level_set'))
+    .orderBy(desc(learningEvent.occurredAt), desc(learningEvent.id))
+    .limit(1);
+
+  if (!row) return undefined;
+  const payload = row.payload as unknown as LevelSetPayload;
+  return { level: payload.level, setAt: row.occurredAt };
+}
+
+/**
+ * Schreibt das kalibrierte Level nach `learner_state`.
+ *
+ * Laeuft nach jedem Ereignis und am Ende jedes Replays. Der Bezugszeitpunkt
+ * `asOf` kommt von aussen - beim Aufzeichnen ist es der Ereigniszeitpunkt,
+ * beim Replay der des juengsten Ereignisses. Nie die Systemzeit: Sonst haenge
+ * das Ergebnis eines Replays davon ab, wann man ihn faehrt.
+ *
+ * Wiederholt, bis sich nichts mehr aendert (hoechstens so oft, wie es Stufen
+ * gibt). Damit landet der Replay bei derselben Stufe wie der inkrementelle
+ * Weg, auch wenn dieser sich in mehreren Schritten dorthin bewegt hat.
+ */
+async function projectLearnerLevel(tx: Transaction, asOf: Date): Promise<LevelCalibration> {
+  const [signals, manual] = await Promise.all([collectLevelSignals(tx), latestManualLevel(tx)]);
+
+  const [state] = await tx.select({ level: learnerState.level }).from(learnerState);
+  const current = (state?.level ?? 'einsteiger') as LearnerLevel;
+
+  // Ein Aufruf genuegt: `calibrateLevel` ist ein Fixpunkt (siehe dort). Ein
+  // zweiter Durchgang aenderte nichts - und genau das laesst den Replay
+  // dieselbe Stufe liefern wie den inkrementellen Weg.
+  const calibration = calibrateLevel({ current, signals, manual, asOf });
+
+  if (calibration.level !== current) {
+    await tx.update(learnerState).set({ level: calibration.level, updatedAt: asOf });
+  }
+
+  return calibration;
+}
+
+/**
+ * Das aktuelle Level samt Begruendungsbausteinen - die Frage, die AP5 stellt.
+ *
+ * Rechnet nicht neu und schreibt nichts: Es liest den gespeicherten Stand und
+ * legt die Kennzahlen daneben. `asOf` entscheidet nur darueber, ob eine
+ * manuelle Setzung noch gilt.
+ */
+export async function readLearnerLevel(
+  db: Database,
+  asOf: Date = new Date(),
+): Promise<LevelCalibration> {
+  const [signals, manual] = await Promise.all([
+    collectLevelSignals(db as unknown as Transaction),
+    latestManualLevel(db as unknown as Transaction),
+  ]);
+  const [state] = await db.select({ level: learnerState.level }).from(learnerState);
+
+  return calibrateLevel({
+    current: (state?.level ?? 'einsteiger') as LearnerLevel,
+    signals,
+    manual,
+    asOf,
+  });
+}
+
+/**
+ * Setzt das Level von Hand - **als Ereignis**, nicht als Schreibzugriff.
+ *
+ * Damit gilt auch hier das Umgehungsverbot aus T4.2: Der Replay kennt die
+ * Korrektur, weil sie im Protokoll steht. Sie wird
+ * `MANUAL_LEVEL_GRACE_DAYS` Tage respektiert; danach greift die Automatik
+ * wieder (ADR-0045).
+ */
+export async function setLearnerLevel(
+  db: Database,
+  input: { readonly eventId: string; readonly level: LearnerLevel; readonly reason?: string },
+): Promise<RecordLearningEventResponse> {
+  return recordLearningEvent(db, {
+    id: input.eventId,
+    eventType: 'level_set',
+    source: 'manual',
+    // Eine Selbsteinschaetzung ist genau das - die schwaechste Signalklasse.
+    signalClass: 'self_reported',
+    payload: {
+      level: input.level,
+      ...(input.reason === undefined ? {} : { reason: input.reason }),
+    },
+  });
+}
+
+/** Alle Rating-Achsen mit ihrem aktuellen Stand - die Grundlage des Radars in AP6. */
+export async function readSkillRatings(db: Database): Promise<readonly SkillRatingView[]> {
+  const rows = await db
+    .select({
+      topicArea: skillRating.topicArea,
+      rating: skillRating.rating,
+      eventCount: skillRating.eventCount,
+      updatedAt: skillRating.updatedAt,
+    })
+    .from(skillRating);
+
+  const byArea = new Map(rows.map((row) => [row.topicArea, row]));
+
+  // Immer alle zwoelf Achsen, in der Reihenfolge der Liste aus T3.2 - auch die
+  // ohne Datenlage. Eine fehlende Achse waere in der Anzeige nicht von einer
+  // schlechten zu unterscheiden.
+  return CONCEPT_TOPIC_AREAS.map((area) => {
+    const row = byArea.get(area.id);
+    return {
+      topicArea: area.id,
+      label: area.label,
+      rating: row?.rating ?? 0,
+      eventCount: row?.eventCount ?? 0,
+      updatedAt: (row?.updatedAt ?? new Date(0)).toISOString(),
+    };
+  });
+}
+
+/** Der Verlauf einer Achse - ein Punkt je Kalendertag. */
+export async function readRatingHistory(
+  db: Database,
+  topicArea: ConceptTopicArea,
+): Promise<SkillRatingHistory> {
+  const rows = await db
+    .select({ capturedAt: skillRatingSnapshot.capturedAt, rating: skillRatingSnapshot.rating })
+    .from(skillRatingSnapshot)
+    .where(eq(skillRatingSnapshot.topicArea, topicArea))
+    .orderBy(asc(skillRatingSnapshot.capturedAt));
+
+  return {
+    topicArea,
+    points: rows.map((row) => ({
+      day: startOfUtcDay(row.capturedAt).toISOString().slice(0, 10),
+      rating: row.rating,
+    })),
+  };
 }

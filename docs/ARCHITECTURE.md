@@ -1150,6 +1150,75 @@ Damit schließt sich der Kreis: Wer weitergeht, obwohl der Stand nur auf
 Modellurteilen beruht, bekommt das Konzept später wieder vorgelegt. Die
 adaptive Weiterschaltung ist keine Nachlässigkeit, sondern eine Stundung.
 
+### Skill-Ratings und Level (neu in AP4.T4.5)
+
+Die letzte der vier Ableitungen — und die erste, die etwas erzeugt, das nicht
+an einem Konzept hängt:
+
+```
+   learning_event (Strom eines Themenbereichs)
+             │   Zuordnung über concept.topic_area, zur Laufzeit gelesen
+             ▼
+   derive.ts  foldSkillRating() / foldSkillRatingSnapshots()   ← Verdrahtung
+             │
+             ▼
+   rating.ts  EWMA, α = 0,15 · Signalgewicht · Schwierigkeit   ← rein
+             │
+             ├──►  skill_rating            (aktueller Wert je Achse)
+             └──►  skill_rating_snapshot   (ein Punkt je Kalendertag)
+                              │
+        ┌─────────────────────┴───────────────────────┐
+        │  + concept_mastery (belastbare Konzepte)    │
+        │  + Anteil objektiver Signale                │
+        ▼                                             ▼
+   level.ts  calibrateLevel({ current, signals, manual, asOf })   ← rein
+             │   Hysterese: Aufstiegs- ≠ Halteschwelle
+             ▼
+      learner_state.level  ──►  AP5 (Erklärtiefe) · AP6 (Anzeige)
+```
+
+### Zwei Dimensionen, die sich nicht ineinander umrechnen lassen
+
+Das Kapitel sagt, **wo** man im Buch steht; das Rating sagt, **wie gut** es
+fachlich läuft; das Level sagt, **wie** unterrichtet wird. Alle drei sind
+nötig: Wer Kapitel 12 erreicht hat, kann in `preflop-ranges` trotzdem
+schwächeln, und wer stark ist, braucht keine Anfängererklärungen.
+
+Der Themenbereich eines Ereignisses wird **zur Laufzeit aus dem Konzept
+gelesen**, nicht im Ereignis dupliziert. Sortiert die Review ein Konzept um,
+zieht das Rating beim nächsten Lauf mit — es gibt keine zweite Wahrheit, die
+auseinanderlaufen könnte.
+
+### Hysterese: warum das Level klebt
+
+Aufstiegs- und Halteschwelle liegen zehn Hundertstel auseinander. Wer dazwischen
+liegt, bleibt, wo er ist. Ohne dieses tote Band wechselte das Level an der
+Grenze bei jedem Ereignis — und die KI wechselte mitten in einer Lernphase den
+Erklärstil, was verwirrender wäre als ein leicht falsches Level
+([ADR-0045](./DECISIONS.md)).
+
+Der Aufstieg geht dafür in einem Schritt bis zur höchsten getragenen Stufe: Der
+Start bei `einsteiger` ist eine Vorsichtsannahme, keine Feststellung.
+
+### Das erste Ereignis ohne Konzept
+
+Der Nutzer kann sein Level selbst setzen — als Ereignis vom Typ `level_set`,
+nicht als Schreibzugriff. Damit gilt das Umgehungsverbot auch hier, und der
+Replay kennt die Korrektur.
+
+`level_set` ist das einzige Ereignis ohne Konzeptbezug. Statt die Invariante
+aus T4.1 aufzugeben, tritt ein CHECK an ihre Stelle: Ein Ereignis ist
+**entweder** ein Lernereignis an einem Konzept **oder** ein globales Ereignis
+am Lernenden. Ein Lernereignis ohne Konzept bleibt unmöglich — es würde von
+keiner Ableitung erfasst.
+
+### Der Verlauf ist verdichtet, nicht vollständig
+
+`skill_rating_snapshot` hält **einen Punkt je Achse und Kalendertag**, nicht
+je Ereignis: höchstens 12 × 365 Zeilen im Jahr statt Tausender. Die IDs sind
+aus Themenbereich und Tag abgeleitet (UUIDv5), damit der Replay dieselben
+Zeilen erzeugt und nicht bloß inhaltlich gleiche.
+
 ## 4. Querschnitts-Entscheidungen
 
 - **Node 20.19.6**, fixiert in `.nvmrc`; `engines.node >= 20.19.0`.

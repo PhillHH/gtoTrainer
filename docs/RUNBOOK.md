@@ -1747,7 +1747,7 @@ darauf hin. `missed` am einzelnen Treffer sagt, welches Kriterium nicht saß —
 meist „keine Stacktiefe in der Unterschrift", weil das Buch sie nicht zu jedem
 Chart nennt.
 
-## 16. Lernstand: Migration, Seed, Ereignisse, Replay, Schwellen, Queue (AP4.T4.1–T4.4)
+## 16. Lernstand: Migration, Seed, Ereignisse, Replay, Schwellen, Queue, Level (AP4.T4.1–T4.5)
 
 Der Lernstand-Kern besteht aus sieben Tabellen (`learning_event`,
 `concept_mastery`, `review_queue`, `error_log`, `skill_rating`,
@@ -2118,6 +2118,93 @@ Ereignisse laufen lässt. Was man dabei im Kopf haben muss:
 Fälligkeiten hängen **nie** an der Uhr: Sie werden aus `occurred_at` des
 Ereignisses gerechnet. Ein Abruf zu einem anderen Zeitpunkt ändert die
 Reihenfolge, aber keinen einzigen Termin.
+
+### 16.13 Level ansehen und von Hand setzen (AP4.T4.5)
+
+```bash
+pnpm learning:level
+# [learning:level] ... - aktuell: einsteiger (automatic)
+# [learning:level] Kennzahlen: Rating-Schnitt 0.000, Themenbereiche mit Daten 0,
+#                  belastbare Konzepte 0, objektiver Anteil 0.0 % -> Automatik saehe einsteiger
+```
+
+Setzen, wenn die Automatik danebenliegt:
+
+```bash
+pnpm learning:level fortgeschritten --reason "Spiele seit Jahren MTTs"
+```
+
+Das schreibt ein **Ereignis** (`level_set`), keinen direkten Datenbankeintrag —
+der Replay kennt die Korrektur damit. Sie gilt **30 Tage**, danach greift die
+Automatik wieder. Während der Frist zeigt die Ausgabe beides: das gesetzte
+Level und das, was die Kennzahlen hergäben.
+
+> Kommt die Automatik nach Ablauf der Frist auf dieselbe Stufe zurück, war die
+> Korrektur richtig und ist jetzt belegt. Kommt sie auf eine niedrigere, fehlt
+> schlicht die Beleglage — dann hilft objektiv prüfbares Üben, nicht ein
+> erneutes Setzen.
+
+Die Stufen sind dieselben wie `concept.min_level`: `einsteiger`,
+`fortgeschritten`, `experte`. Was sie für die Didaktik bedeuten, steht in
+INTERFACES.md 21.
+
+### 16.14 Rating-Verlauf einsehen (AP4.T4.5)
+
+Aktueller Stand aller zwölf Achsen:
+
+```bash
+docker compose exec -T postgres psql -U gto -d gto -c "
+  select topic_area, round(rating::numeric, 3) as rating, event_count, updated_at
+    from skill_rating order by rating desc"
+```
+
+**`event_count` gehört neben jedes Rating gelesen.** Ein Rating von 0,9 aus zwei
+Ereignissen ist etwas anderes als dasselbe aus achtzig — die erste Beobachtung
+setzt den Wert, danach zieht der gleitende Durchschnitt.
+
+Verlauf einer Achse (ein Punkt je Kalendertag):
+
+```bash
+docker compose exec -T postgres psql -U gto -d gto -c "
+  select captured_at::date as tag, round(rating::numeric, 3) as rating
+    from skill_rating_snapshot
+   where topic_area = 'flop-spiel'
+   order by captured_at"
+```
+
+Wie viele Punkte insgesamt — der Verlauf wächst mit den Tagen, nicht mit der
+Nutzung:
+
+```bash
+docker compose exec -T postgres psql -U gto -d gto -c "
+  select count(*) as punkte, count(distinct captured_at::date) as tage,
+         count(distinct topic_area) as achsen
+    from skill_rating_snapshot"
+```
+
+### 16.15 Ratings nach einer Formeländerung neu berechnen (AP4.T4.5)
+
+Wird der Abkling-Faktor, ein Signalgewicht oder eine Level-Schwelle geändert,
+gilt die neue Formel zunächst nur für **neue** Ereignisse. Der bestehende Stand
+wird mit einem Replay nachgezogen:
+
+```bash
+pnpm learning:replay
+pnpm learning:level     # Gegenprobe: Hat sich die Stufe verschoben?
+```
+
+Der Replay rechnet Ratings, Verlauf **und** Level aus dem Ereignisprotokoll
+neu; die Ereignisse selbst bleiben unangetastet (Abschnitt 16.5).
+
+Zwei Dinge, die man dabei wissen muss:
+
+- **Der Verlauf wird komplett ersetzt.** Die Punkte tragen IDs aus
+  Themenbereich und Tag, deshalb entstehen dabei keine Dubletten — aber alte
+  Punkte spiegeln danach die neue Formel, nicht die, die damals galt. Ein
+  Verlauf ist eine Neuberechnung der Geschichte, kein Archiv.
+- **Eine laufende manuelle Level-Setzung überlebt den Replay**, weil sie im
+  Ereignisprotokoll steht. Ihre 30-Tage-Frist läuft ab dem ursprünglichen
+  Zeitpunkt weiter, nicht ab dem Replay.
 
 ## 17. Noch nicht abgedeckt
 

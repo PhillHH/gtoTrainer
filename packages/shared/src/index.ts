@@ -245,6 +245,11 @@ export {
   isAdvanceReason,
   REVIEW_CONTEXTS,
   isReviewContext,
+  GLOBAL_LEARNING_EVENT_TYPES,
+  LEVEL_SOURCES,
+  MANUAL_LEVEL_GRACE_DAYS,
+  isGlobalLearningEventType,
+  isLearnerLevel,
 } from './learning.js';
 export type {
   ConceptMastery,
@@ -284,4 +289,11 @@ export type {
   UpcomingReviewItem,
   UpcomingReviewsQuery,
   UpcomingReviewsResponse,
+  LevelCalibration,
+  LevelSetPayload,
+  LevelSignals,
+  LevelSource,
+  SkillRatingHistory,
+  SkillRatingHistoryPoint,
+  SkillRatingView,
 } from './learning.js';

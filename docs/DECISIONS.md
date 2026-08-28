@@ -3340,3 +3340,221 @@ Zahl zu erfüllen, indem man etwas erfindet, wäre genau die Art von
 Gefälligkeit, die dieses Projekt an anderer Stelle schon vermeidet.
 
 **Keine neuen Dependencies.**
+
+---
+
+## ADR-0044 — Skill-Rating als EWMA mit Abkling-Faktor 0,15, Verlauf auf einen Punkt je Tag verdichtet
+
+- **Datum:** 2026-08-28
+- **Status:** angenommen
+- **Kontext:** AP4.T4.5. Das Skill-Rating je Themenbereich ist die Antwort auf
+  „wo stehe ich fachlich?" (F09). Drei Fragen waren zu entscheiden: mit welcher
+  Trägheit es reagiert, wie es startet, und wie der Verlauf gespeichert wird,
+  ohne unbegrenzt zu wachsen.
+
+### Entscheidung 1 — Abkling-Faktor 0,15
+
+```
+  ratingᵢ = ratingᵢ₋₁ + αᵢ · (outcomeᵢ − ratingᵢ₋₁)
+  αᵢ = 0,15 · Signalgewicht · Schwierigkeit
+```
+
+Ein objektives Ereignis mittlerer Schwierigkeit zieht das Rating um **15 % der
+Lücke**. Nach zehn Beobachtungen zählt die älteste noch mit 0,85¹⁰ ≈ 20 %, nach
+zwanzig mit 4 %.
+
+Die Wirkung an einer Beispielfolge (Test „bleibt träge: ein einzelnes
+schlechtes Ereignis reisst nichts ein"): Nach zwölf objektiven Treffern steht
+das Rating bei **1,000**; ein einzelner Totalausfall drückt es auf **0,850** —
+genau um α, nicht weiter.
+
+Und in der Gegenrichtung (Test „hebt das Rating bei einer Folge guter
+Ereignisse"), aus einem schwachen Start von 0,2 heraus über zehn Treffer:
+**0,200 → 0,422 → 0,582 → 0,744 → 0,815**. Fortschritt ist nach einer Handvoll
+Sitzungen sichtbar, nicht erst nach Wochen.
+
+Zu groß gewählt, und ein schlechter Tag reißt das Rating ein — der Nutzer sähe
+seinen Stand springen und lernte, der Zahl nicht zu trauen. Zu klein, und echte
+Fortschritte blieben monatelang unsichtbar, womit die Anzeige ihren Zweck
+verlöre.
+
+### Entscheidung 2 — Dieselben Gewichte wie beim Mastery-Score, aber ohne die Fehler-Asymmetrie
+
+Signalgewichte (`objective` 1,0, `ai_judged` 0,5, `self_reported` 0,2) und
+Schwierigkeitsmaß werden unverändert aus ADR-0042 übernommen. Was dort ein
+starkes Signal ist, ist es hier auch — es wäre verwirrend, wenn Mastery und
+Rating auf dasselbe Ereignis gegenläufig reagierten. Der Nutzer sähe zwei
+Zahlen, die sich widersprechen, und keine Erklärung dafür.
+
+**Nicht** übernommen wird der Fehler-Faktor 1,5. Dort geht es um ein einzelnes
+Konzept, und ein Fehler ist ein starker Beleg für genau diese Lücke. Ein
+Skill-Rating mittelt über einen Themenbereich mit dreizehn bis einunddreißig
+Konzepten; ein einzelner Fehler sagt darüber deutlich weniger aus. Ihn hier
+zusätzlich zu verstärken liefe der geforderten Trägheit direkt zuwider.
+
+### Entscheidung 3 — Die erste Beobachtung setzt das Rating
+
+Ein EWMA von 0 aus hätte zwei Probleme: Der Startwert 0 hieße zugleich „keine
+Daten" und „sehr schlecht", und es bräuchte ein Dutzend Ereignisse, nur um den
+ersten Messwert einzuholen — ein Themenbereich sähe nach zwei perfekten
+Antworten immer noch katastrophal aus.
+
+Wie belastbar ein Rating ist, sagt **`eventCount`**, nicht das Rating selbst.
+Es steht im Lesevertrag neben jedem Wert; ein Rating von 0,9 aus zwei
+Ereignissen ist etwas anderes als dasselbe aus achtzig. Dieselbe Ehrlichkeit
+wie Score und Konfidenz bei der Mastery.
+
+Der Preis: Eine einzelne Selbsteinschätzung setzt das Rating einer Achse auf
+ihren Wert. Sichtbar bleibt das über `eventCount = 1`, und das zweite Ereignis
+zieht es schon wieder.
+
+### Entscheidung 4 — Ein Verlaufspunkt je Kalendertag
+
+`skill_rating_snapshot` bekommt **einen Punkt je Themenbereich und
+UTC-Kalendertag**, nicht je Ereignis. Der Wert ist der Stand am **Ende** des
+Tages.
+
+Ohne Verdichtung wüchse der Verlauf mit der Nutzung: Bei zwanzig Ereignissen
+täglich wären das über 7 000 Zeilen je Achse im Jahr — für eine Grafik, die
+ohnehin nur Wochen auflöst. Mit der Tagesverdichtung sind es höchstens
+**12 × 365 Zeilen im Jahr**, und das dauerhaft. Belegt durch den Test „schreibt
+einen Verlaufspunkt je Kalendertag, nicht je Ereignis": 40 Ereignisse über zehn
+Tage ergeben **10** Punkte.
+
+Ein Tag ist die feinste Auflösung, die eine Entwicklungskurve in AP6 braucht.
+Ein Zwischenstand von mittags ist keine Auskunft, die jemand benötigt.
+
+### Entscheidung 5 — Deterministische Snapshot-IDs
+
+Die ID eines Verlaufspunkts ist eine UUID Version 5 über Namensraum,
+Themenbereich und Tag — kein `gen_random_uuid()`.
+
+Das klingt nach Detail, ist aber Pflicht: Der Replay legt die Punkte neu an,
+und mit Zufalls-IDs schlüge der Vergleich „Replay == inkrementell" aus T4.2
+fehl — bei inhaltlich identischen Zeilen. Dieselbe Überlegung wie bei
+`error_log.id = event_id` (ADR-0040). Zwanzig Zeilen eigener Code (SHA-1 aus
+`node:crypto`) statt einer Abhängigkeit.
+
+**Keine neuen Dependencies.**
+
+---
+
+## ADR-0045 — Drei Level statt vier, Hysterese über getrennte Aufstiegs- und Halteschwellen, manuelle Setzung als Ereignis
+
+- **Datum:** 2026-08-28
+- **Status:** angenommen
+- **Kontext:** AP4.T4.5. Das Level beantwortet „auf welchem Niveau wird
+  unterrichtet?" (F07) und steuert ab AP5 die Erklärtiefe. Der Task schlug eine
+  vierstufige Folge vor („etwa Anfänger, Fortgeschritten, Sicher, Solide") und
+  verlangte, die konkrete Benennung als ADR festzuhalten.
+
+### Entscheidung 1 — Drei Stufen, und zwar die aus T3.2
+
+`einsteiger`, `fortgeschritten`, `experte` — **dieselbe Liste wie
+`concept.min_level`**.
+
+Die vierstufige Variante wurde geprüft und verworfen. Das Level hat genau einen
+Zweck: Es wird gegen `min_level` der Konzepte gehalten, um zu entscheiden,
+welcher Stoff dran ist, und gibt AP5 die Erklärtiefe vor. Eine vierte
+Lernenden-Stufe hätte im Konzeptgraphen keine Entsprechung — sie wäre ein
+Unterschied, der nirgends ankommt.
+
+Dazu kommt der Preis: eine zweite Liste, die mit der ersten auseinanderlaufen
+kann, plus eine Migration am CHECK aus T4.1, plus eine Abbildung zwischen
+beiden Listen, die niemand braucht. Dieselbe Haltung, die schon in T4.1 zur
+Wiederverwendung von `CONCEPT_LEVELS` geführt hat.
+
+Was die drei Stufen für AP5 bedeuten, steht in INTERFACES.md 21 — dort, wo AP5
+es liest, nicht hier.
+
+### Entscheidung 2 — Vier Kennzahlen, nicht eine
+
+| Kennzahl            | Warum sie nicht allein reicht                       |
+| ------------------- | --------------------------------------------------- |
+| `averageRating`     | kann aus zwei gut gelaufenen Themenbereichen kommen |
+| `coveredTopicAreas` | verhindert genau das                                |
+| `masteredConcepts`  | kann aus lauter Modellurteilen bestehen             |
+| `objectiveShare`    | verhindert genau das                                |
+
+Die Paarung ist Absicht: Jede Kennzahl deckt die Lücke der jeweils anderen. Ein
+Level, das sich mit freundlichen KI-Bewertungen erreichen ließe, wäre dieselbe
+Aufweichung, gegen die schon die Ankerpflicht in T4.3 gerichtet ist.
+
+### Entscheidung 3 — Hysterese über getrennte Schwellen
+
+| Stufe             | Aufstieg                                          | Halten                                            |
+| ----------------- | ------------------------------------------------- | ------------------------------------------------- |
+| `fortgeschritten` | Ø ≥ 0,55 · 5 Konzepte · 20 % objektiv · 2 Achsen  | Ø ≥ 0,45 · 3 Konzepte · 10 % objektiv · 1 Achse   |
+| `experte`         | Ø ≥ 0,78 · 20 Konzepte · 40 % objektiv · 5 Achsen | Ø ≥ 0,68 · 15 Konzepte · 30 % objektiv · 4 Achsen |
+
+Zwischen beiden liegt das **tote Band** von zehn Hundertsteln im Schnitt. Wer
+darin liegt, bleibt, wo er ist — im Band entscheidet die Geschichte, nicht die
+Zahl.
+
+Belegt durch den Test „springt an der Aufstiegsschwelle nicht hin und her": Die
+Folge 0,56 · 0,54 · 0,56 · 0,53 · 0,57 · 0,52 · 0,55 · 0,54 pendelt genau um die
+Aufstiegsschwelle und erzeugt **genau einen** Wechsel — hoch beim ersten Wert
+darüber, danach Ruhe.
+
+Ohne das Band wechselte das Level an der Grenze bei jedem Ereignis, und die KI
+wechselte mitten in einer Lernphase den Erklärstil. Das wäre verwirrender als
+ein leicht falsches Level.
+
+### Entscheidung 4 — Aufstieg sofort, Abstieg über das Band
+
+Der Aufstieg geht in einem Schritt bis zur höchsten getragenen Stufe. Der Start
+bei `einsteiger` ist eine **Vorsichtsannahme, keine Feststellung**: Der Nutzer
+spielt bereits Turniere; ihn zwanzig Sitzungen lang Anfängererklärungen lesen
+zu lassen, wäre der sicherere, aber schlechtere Weg.
+
+Dass ein einzelnes schlechtes Ereignis nicht degradiert, ist **keine
+Zusatzregel**, sondern rechnerisch: Ein Ereignis bewegt das Rating _eines_
+Themenbereichs um höchstens 22,5 % der Lücke, der Durchschnitt über zwölf
+Achsen also um wenige Hundertstel — das Band ist zehn Hundertstel breit. Ein
+Zähler für „anhaltende Verschlechterung" wäre zusätzlicher Zustand ohne
+zusätzliche Wirkung.
+
+Beim Abstieg gilt keine künstliche Bremse „nur eine Stufe pro Ereignis". Löst
+sich die Beleglage vollständig auf, geht es auch zwei Stufen tief. Eine Bremse
+wäre hier keine Vorsicht, sondern eine Anzeige, die länger als nötig ein Niveau
+bescheinigt, das nicht mehr da ist.
+
+Ein Kalibrierungsaufruf ist immer ein **Fixpunkt**: Ein zweiter Aufruf auf dem
+Ergebnis ändert nichts. Genau das lässt den Replay dieselbe Stufe liefern wie
+den inkrementellen Weg.
+
+### Entscheidung 5 — Die manuelle Setzung ist ein Ereignis, und `concept_id` wird nullable
+
+Der Nutzer darf sein Level selbst setzen. Das geschieht über ein Ereignis vom
+Typ `level_set` — nicht über einen Schreibzugriff auf `learner_state`. Sonst
+wäre es der zweite Schreibweg, den das Umgehungsverbot aus T4.2 ausschließt,
+und der Replay wüsste nichts davon.
+
+Damit entsteht das erste Ereignis **ohne Konzeptbezug**, und `concept_id` muss
+nullable werden (Migration `0010`). Um die Invariante aus T4.1 nicht
+aufzugeben, tritt ein CHECK an ihre Stelle: `learning_event_scope_check`
+erzwingt, dass ein Ereignis **entweder** ein Lernereignis an einem Konzept
+**oder** ein globales Ereignis am Lernenden ist. Ein Lernereignis ohne Konzept
+bleibt unmöglich — es würde von keiner Ableitung erfasst und stünde wirkungslos
+im Protokoll.
+
+Die Alternative — den Level-Override in zwei neuen Spalten von `learner_state`
+zu führen — wäre ohne Schemaänderung am Ereignis ausgekommen, hätte aber genau
+den zweiten Schreibweg geschaffen, den AP4 architektonisch ausschließt.
+
+### Entscheidung 6 — Die manuelle Setzung gilt 30 Tage
+
+Ohne Frist überschriebe der nächste Lauf die Korrektur sofort — sie wäre
+wirkungslos. Unbegrenzt wäre sie eine Fehleinschätzung, die nie mehr
+verschwindet.
+
+30 Tage: lang genug, dass eine Serie von Sitzungen sie nicht einkassiert; kurz
+genug, dass sie nicht dauerhaft bleibt. Und in dieser Zeit sammelt sich
+Beleglage an — wenn die Frist abläuft, steht die Automatik auf festerem Grund
+als am Tag der Korrektur.
+
+Während der Frist bleibt `automaticLevel` im Ergebnisobjekt sichtbar: AP6 kann
+anzeigen, dass Selbsteinschätzung und Kennzahlen auseinandergehen, statt den
+Unterschied zu verschweigen.
+
+**Keine neuen Dependencies.**

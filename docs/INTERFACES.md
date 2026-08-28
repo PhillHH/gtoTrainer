@@ -3,7 +3,7 @@
 Dieses Dokument beschreibt, **wo** sich Komponenten und Arbeitspakete
 gegenseitig berühren. Jeder Task trägt seine Deltas hier nach.
 
-Stand: AP4.T4.4 — Lernstand-Datenmodell (17), Event-API (18), Mastery und Weiterschaltung (19), Wiederholungs-Queue (20).
+Stand: AP4.T4.5 — Lernstand-Datenmodell (17), Event-API (18), Mastery (19), Wiederholungs-Queue (20), Ratings und Level (21).
 
 ---
 
@@ -23,17 +23,18 @@ statt ihn hier zu importieren, bricht diese Konvention.
 
 ### Aktueller Inhalt
 
-| Export                | Art          | Bedeutung                                          |
-| --------------------- | ------------ | -------------------------------------------------- |
-| `HealthResponse`      | `interface`  | Antwortvertrag von `GET /healthz`                  |
-| `HEALTH_STATUS_OK`    | `const 'ok'` | Einziger gültiger Health-Status                    |
-| `isHealthResponse(v)` | Type-Guard   | Laufzeitprüfung gegen den Vertrag                  |
-| Auth-Verträge         | s. 2a        | Login, Session, CSRF                               |
-| `LLMProvider` u. a.   | s. 8         | Vertrag des LLM-Gateways (AP2)                     |
-| Lernstand-Verträge    | s. 17        | Signalklassen, Ereignistypen, Zeilenverträge (AP4) |
-| Ereignis-Vertrag      | s. 18        | `RecordLearningEventInput`, Nutzdaten je Typ (AP4) |
-| `AdvanceDecision`     | s. 19        | Weiterschaltung samt Begründungsbausteinen (AP4)   |
-| `DueReviewsResponse`  | s. 20        | Abruf fälliger Wiederholungen (AP4)                |
+| Export                | Art          | Bedeutung                                           |
+| --------------------- | ------------ | --------------------------------------------------- |
+| `HealthResponse`      | `interface`  | Antwortvertrag von `GET /healthz`                   |
+| `HEALTH_STATUS_OK`    | `const 'ok'` | Einziger gültiger Health-Status                     |
+| `isHealthResponse(v)` | Type-Guard   | Laufzeitprüfung gegen den Vertrag                   |
+| Auth-Verträge         | s. 2a        | Login, Session, CSRF                                |
+| `LLMProvider` u. a.   | s. 8         | Vertrag des LLM-Gateways (AP2)                      |
+| Lernstand-Verträge    | s. 17        | Signalklassen, Ereignistypen, Zeilenverträge (AP4)  |
+| Ereignis-Vertrag      | s. 18        | `RecordLearningEventInput`, Nutzdaten je Typ (AP4)  |
+| `AdvanceDecision`     | s. 19        | Weiterschaltung samt Begründungsbausteinen (AP4)    |
+| `DueReviewsResponse`  | s. 20        | Abruf fälliger Wiederholungen (AP4)                 |
+| `LevelCalibration`    | s. 21        | Level samt Kennzahlen, Skill-Ratings, Verlauf (AP4) |
 
 ---
 
@@ -2676,3 +2677,138 @@ bewusst eng — sie betrachtet nur Einträge, die ohnehin beide fällig sind.
 Alles Weitergehende („wie wackelig darf eine Voraussetzung sein") bräuchte eine
 Schwelle, und Schwellen sind Konfiguration; die Queue soll ohne Konfiguration
 reproduzierbar bleiben.
+
+---
+
+## 21. Skill-Ratings und Level (AP4.T4.5)
+
+Die zweite Dimension neben dem Kapitelfortschritt: **wo stehe ich fachlich**
+(F09) und **auf welchem Niveau wird unterrichtet** (F07). Der Vertrag für
+**AP5** (fragt das Level ab) und **AP6** (zeigt Ratings und Verlauf).
+
+### Wie AP5 das Level abruft — und was es bedeutet
+
+```ts
+import { readLearnerLevel } from '../learning/service.js';
+
+const calibration = await readLearnerLevel(db);
+// calibration.level — 'einsteiger' | 'fortgeschritten' | 'experte'
+```
+
+| Stufe             | Was AP5 daraus macht                                                                                                            |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `einsteiger`      | Begriffe werden eingeführt, bevor sie benutzt werden. Wenig Fachsprache, viel Beispiel, Fragen mit klarer richtiger Antwort.    |
+| `fortgeschritten` | Fachsprache wird vorausgesetzt (Range, EV, ICM). Erklärungen gehen aufs Warum, Fragen verlangen Übertragung auf neue Spots.     |
+| `experte`         | Kurze Erklärungen, Diskussion von Randfällen und Abweichungen vom Gleichgewicht. Fragen sind mehrdeutig und verlangen Abwägung. |
+
+**Die Stufen sind dieselben wie `concept.min_level` aus T3.2** — bewusst keine
+zweite Liste. Das Level wird gegen `min_level` gehalten, um zu entscheiden,
+welche Konzepte überhaupt dran sind; eine vierte Lernenden-Stufe hätte im
+Konzeptgraphen keine Entsprechung ([ADR-0045](./DECISIONS.md)).
+
+`LevelCalibration` liefert wieder **Bausteine, keine Sätze**: `level`,
+`previousLevel`, `changed`, `source` (`automatic` | `manual`), `manualUntil`,
+`automaticLevel` (was die Kennzahlen allein hergäben) und `signals`.
+
+### Wie das Level zustande kommt
+
+Drei unabhängige Kennzahlen, alle aus dem Ereignisstrom:
+
+| Kennzahl            | Bedeutung                                                    |
+| ------------------- | ------------------------------------------------------------ |
+| `averageRating`     | Mittel der Ratings über die Themenbereiche **mit Datenlage** |
+| `coveredTopicAreas` | wie viele der zwölf Achsen überhaupt Daten haben             |
+| `masteredConcepts`  | Konzepte mit Score ≥ 0,75 **und** Konfidenz ≥ 0,4            |
+| `objectiveShare`    | Anteil objektiver Signale an allen Signalen                  |
+
+Jede für sich wäre zu leicht zu erreichen: ein hoher Schnitt aus zwei gut
+gelaufenen Bereichen, eine hohe Konzeptzahl aus lauter Modellurteilen.
+
+**Aufstiegs- und Halteschwellen (Hysterese):**
+
+| Stufe             | Aufstieg                                          | Halten (darunter: Abstieg)                        |
+| ----------------- | ------------------------------------------------- | ------------------------------------------------- |
+| `fortgeschritten` | Ø ≥ 0,55 · 5 Konzepte · 20 % objektiv · 2 Achsen  | Ø ≥ 0,45 · 3 Konzepte · 10 % objektiv · 1 Achse   |
+| `experte`         | Ø ≥ 0,78 · 20 Konzepte · 40 % objektiv · 5 Achsen | Ø ≥ 0,68 · 15 Konzepte · 30 % objektiv · 4 Achsen |
+
+Dazwischen liegt das **tote Band**: Wer darin liegt, bleibt, wo er ist. Ohne
+das wechselte das Level an der Grenze bei jedem Ereignis, und die KI wechselte
+mitten in einer Lernphase den Erklärstil — verwirrender als ein leicht
+falsches Level.
+
+Der Start bei `einsteiger` ist eine **Vorsichtsannahme, keine Feststellung**:
+Tragen die Kennzahlen zwei Stufen, geht es in einem Schritt hoch. Ein einzelnes
+schlechtes Ereignis kann dagegen nicht degradieren — es bewegt das Rating
+_eines_ Bereichs um höchstens 22,5 % der Lücke, der Durchschnitt über zwölf
+Achsen also um wenige Hundertstel, und das Band ist zehn Hundertstel breit.
+
+### Manuelle Level-Korrektur
+
+```ts
+await setLearnerLevel(db, { eventId: randomUUID(), level: 'experte', reason: '...' });
+```
+
+Das schreibt ein **Ereignis** vom Typ `level_set` — nicht direkt in
+`learner_state`. Damit gilt das Umgehungsverbot aus Abschnitt 18 auch hier, und
+der Replay kennt die Korrektur.
+
+`level_set` ist das **einzige Ereignis ohne Konzeptbezug**. Der CHECK
+`learning_event_scope_check` (Migration `0010`) erzwingt das Entweder-oder:
+`level_set` **ohne** `conceptId`, jeder andere Typ **mit**. Ein Lernereignis
+ohne Konzept bliebe von jeder Ableitung unerfasst — es stünde wirkungslos im
+Protokoll.
+
+Die Setzung gilt **30 Tage** (`MANUAL_LEVEL_GRACE_DAYS`), danach greift die
+Automatik wieder. Ohne diese Frist überschriebe der nächste Lauf die Korrektur
+sofort; unbegrenzt wäre sie eine Fehleinschätzung, die nie mehr verschwindet.
+Während der Frist zeigt `automaticLevel`, was die Kennzahlen sagen würden.
+
+### Wie AP6 Ratings und Verlauf liest
+
+```ts
+const axes = await readSkillRatings(db); // alle zwölf Achsen
+const history = await readRatingHistory(db, 'flop-spiel'); // ein Verlauf
+```
+
+`readSkillRatings` liefert **immer alle zwölf** Achsen in der Reihenfolge aus
+T3.2 — auch die ohne Datenlage. Eine fehlende Achse wäre in der Anzeige nicht
+von einer schlechten zu unterscheiden. Je Achse: `topicArea`, `label`,
+`rating` (0–1), `eventCount` und `updatedAt`.
+
+**`eventCount` gehört neben jedes Rating.** Ein Rating von 0,9 aus zwei
+Ereignissen ist etwas anderes als dasselbe aus achtzig — dieselbe Ehrlichkeit
+wie Score und Konfidenz bei der Mastery.
+
+`readRatingHistory` liefert **einen Punkt je Kalendertag** (`day` als
+`YYYY-MM-DD`, `rating`), nicht je Ereignis. Die Verdichtung hält den Verlauf
+endlich: höchstens 12 × 365 Zeilen im Jahr statt einer je Ereignis. Der Wert
+eines Tages ist der Stand am Ende dieses Tages.
+
+### Die Rating-Formel
+
+```
+  rating₁ = outcome₁                                  (erste Beobachtung)
+  ratingᵢ = ratingᵢ₋₁ + αᵢ · (outcomeᵢ − ratingᵢ₋₁)
+  αᵢ = 0,15 · Signalgewicht · Schwierigkeit
+```
+
+**Dieselben Signalgewichte wie beim Mastery-Score** (`objective` 1,0,
+`ai_judged` 0,5, `self_reported` 0,2) und dasselbe Schwierigkeitsmaß. Es wäre
+verwirrend, wenn Mastery und Rating auf dasselbe Ereignis gegenläufig
+reagierten. Nicht übernommen wird die Fehler-Asymmetrie aus T4.3 — sie gilt
+einem einzelnen Konzept, ein Rating mittelt über einen ganzen Themenbereich
+([ADR-0044](./DECISIONS.md)).
+
+Die **erste** Beobachtung setzt das Rating, statt es von 0 aus anzuziehen: Ein
+Startwert von 0 hieße zugleich „keine Daten" und „sehr schlecht".
+
+### Themenbereichs-Zuordnung
+
+Ein Ereignis betrifft ein Konzept; das Konzept hat aus AP3 **genau einen**
+Themenbereich, und darüber wirkt es auf dessen Rating. Die Zuordnung wird zur
+Laufzeit aus `concept.topic_area` gelesen und **nicht im Ereignis
+dupliziert** — sonst liefen beide auseinander, sobald ein Konzept umsortiert
+wird. Belegt durch den Test „liest den Themenbereich zur Laufzeit aus dem
+Konzept": Nach einem Umzug plus Replay steht das Rating an der neuen Achse.
+
+Die Liste stammt ausschließlich aus `CONCEPT_TOPIC_AREAS` (T3.2, Abschnitt 13).

@@ -24,6 +24,7 @@
     "learning:reset": "pnpm --filter @gto/backend learning:reset",
     "learning:replay": "pnpm --filter @gto/backend learning:replay",
     "learning:thresholds": "pnpm --filter @gto/backend learning:thresholds",
+    "learning:level": "pnpm --filter @gto/backend learning:level",
     "auth:set-password": "pnpm --filter @gto/backend auth:set-password",
     "llm:runner": "pnpm --filter @gto/backend llm:runner",
     "prompts:golden": "pnpm --filter @gto/backend prompts:golden",

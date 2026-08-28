@@ -775,6 +775,9 @@ export const LEARNING_EVENT_TYPES = [
   'hand_analyzed',
   'review_performed',
   'manual_correction',
+  // AP4.T4.5: das erste Ereignis ohne Konzeptbezug - der Nutzer setzt sein
+  // Level selbst. Siehe Migration `0010` und ADR-0044.
+  'level_set',
 ] as const;
 
 export const LEARNING_EVENT_SOURCES = [
@@ -809,9 +812,13 @@ export const learningEvent = pgTable(
     signalClass: text('signal_class').notNull(),
     /** Fachlicher Zeitpunkt des Geschehens, vom Aufrufer gesetzt. */
     occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
-    conceptId: uuid('concept_id')
-      .notNull()
-      .references(() => concept.id, { onDelete: 'restrict' }),
+    /**
+     * Betroffenes Konzept. Seit T4.5 **nullable**: `level_set` ist ein
+     * globales Ereignis ohne Konzeptbezug. Ein CHECK erzwingt das
+     * Entweder-oder, damit die Invariante aus T4.1 fuer alle anderen
+     * Ereignistypen unveraendert gilt.
+     */
+    conceptId: uuid('concept_id').references(() => concept.id, { onDelete: 'restrict' }),
     /** Chart, gegen das geprueft wurde - Beleg eines objektiven Signals. */
     chartId: uuid('chart_id').references(() => rangeChart.id, { onDelete: 'restrict' }),
     /**
@@ -848,6 +855,14 @@ export const learningEvent = pgTable(
       sql.raw(`(event_type = 'manual_correction') = (corrects_event_id is not null)`),
     ),
     check('learning_event_no_self_correction_check', sql`${table.correctsEventId} <> ${table.id}`),
+    // Ein Ereignis ist **entweder** ein Lernereignis an einem Konzept **oder**
+    // ein globales Ereignis am Lernenden. Ohne diese Bedingung koennte ein
+    // Lernereignis ohne Konzept entstehen und wuerde von keiner Ableitung
+    // erfasst - es stuende im Protokoll und wirkte nirgends.
+    check(
+      'learning_event_scope_check',
+      sql.raw(`(event_type = 'level_set') = (concept_id is null)`),
+    ),
   ],
 );
 
