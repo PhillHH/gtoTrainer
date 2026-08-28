@@ -35,6 +35,12 @@ const MASTERY_SOURCE = readFileSync(
   'utf8',
 );
 
+/** Seit T4.4 gilt dasselbe fuer die Wiederholungssteuerung. */
+const REVIEW_SOURCE = readFileSync(
+  fileURLToPath(new URL('../../src/learning/review.ts', import.meta.url)),
+  'utf8',
+);
+
 /** Kommentarzeilen zaehlen nicht - die Regel steht dort im Klartext. */
 function codeLines(source: string): string[] {
   return source.split('\n').filter((line) => {
@@ -52,6 +58,13 @@ function forbiddenCalls(source: string): string[] {
 describe('Determinismus der Ableitungen (AP4.T4.2)', () => {
   it('benutzt weder Systemzeit noch Zufall', () => {
     expect(forbiddenCalls(DERIVE_SOURCE)).toEqual([]);
+  });
+
+  it('gilt auch fuer die Wiederholungssteuerung aus T4.4', () => {
+    expect(forbiddenCalls(REVIEW_SOURCE)).toEqual([]);
+    // Der Bezugszeitpunkt der Ueberfaelligkeit kommt als Argument herein.
+    expect(REVIEW_SOURCE).toContain('asOf: Date');
+    expect(REVIEW_SOURCE).not.toMatch(/from '\.\.\/db\//);
   });
 
   it('gilt auch fuer die Mastery-Formel aus T4.3', () => {

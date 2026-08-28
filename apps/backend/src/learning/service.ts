@@ -1,4 +1,5 @@
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, lte, sql } from 'drizzle-orm';
+import type { SQL } from 'drizzle-orm';
 import {
   LEARNING_THRESHOLD_RANGES,
   isLearningEventSource,
@@ -9,6 +10,11 @@ import {
 import type {
   AdvanceDecision,
   ConceptTopicArea,
+  DueReviewsQuery,
+  DueReviewsResponse,
+  ReviewQueueOrigin,
+  UpcomingReviewsQuery,
+  UpcomingReviewsResponse,
   LearningEventType,
   LearningThresholdUpdate,
   LearningThresholds,
@@ -20,6 +26,7 @@ import {
   concept,
   conceptChart,
   conceptMastery,
+  conceptPrerequisite,
   errorLog,
   learnerState,
   learningEvent,
@@ -28,6 +35,8 @@ import {
   skillRating,
 } from '../db/schema.js';
 import { evaluateAdvance } from './mastery.js';
+import { overdueDays, prioritizeReviews } from './review.js';
+import type { ReviewCandidate } from './review.js';
 import {
   applyCorrections,
   foldConceptMastery,
@@ -585,4 +594,180 @@ export async function updateLearningThresholds(
   }
 
   return readLearningThresholds(db);
+}
+
+/* -------------------------------------------------------------------------
+ * Abruf der Wiederholungs-Queue (AP4.T4.4)
+ * ---------------------------------------------------------------------- */
+
+/**
+ * „Gib mir N faellige Eintraege fuer Kontext X."
+ *
+ * Der Abruf, ueber den AP5 (Lern-Session), AP7 (Drill) und AP9
+ * (Materialtrigger) ihre Wiederholungen holen.
+ *
+ * **Es wird nicht kuenstlich aufgefuellt.** Sind weniger als `limit` Eintraege
+ * faellig, kommen weniger - und `dueTotal` sagt, wie viele es tatsaechlich
+ * waren. Ob mit neuem Stoff ergaenzt wird, entscheidet der Aufrufer; die Queue
+ * erfindet nichts, nur um eine Zahl zu erreichen.
+ *
+ * `asOf` ist **Pflicht** und kommt von aussen. Ohne diesen Parameter waere der
+ * Abruf nicht pruefbar - und die Versuchung gross, doch `Date.now()` zu
+ * nehmen.
+ */
+export async function dueReviews(
+  db: Database,
+  query: DueReviewsQuery,
+): Promise<DueReviewsResponse> {
+  const rows = await selectQueueRows(db, lte(reviewQueue.dueAt, query.asOf), query.topicAreas);
+
+  const candidates: ReviewCandidate[] = rows.map((row) => ({
+    conceptId: row.conceptId,
+    dueAt: row.dueAt,
+    origin: row.origin as ReviewQueueOrigin,
+    intervalDays: row.intervalDays,
+    easeFactor: row.easeFactor,
+    repetitions: row.repetitions,
+    lapses: row.lapses,
+    masteryScore: row.masteryScore ?? 0,
+    prerequisiteIds: [],
+  }));
+
+  // Voraussetzungen nur fuer die faelligen Konzepte nachladen - die Regel
+  // greift ohnehin ausschliesslich zwischen Eintraegen derselben Ausgabe.
+  const withPrerequisites = await attachPrerequisites(db, candidates);
+  const ordered = prioritizeReviews(withPrerequisites, query.asOf);
+  const limited = ordered.slice(0, Math.max(0, query.limit));
+
+  const byId = new Map(rows.map((row) => [row.conceptId, row]));
+
+  return {
+    context: query.context,
+    limit: query.limit,
+    asOf: query.asOf.toISOString(),
+    items: limited.map((candidate) => {
+      const row = byId.get(candidate.conceptId);
+      return {
+        conceptId: candidate.conceptId,
+        conceptTitle: row?.title ?? '',
+        topicArea: (row?.topicArea ?? 'grundlagen-mathematik') as ConceptTopicArea,
+        conceptState: row?.state ?? 'draft',
+        dueAt: candidate.dueAt.toISOString(),
+        overdueDays: overdueDays(candidate, query.asOf),
+        origin: candidate.origin,
+        intervalDays: candidate.intervalDays,
+        easeFactor: candidate.easeFactor,
+        repetitions: candidate.repetitions,
+        lapses: candidate.lapses,
+        masteryScore: candidate.masteryScore,
+      };
+    }),
+    // Die ehrliche Zahl: wie viele faellig waren, nicht wie viele passten.
+    dueTotal: ordered.length,
+    returned: limited.length,
+  };
+}
+
+/** „Was wird demnaechst faellig?" - die Vorschau fuer das Dashboard in T4.7. */
+export async function upcomingReviews(
+  db: Database,
+  query: UpcomingReviewsQuery,
+): Promise<UpcomingReviewsResponse> {
+  const until = new Date(query.asOf.getTime() + query.withinDays * 24 * 60 * 60 * 1000);
+  const rows = await selectQueueRows(
+    db,
+    and(gt(reviewQueue.dueAt, query.asOf), lte(reviewQueue.dueAt, until)),
+  );
+
+  const sorted = [...rows].sort(
+    (a, b) => a.dueAt.getTime() - b.dueAt.getTime() || a.conceptId.localeCompare(b.conceptId),
+  );
+
+  return {
+    asOf: query.asOf.toISOString(),
+    withinDays: query.withinDays,
+    items: sorted.slice(0, Math.max(0, query.limit)).map((row) => ({
+      conceptId: row.conceptId,
+      conceptTitle: row.title,
+      topicArea: row.topicArea as ConceptTopicArea,
+      dueAt: row.dueAt.toISOString(),
+      inDays: Math.ceil((row.dueAt.getTime() - query.asOf.getTime()) / (24 * 60 * 60 * 1000)),
+      origin: row.origin as ReviewQueueOrigin,
+    })),
+    total: sorted.length,
+  };
+}
+
+/** Queue-Zeilen samt Konzeptangaben und Mastery-Score. */
+async function selectQueueRows(
+  db: Database,
+  where: SQL | undefined,
+  topicAreas?: readonly ConceptTopicArea[],
+): Promise<
+  {
+    conceptId: string;
+    title: string;
+    topicArea: string;
+    state: string;
+    dueAt: Date;
+    origin: string;
+    intervalDays: number;
+    easeFactor: number;
+    repetitions: number;
+    lapses: number;
+    masteryScore: number | null;
+  }[]
+> {
+  const filters = [where];
+  if (topicAreas && topicAreas.length > 0) {
+    filters.push(inArray(concept.topicArea, [...topicAreas]));
+  }
+
+  return db
+    .select({
+      conceptId: reviewQueue.conceptId,
+      title: concept.title,
+      topicArea: concept.topicArea,
+      state: concept.state,
+      dueAt: reviewQueue.dueAt,
+      origin: reviewQueue.origin,
+      intervalDays: reviewQueue.intervalDays,
+      easeFactor: reviewQueue.easeFactor,
+      repetitions: reviewQueue.repetitions,
+      lapses: reviewQueue.lapses,
+      masteryScore: conceptMastery.score,
+    })
+    .from(reviewQueue)
+    .innerJoin(concept, eq(concept.id, reviewQueue.conceptId))
+    .leftJoin(conceptMastery, eq(conceptMastery.conceptId, reviewQueue.conceptId))
+    .where(and(...filters.filter((filter): filter is SQL => filter !== undefined)));
+}
+
+/** Laedt die Voraussetzungskanten, die zwischen den faelligen Konzepten liegen. */
+async function attachPrerequisites(
+  db: Database,
+  candidates: readonly ReviewCandidate[],
+): Promise<ReviewCandidate[]> {
+  if (candidates.length === 0) return [];
+
+  const ids = candidates.map((candidate) => candidate.conceptId);
+  const edges = await db
+    .select({
+      conceptId: conceptPrerequisite.conceptId,
+      prerequisiteId: conceptPrerequisite.prerequisiteId,
+    })
+    .from(conceptPrerequisite)
+    .where(inArray(conceptPrerequisite.conceptId, ids));
+
+  const byConcept = new Map<string, string[]>();
+  for (const edge of edges) {
+    const list = byConcept.get(edge.conceptId) ?? [];
+    list.push(edge.prerequisiteId);
+    byConcept.set(edge.conceptId, list);
+  }
+
+  return candidates.map((candidate) => ({
+    ...candidate,
+    prerequisiteIds: byConcept.get(candidate.conceptId) ?? [],
+  }));
 }

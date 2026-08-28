@@ -1747,7 +1747,7 @@ darauf hin. `missed` am einzelnen Treffer sagt, welches Kriterium nicht saß —
 meist „keine Stacktiefe in der Unterschrift", weil das Buch sie nicht zu jedem
 Chart nennt.
 
-## 16. Lernstand: Migration, Seed, Ereignisse, Replay und Schwellen (AP4.T4.1–T4.3)
+## 16. Lernstand: Migration, Seed, Ereignisse, Replay, Schwellen, Queue (AP4.T4.1–T4.4)
 
 Der Lernstand-Kern besteht aus sieben Tabellen (`learning_event`,
 `concept_mastery`, `review_queue`, `error_log`, `skill_rating`,
@@ -2058,6 +2058,66 @@ Was man dabei im Kopf haben muss:
   `manual_correction` darauf zeigt (Abschnitt 16.6).
 - **Stimmt der gespeicherte Stand nicht zu den Ereignissen**, hat jemand direkt
   in `concept_mastery` geschrieben. Der Replay stellt es richtig (16.5).
+
+### 16.11 Wiederholungs-Queue einsehen (AP4.T4.4)
+
+Was steht an, und warum?
+
+```bash
+docker compose exec -T postgres psql -U gto -d gto -c "
+  select c.title, q.due_at, q.origin, q.interval_days, q.ease_factor,
+         q.repetitions, q.lapses, round(m.score::numeric, 3) as mastery
+    from review_queue q
+    join concept c on c.id = q.concept_id
+    left join concept_mastery m on m.concept_id = q.concept_id
+   order by q.due_at
+   limit 20"
+```
+
+Was jetzt fällig ist:
+
+```bash
+docker compose exec -T postgres psql -U gto -d gto -c "
+  select count(*) filter (where due_at <= now()) as faellig,
+         count(*) filter (where due_at > now()) as spaeter,
+         count(*) as gesamt
+    from review_queue"
+```
+
+Die **Reihenfolge**, in der die Einträge vorgelegt werden, ergibt sich nicht
+aus dieser Abfrage — sie entsteht erst in `dueReviews` (Überfälligkeit,
+Ursprung, Mastery, Voraussetzungen; INTERFACES.md 20). Die HTTP-Schnittstelle
+dazu kommt in T4.7.
+
+### 16.12 Eine Fälligkeit nachvollziehen (AP4.T4.4)
+
+Wenn ein Termin überrascht, geht man denselben Weg wie bei der Mastery
+(Abschnitt 16.10): erst der Zustand, dann die Ereignisse, aus denen er entstand.
+
+```bash
+docker compose exec -T postgres psql -U gto -d gto -c "
+  select e.occurred_at, e.event_type, e.signal_class, e.source, e.payload
+    from learning_event e
+   where e.concept_id = '<konzept-id>'
+   order by e.occurred_at, e.id"
+```
+
+Der Zustand ist das Ergebnis, wenn man den SM-2-Automaten über genau diese
+Ereignisse laufen lässt. Was man dabei im Kopf haben muss:
+
+| Beobachtung                                    | Erklärung                                                                                                                                             |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Fälligkeit **eine Stunde** nach einem Ereignis | Echter Rückfall: Das Konzept saß schon einmal (`repetitions ≥ 1`) und ist gekippt.                                                                    |
+| Fälligkeit **einen Tag** nach einem Fehler     | Fehlschlag in der Lernphase — kein Rückfall, normaler erster Lernschritt.                                                                             |
+| Intervall wächst nur zäh                       | Die Erfolge kamen aus schwachen Signalen. Eine Selbsteinschätzung streckt das Intervall nur um ein Fünftel dessen, was ein objektiver Treffer bringt. |
+| `ease_factor` klebt bei 1,3                    | Untergrenze erreicht. Ein Erfolg bringt höchstens +0,1 zurück — das dauert.                                                                           |
+| `origin = 'knowledge_gap'` ohne jeden Fehler   | Für dieses Konzept gibt es **kein einziges objektives Signal**. Genau der Fall, den T4.3 als `mastered_without_objective_anchors` durchlässt.         |
+| Ein Konzept fehlt in der Queue                 | Kein Fehlschlag **und** mindestens ein objektives Signal. Turnusmäßige Wiederholung ohne Anlass gibt es nicht (INTERFACES.md 20).                     |
+| Termin passt nicht zu den Ereignissen          | Jemand hat direkt in `review_queue` geschrieben. Der Replay stellt es richtig (16.5).                                                                 |
+
+Fälligkeiten hängen **nie** an der Uhr: Sie werden aus `occurred_at` des
+Ereignisses gerechnet. Ein Abruf zu einem anderen Zeitpunkt ändert die
+Reihenfolge, aber keinen einzigen Termin.
 
 ## 17. Noch nicht abgedeckt
 

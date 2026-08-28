@@ -11,6 +11,7 @@ import type {
 } from '@gto/shared';
 import { computeMasteryState } from './mastery.js';
 import type { MasterySignal } from './mastery.js';
+import { INITIAL_REVIEW_STATE, reviewOrigin, scheduleReview } from './review.js';
 
 /**
  * Die Ableitungen des Lernstands (AP4.T4.2) - **reine Funktionen**.
@@ -236,73 +237,61 @@ export interface QueueProjection {
   readonly updatedAt: Date;
 }
 
-/** Ab hier gilt ein Ergebnis als misslungen. */
+/** Ab hier gilt ein Ergebnis als misslungen - dieselbe Schwelle wie in T4.3. */
 const FAILURE_THRESHOLD = 0.5;
 
-/** Ein Tag in Millisekunden - fuer die Faelligkeit aus dem Ereigniszeitpunkt. */
+/** Ein Tag in Millisekunden. */
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Woher der Eintrag stammt, abgeleitet aus der Quelle des **ersten**
- * misslungenen Ereignisses. Deterministisch, weil der Strom geordnet ist.
- */
-function queueOrigin(source: LearningEventSource): ReviewQueueOrigin {
-  switch (source) {
-    case 'hand_analysis':
-    case 'tournament':
-      return 'practice_finding';
-    case 'theory_session':
-    case 'journal':
-      return 'knowledge_gap';
-    case 'drill':
-    case 'manual':
-      return 'error';
-  }
-}
-
-/**
- * PLATZHALTER - T4.4 ersetzt die Formel durch SM-2.
+ * Wiederholungssteuerung - das Verfahren steht seit T4.4 in `review.ts`.
  *
- * Regel hier: Ein Konzept steht in der Queue, sobald es mindestens ein
- * misslungenes Ergebnis gab. Faelligkeit ist ein Tag nach dem letzten
- * Ereignis, das Intervall bleibt bei 1, der Ease-Faktor beim Startwert.
- * Gezaehlt werden aber schon `repetitions` (gelungen) und `lapses`
- * (misslungen) - T4.4 rechnet damit, ohne den Strom neu lesen zu muessen.
+ * Diese Funktion ist nur noch die **Verdrahtung**: Sie spielt den
+ * SM-2-Zustandsautomaten ueber den Ereignisstrom und liefert das Ergebnis in
+ * der Form, die `review_queue` erwartet. Dieselbe Stelle, an der T4.3 schon
+ * die Mastery-Formel getauscht hat - der Service hat von beidem nichts
+ * mitbekommen.
  *
- * `null` = das Konzept gehoert nicht in die Queue.
+ * Dass hier der **ganze Strom** durchgerechnet wird und nicht nur der letzte
+ * Schritt, ist kein Umweg: Nur so liefern der inkrementelle Weg und der Replay
+ * dasselbe Ergebnis (ADR-0040). Eine Korrektur, die ein altes Ereignis
+ * aufhebt, aendert damit auch die Faelligkeit - und zwar rueckwirkend richtig.
+ *
+ * `null` = kein Anlass, das Konzept wiedervorzulegen.
  */
 export function foldReviewQueue(effective: readonly EffectiveEvent[]): QueueProjection | null {
   const relevant = contributing(effective);
   if (relevant.length === 0) return null;
 
-  let repetitions = 0;
-  let lapses = 0;
-  let firstFailure: EffectiveEvent | undefined;
+  const signals = relevant.map((entry) => ({
+    outcome: entry.outcome as number,
+    signalClass: entry.event.signalClass,
+    source: entry.event.source,
+    occurredAt: entry.event.occurredAt,
+  }));
 
-  for (const entry of relevant) {
-    if ((entry.outcome as number) < FAILURE_THRESHOLD) {
-      lapses += 1;
-      firstFailure ??= entry;
-    } else {
-      repetitions += 1;
-    }
+  const origin = reviewOrigin(signals);
+  if (origin === null) return null;
+
+  let state = INITIAL_REVIEW_STATE;
+  for (const signal of signals) {
+    state = scheduleReview(state, signal);
   }
 
-  if (!firstFailure) return null;
-
+  const first = relevant[0] as EffectiveEvent;
   const last = relevant[relevant.length - 1] as EffectiveEvent;
-  const intervalDays = 1;
 
   return {
-    dueAt: new Date(last.event.occurredAt.getTime() + intervalDays * DAY_MS),
-    intervalDays,
-    // Startwert aus dem Vertrag; T4.4 bewegt ihn.
-    easeFactor: 2.5,
-    repetitions,
-    lapses,
-    origin: queueOrigin(firstFailure.event.source),
-    lastReviewedAt: last.event.occurredAt,
-    createdAt: firstFailure.event.occurredAt,
+    // `scheduleReview` setzt beide aus dem Ereigniszeitstempel; der Rueckfall
+    // auf den letzten Zeitpunkt greift nur, wenn der Strom leer waere.
+    dueAt: state.dueAt ?? new Date(last.event.occurredAt.getTime() + DAY_MS),
+    intervalDays: state.intervalDays,
+    easeFactor: state.easeFactor,
+    repetitions: state.repetitions,
+    lapses: state.lapses,
+    origin,
+    lastReviewedAt: state.lastReviewedAt ?? last.event.occurredAt,
+    createdAt: first.event.occurredAt,
     updatedAt: last.event.occurredAt,
   };
 }

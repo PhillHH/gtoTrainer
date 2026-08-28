@@ -715,3 +715,106 @@ export const LEARNING_THRESHOLD_RANGES = {
   masteryThreshold: { min: 0.5, max: 0.95, default: 0.75 },
   minObjectiveAnchors: { min: 0, max: 10, default: 2 },
 } as const;
+
+/* -------------------------------------------------------------------------
+ * Abruf der Wiederholungs-Queue (AP4.T4.4)
+ *
+ * Der Vertrag für **AP5** (Lern-Session), **AP7** (Drill) und **AP9**
+ * (Materialtrigger). AP8 liefert später die turnierspezifische Auswahl.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Wofür die Einträge geholt werden.
+ *
+ * - `session` — eine Theorie-Lerneinheit (AP5).
+ * - `drill` — ein Übungsdurchlauf (AP7).
+ * - `tournament` — Turniervorbereitung (AP8). Die formatabhängige Auswahl
+ *   entsteht dort; hier ist nur der Platz dafür vorgesehen.
+ */
+export const REVIEW_CONTEXTS = ['session', 'drill', 'tournament'] as const;
+export type ReviewContext = (typeof REVIEW_CONTEXTS)[number];
+
+export function isReviewContext(value: unknown): value is ReviewContext {
+  return typeof value === 'string' && (REVIEW_CONTEXTS as readonly string[]).includes(value);
+}
+
+/** „Gib mir N fällige Einträge für Kontext X." */
+export interface DueReviewsQuery {
+  readonly context: ReviewContext;
+  /** Wie viele Einträge höchstens. */
+  readonly limit: number;
+  /**
+   * Bezugszeitpunkt — **Pflichtparameter**, kein `Date.now()` im Inneren.
+   * Nur so ist der Abruf prüfbar und der Replay reproduzierbar.
+   */
+  readonly asOf: Date;
+  /**
+   * Einschränkung auf Themenbereiche. Der Andockpunkt für AP8: Eine
+   * Turniervorbereitung setzt hier die Bereiche, die zum Format passen.
+   */
+  readonly topicAreas?: readonly ConceptTopicArea[];
+}
+
+/** Ein fälliger Eintrag, angereichert um alles, was der Aufrufer anzeigen muss. */
+export interface DueReviewItem {
+  readonly conceptId: string;
+  readonly conceptTitle: string;
+  readonly topicArea: ConceptTopicArea;
+  /** `draft` oder `approved` — AP5/AP6 weisen den Zustand aus (Scope-Delta 3). */
+  readonly conceptState: string;
+  readonly dueAt: string;
+  /** Wie viele **ganze** Tage überfällig; 0 = heute fällig. */
+  readonly overdueDays: number;
+  readonly origin: ReviewQueueOrigin;
+  readonly intervalDays: number;
+  readonly easeFactor: number;
+  readonly repetitions: number;
+  readonly lapses: number;
+  /** Mastery-Score des Konzepts; 0, wenn noch keiner vorliegt. */
+  readonly masteryScore: number;
+}
+
+/**
+ * Antwort des Abrufs.
+ *
+ * **Es wird nicht künstlich aufgefüllt.** Sind weniger als `limit` Einträge
+ * fällig, kommen eben weniger — aber `dueTotal` sagt, wie viele es tatsächlich
+ * waren. AP5 und AP9 entscheiden damit selbst, ob sie mit neuem Stoff
+ * ergänzen; das ist ihre Aufgabe, nicht die der Queue.
+ */
+export interface DueReviewsResponse {
+  readonly context: ReviewContext;
+  readonly limit: number;
+  readonly asOf: string;
+  readonly items: readonly DueReviewItem[];
+  /** Wie viele Einträge insgesamt fällig waren — **unabhängig von `limit`**. */
+  readonly dueTotal: number;
+  /** Wie viele tatsächlich geliefert wurden. */
+  readonly returned: number;
+}
+
+/** „Was wird demnächst fällig?" — die Vorschau fürs Dashboard (T4.7). */
+export interface UpcomingReviewsQuery {
+  readonly asOf: Date;
+  /** Vorausschau in Tagen. */
+  readonly withinDays: number;
+  readonly limit: number;
+}
+
+export interface UpcomingReviewItem {
+  readonly conceptId: string;
+  readonly conceptTitle: string;
+  readonly topicArea: ConceptTopicArea;
+  readonly dueAt: string;
+  /** Wie viele Tage es noch hin ist (aufgerundet auf ganze Tage). */
+  readonly inDays: number;
+  readonly origin: ReviewQueueOrigin;
+}
+
+export interface UpcomingReviewsResponse {
+  readonly asOf: string;
+  readonly withinDays: number;
+  readonly items: readonly UpcomingReviewItem[];
+  /** Wie viele im Zeitfenster liegen — unabhängig von `limit`. */
+  readonly total: number;
+}

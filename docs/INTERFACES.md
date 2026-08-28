@@ -3,7 +3,7 @@
 Dieses Dokument beschreibt, **wo** sich Komponenten und Arbeitspakete
 gegenseitig berühren. Jeder Task trägt seine Deltas hier nach.
 
-Stand: AP4.T4.3 — Lernstand-Datenmodell (17), Event-API (18), Mastery und Weiterschaltung (19).
+Stand: AP4.T4.4 — Lernstand-Datenmodell (17), Event-API (18), Mastery und Weiterschaltung (19), Wiederholungs-Queue (20).
 
 ---
 
@@ -33,6 +33,7 @@ statt ihn hier zu importieren, bricht diese Konvention.
 | Lernstand-Verträge    | s. 17        | Signalklassen, Ereignistypen, Zeilenverträge (AP4) |
 | Ereignis-Vertrag      | s. 18        | `RecordLearningEventInput`, Nutzdaten je Typ (AP4) |
 | `AdvanceDecision`     | s. 19        | Weiterschaltung samt Begründungsbausteinen (AP4)   |
+| `DueReviewsResponse`  | s. 20        | Abruf fälliger Wiederholungen (AP4)                |
 
 ---
 
@@ -2533,3 +2534,145 @@ Serverseitig geprüft gegen `LEARNING_THRESHOLD_RANGES`; ein Wert außerhalb wir
 `minObjectiveAnchors = 0` ist erlaubt, aber eine **bewusste** Entscheidung
 gegen die Absicherung aus R3 — keine stille Voreinstellung. Als Kommando:
 `pnpm learning:thresholds` (RUNBOOK 16.9).
+
+---
+
+## 20. Wiederholungs-Queue — Abruf und Priorisierung (AP4.T4.4)
+
+Der Vertrag für **AP5** (Lern-Session), **AP7** (Drill) und **AP9**
+(Materialtrigger). AP8 dockt die turnierspezifische Auswahl hier an.
+
+### Wie fällige Einträge abgerufen werden
+
+```ts
+import { dueReviews } from '../learning/service.js';
+
+const response = await dueReviews(db, {
+  context: 'session', // 'session' | 'drill' | 'tournament'
+  limit: 10,
+  asOf: new Date(), // Pflichtparameter — kein Date.now() im Inneren
+  topicAreas: ['preflop-ranges'], // optional; der Andockpunkt für AP8
+});
+```
+
+| Feld der Antwort           | Bedeutung                                                                             |
+| -------------------------- | ------------------------------------------------------------------------------------- |
+| `items`                    | die ausgewählten Einträge, **in der Reihenfolge, in der sie vorgelegt werden sollen** |
+| `dueTotal`                 | wie viele insgesamt fällig waren — **unabhängig von `limit`**                         |
+| `returned`                 | wie viele tatsächlich geliefert wurden                                                |
+| `context`, `limit`, `asOf` | die Anfrage, gespiegelt                                                               |
+
+> **Es wird nicht künstlich aufgefüllt.** Sind weniger als `limit` Einträge
+> fällig, kommen eben weniger. `dueTotal` sagt, wie viele es waren — AP5 und
+> AP9 entscheiden damit selbst, ob sie mit neuem Stoff ergänzen. Das ist ihre
+> Aufgabe, nicht die der Queue: Sie erfindet nichts, nur um eine Zahl zu
+> erreichen.
+
+Je Eintrag (`DueReviewItem`): `conceptId`, `conceptTitle`, `topicArea`,
+`conceptState` (`draft` ist möglich, Scope-Delta 3), `dueAt`, `overdueDays`,
+`origin`, `intervalDays`, `easeFactor`, `repetitions`, `lapses`,
+`masteryScore`.
+
+**`asOf` ist Pflicht und wird von außen gesetzt.** „Was ist jetzt fällig?" ist
+eine Frage der Abfrage, nicht der Ableitung — mit einem internen `Date.now()`
+wäre der Abruf nicht prüfbar. Signatur:
+`dueReviews(db, query: DueReviewsQuery): Promise<DueReviewsResponse>` in
+`apps/backend/src/learning/service.ts`.
+
+### Vorschau fürs Dashboard
+
+```ts
+const preview = await upcomingReviews(db, { asOf: new Date(), withinDays: 7, limit: 5 });
+```
+
+Liefert, was **demnächst** fällig wird — nichts bereits Fälliges, dafür ist
+`dueReviews` da. `total` ist wieder die vollständige Zahl im Zeitfenster. Die
+HTTP-Schnittstelle dazu entsteht in T4.7.
+
+### Kontexte
+
+| Kontext      | Wer ruft ab | Stand                                                                            |
+| ------------ | ----------- | -------------------------------------------------------------------------------- |
+| `session`    | AP5         | keine Einschränkung                                                              |
+| `drill`      | AP7         | keine Einschränkung                                                              |
+| `tournament` | AP8         | Schnittstelle vorhanden; die formatabhängige Auswahl setzt AP8 über `topicAreas` |
+
+`topicAreas` ist der generische Filter, über den AP8 seine Auswahl trifft. Die
+turnierspezifische Logik gehört dorthin und ist hier bewusst nicht
+vorweggenommen.
+
+### Ursprung eines Eintrags
+
+Der Ursprung wird **abgeleitet, nicht gesetzt** — die Queue wird ausschließlich
+über `recordLearningEvent` befüllt (Umgehungsverbot, Abschnitt 18).
+
+| `origin`           | Wann                                                           | Für AP8              |
+| ------------------ | -------------------------------------------------------------- | -------------------- |
+| `error`            | jüngster Fehlschlag aus Übung, Theorie, Journal oder Korrektur |                      |
+| `practice_finding` | jüngster Fehlschlag aus `hand_analysis` oder `tournament`      | ✓ hier hängt AP8 ein |
+| `knowledge_gap`    | **kein** Fehlschlag, aber **kein einziges objektives Signal**  |                      |
+
+`knowledge_gap` ist genau der Fall, den T4.3 als
+`mastered_without_objective_anchors` durchlässt: Der Stand beruht allein auf
+Modellurteilen und Selbsteinschätzung. Die Queue holt ihn zurück — **das ist
+es, was die adaptive Weiterschaltung ehrlich macht.**
+
+Ein Konzept ohne Fehlschlag und mit objektiven Belegen steht **nicht** in der
+Queue. Die Ursprungsliste aus T4.1 kennt keine turnusmäßige Wiederholung ohne
+Anlass; wer eine will, zeichnet ein `review_performed`-Ereignis auf.
+
+### Das Intervall-Verfahren
+
+Reine Funktionen in `apps/backend/src/learning/review.ts`, austauschbar ohne
+die Verdrahtung anzufassen — dieselbe Stelle, an der T4.3 die Mastery-Formel
+getauscht hat.
+
+```
+  Ease-Änderung:  Δ = 0,1 − 0,4·x − 0,5·x²        mit x = 1 − outcome
+  Wachstum:       g = 1 + (Ease − 1) · Signalgewicht
+```
+
+Die Ease-Formel ist **SM-2s eigene Parabel**, nur von `q ∈ [0,5]` auf
+`outcome ∈ [0,1]` umparametrisiert — keine erfundene Umrechnung. Die
+Stützstellen stimmen exakt: outcome 1,0 → +0,10; 0,8 → 0,00; 0,6 → −0,14;
+0,0 → −0,80 ([ADR-0043](./DECISIONS.md)).
+
+| Fall                                            | Neues Intervall                  | Nächste Fälligkeit      |
+| ----------------------------------------------- | -------------------------------- | ----------------------- |
+| 1. Erfolg (`repetitions = 0`)                   | 1 Tag                            | `occurredAt + 1 Tag`    |
+| 2. Erfolg (`repetitions = 1`)                   | 6 Tage                           | `occurredAt + 6 Tage`   |
+| weitere Erfolge                                 | `round(Intervall · g)`, max. 365 | entsprechend            |
+| **echter Rückfall** (`repetitions ≥ 1`)         | 0                                | `occurredAt + 1 Stunde` |
+| Fehlschlag in der Lernphase (`repetitions = 0`) | 1 Tag                            | `occurredAt + 1 Tag`    |
+
+Ease-Grenzen: **1,3 bis 3,0** — dieselben Werte, die als CHECK-Constraint
+`review_queue_ease_check` in der Datenbank stehen (T4.1). Startwert 2,5.
+
+**Alle Fälligkeiten stammen aus `occurredAt` des Ereignisses**, nie aus der
+Systemzeit (Determinismus-Regel, Abschnitt 18). Beispielfolge objektiver
+Erfolge: Intervalle **1, 6, 17, 49, 147, 365** Tage bei Ease
+2,6 → 2,7 → 2,8 → 2,9 → 3,0 → 3,0.
+
+Das Signalgewicht ist **dasselbe wie beim Mastery-Score** (`objective` 1,0,
+`ai_judged` 0,5, `self_reported` 0,2): Was dort als schwaches Signal gilt, darf
+hier kein starkes Wiederholungssignal sein — sonst schriebe man sich mit
+Selbsteinschätzungen aus der Queue heraus. Gedämpft wird nur der **Gewinn**;
+ein Fehlschlag zählt voll, egal woher er kommt.
+
+### Priorisierung
+
+`prioritizeReviews(candidates, asOf)` — reine Funktion, vier Stufen:
+
+1. **Überfälligkeit in ganzen Tagen**, absteigend. Bewusst gerundet: Zwei
+   Einträge vom selben Tag sind gleich dringend, dann soll der Ursprung
+   entscheiden und nicht der Zufall der Uhrzeit.
+2. **Ursprung:** `error` vor `practice_finding` vor `knowledge_gap`.
+3. **Mastery aufsteigend** — was schlechter sitzt, kommt zuerst.
+4. **Konzept-ID** — nur damit die Reihenfolge reproduzierbar ist.
+
+Danach greift die **Voraussetzungsregel**: Ein Konzept wird nicht vor einer
+Voraussetzung ausgegeben, die in derselben Ausgabe fällig ist. Die Regel ist
+bewusst eng — sie betrachtet nur Einträge, die ohnehin beide fällig sind.
+Alles Weitergehende („wie wackelig darf eine Voraussetzung sein") bräuchte eine
+Schwelle, und Schwellen sind Konfiguration; die Queue soll ohne Konfiguration
+reproduzierbar bleiben.

@@ -243,6 +243,8 @@ export {
   DEFAULT_DIFFICULTY,
   LEARNING_THRESHOLD_RANGES,
   isAdvanceReason,
+  REVIEW_CONTEXTS,
+  isReviewContext,
 } from './learning.js';
 export type {
   ConceptMastery,
@@ -275,4 +277,11 @@ export type {
   AdvanceReason,
   LearningThresholdUpdate,
   LearningThresholds,
+  DueReviewItem,
+  DueReviewsQuery,
+  DueReviewsResponse,
+  ReviewContext,
+  UpcomingReviewItem,
+  UpcomingReviewsQuery,
+  UpcomingReviewsResponse,
 } from './learning.js';

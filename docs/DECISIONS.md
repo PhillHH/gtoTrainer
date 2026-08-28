@@ -3155,3 +3155,188 @@ Unterschied. Nach dem Runden ist das Ergebnis nachweislich von der Reihenfolge
 unabhängig.
 
 **Keine neuen Dependencies.**
+
+---
+
+## ADR-0043 — SM-2 auf die Ergebnis-Achse umparametrisiert, Rückfall in zwei Fällen, Priorität in vier Stufen
+
+- **Datum:** 2026-08-28
+- **Status:** angenommen
+- **Kontext:** AP4.T4.4. SM-2 stammt aus dem Vokabellernen: Der Lernende
+  benotet sich nach jeder Karte selbst mit `q ∈ [0, 5]`. Dieses Projekt hat
+  kein `q`. Es hat Ergebnisse von 0 bis 1, Signalklassen und einen
+  Mastery-Score. Die Übersetzung musste ausdrücklich festgelegt werden — eine
+  stillschweigende Umrechnung wäre genau die Stelle, an der später niemand mehr
+  weiß, warum ein Konzept in 49 statt in 30 Tagen wiederkommt.
+
+### Entscheidung 1 — Keine Bibliothek
+
+Der Algorithmus sind zwanzig Zeilen, und die Anpassung an Signalklassen und
+Mastery ist projektspezifisch. Eine Bibliothek brächte eine Abhängigkeit für
+etwas, das ohnehin zu drei Vierteln umgeschrieben werden müsste — und sie
+verstellte den Blick auf genau die Stellen, die hier begründet gehören.
+
+**Keine neuen Dependencies.**
+
+### Entscheidung 2 — SM-2s Parabel, auf eine andere Achse gelegt
+
+SM-2 im Original:
+
+```
+  EF' = EF + (0,1 − (5−q)·(0,08 + (5−q)·0,02))     q ∈ [0, 5]
+```
+
+Mit `x = 1 − outcome`, also `5x = 5 − q`:
+
+```
+  Δ = 0,1 − 0,4·x − 0,5·x²                          outcome ∈ [0, 1]
+```
+
+Das ist **dieselbe Kurve**, keine erfundene Zuordnung. Die Stützstellen stimmen
+exakt überein: outcome 1,0 (q=5) → +0,10; 0,8 (q=4) → 0,00; 0,6 (q=3) → −0,14;
+0,4 (q=2) → −0,32; 0,0 (q=0) → −0,80.
+
+Der Gewinn dieser Formulierung: Zu verteidigen ist nur die
+Achsentransformation, und die kann jeder nachrechnen. Die Zahlen dahinter sind
+seit Jahrzehnten erprobt und müssen nicht neu begründet werden. Eine eigene
+Kurve hätte fünf frei gewählte Parameter gehabt und keinen einzigen Beleg.
+
+### Entscheidung 3 — Das Signalgewicht dämpft den Gewinn, nicht den Verlust
+
+Für die Ease-Erhöhung **und** das Intervallwachstum gilt das Signalgewicht aus
+T4.3 (`objective` 1,0, `ai_judged` 0,5, `self_reported` 0,2):
+
+```
+  Δ⁺ = Δ · Signalgewicht          Δ⁻ = Δ            g = 1 + (Ease − 1) · Signalgewicht
+```
+
+Das ist die Konsistenzbedingung zu ADR-0042: Was dort als schwaches Signal
+gilt, darf hier kein starkes Wiederholungssignal sein. Sonst könnte man sich
+mit Selbsteinschätzungen aus der Queue herausschreiben — dieselbe Hintertür,
+die Risiko R3 meint, nur an anderer Stelle.
+
+Ein **Fehlschlag** zählt dagegen voll, unabhängig von der Klasse. Begründung:
+Niemand meldet fälschlich, dass er etwas nicht konnte. Eine Selbsteinschätzung
+„falsch" ist glaubwürdig, eine Selbsteinschätzung „richtig" nicht — dieselbe
+Asymmetrie wie beim Mastery-Score, nur aus einem anderen Grund.
+
+Praktische Folge (Test „lässt ein schwaches Signal das Intervall nur wenig
+strecken"): Aus demselben Zustand heraus streckt ein objektiver Treffer das
+Intervall von 10 auf 26 Tage, eine Selbsteinschätzung nur auf 13.
+
+### Entscheidung 4 — Ease-Grenzen 1,3 bis 3,0
+
+1,3 ist SM-2s eigene Untergrenze: Darunter wächst das Intervall praktisch nicht
+mehr, das Konzept käme in immer kürzeren Abständen und verstopfte die Queue.
+3,0 deckelt nach oben, damit eine lange Erfolgsserie keine Intervalle von
+Jahren erzeugt.
+
+Beide Werte stehen **schon** als CHECK-Constraint `review_queue_ease_check` in
+der Datenbank (T4.1). Sie hier noch einmal zu wählen wäre eine zweite Wahrheit
+gewesen; stattdessen sind es dieselben Zahlen, und ein Verstoß fiele spätestens
+beim Schreiben auf.
+
+Zusätzlich ein Intervall-Deckel von **365 Tagen**: Jenseits eines Jahres ist
+„wiederholen" in einem Trainingswerkzeug keine sinnvolle Aussage mehr, und die
+Konfidenz aus T4.3 ist bis dahin ohnehin fast auf null abgeklungen.
+
+### Entscheidung 5 — Rückfall in zwei Fällen, nicht in einem
+
+Ein Fehlschlag wird unterschiedlich behandelt, je nachdem, ob das Konzept schon
+einmal saß:
+
+| Fall                                            | Intervall | Nächste Fälligkeit      |
+| ----------------------------------------------- | --------- | ----------------------- |
+| **Echter Rückfall** (`repetitions ≥ 1`)         | 0         | `occurredAt + 1 Stunde` |
+| Fehlschlag in der Lernphase (`repetitions = 0`) | 1 Tag     | `occurredAt + 1 Tag`    |
+
+Der Task verlangt für den Rückfall ausdrücklich eine **zeitnahe** erste
+Wiederholung — „nicht erst in Tagen, sonst verfestigt sich der Fehler". Eine
+Stunde erfüllt das: Das Konzept kommt in derselben Sitzung noch einmal.
+
+Diese Regel unterschiedslos auf **jeden** Fehlschlag anzuwenden wäre falsch
+gewesen. Wer ein Konzept zum ersten Mal sieht und es nicht kann, hat keinen
+Rückfall — er lernt gerade. Ihn im Stundentakt damit zu behelligen, hilft
+niemandem; der normale Ein-Tages-Lernschritt aus SM-2 ist hier richtig.
+
+Der **Rückfallzähler** steigt in beiden Fällen, und der Ease-Faktor fällt in
+beiden Fällen. Wiederholte Rückfälle senken ihn damit dauerhaft: Ein Erfolg
+bringt höchstens +0,1 zurück, ein Fehlschlag nimmt bis zu −0,8. Belegt an der
+Folge 2,50 → 2,18 → 1,86 → 1,54 → 1,30 (Test „senkt der Ease-Faktor bei
+wiederholten Rückfällen dauerhaft").
+
+### Entscheidung 6 — Der Ursprung wird abgeleitet, nicht gesetzt
+
+| `origin`           | Bedingung                                                      |
+| ------------------ | -------------------------------------------------------------- |
+| `error`            | jüngster Fehlschlag aus Übung, Theorie, Journal oder Korrektur |
+| `practice_finding` | jüngster Fehlschlag aus `hand_analysis` oder `tournament`      |
+| `knowledge_gap`    | kein Fehlschlag, aber **kein einziges objektives Signal**      |
+
+Der **jüngste** Fehlschlag zählt, nicht der erste: Er beschreibt den aktuellen
+Grund. Ein Konzept, das erst in der Übung und dann am Tisch schiefging, ist ein
+Praxisbefund.
+
+`knowledge_gap` ist bewusst über das **Fehlen objektiver Signale** definiert
+und nicht über den Abstand zur Mastery-Schwelle. Die Schwelle steht in
+`learner_state`, ist also Konfiguration — sie in die Ableitung zu ziehen hieße,
+dass eine Änderung der Schwelle einen Replay erfordert. T4.3 hat sie
+ausdrücklich aus dem gespeicherten Zustand herausgehalten; das bleibt so. Die
+zweite Hälfte des Falls („Score nur knapp über der Schwelle") fließt
+stattdessen über die **Priorisierung** ein: niedrigere Mastery zuerst.
+
+Was daraus folgt und bewusst so ist: Ein Konzept ohne Fehlschlag und mit
+objektiven Belegen steht **nicht** in der Queue. Die Ursprungsliste aus T4.1
+kennt keine turnusmäßige Wiederholung ohne Anlass. Wer eine will, zeichnet ein
+`review_performed`-Ereignis auf — oder AP5 bekommt einen vierten Ursprung, dann
+aber als eigene Entscheidung.
+
+### Entscheidung 7 — Priorität in vier Stufen, Überfälligkeit auf ganze Tage gerundet
+
+1. Überfälligkeit in **ganzen Tagen**, absteigend.
+2. Ursprung: `error` (0) vor `practice_finding` (1) vor `knowledge_gap` (2).
+3. Mastery aufsteigend.
+4. Konzept-ID.
+
+Die Rundung auf ganze Tage ist der einzige Punkt, der Erklärung braucht: Auf
+die Minute genau zu sortieren wäre Scheingenauigkeit. Zwei Einträge vom selben
+Tag sind gleich dringend — dann soll der Ursprung entscheiden und nicht der
+Zufall, zu welcher Uhrzeit das auslösende Ereignis stattfand. Ohne die Rundung
+käme Stufe 2 praktisch nie zum Tragen.
+
+Der Praxisbefund steht knapp hinter dem Übungsfehler: Beide sind belegte
+Fehler, aber eine einzelne Hand enthält mehr Rauschen als eine gestellte Frage.
+Die Lücke kommt zuletzt — dort ist noch nichts schiefgegangen, es fehlt nur der
+Beleg.
+
+Stufe 4 ist kein Detail: Ohne einen letzten, eindeutigen Schlüssel hinge die
+Reihenfolge bei Gleichstand an der Zeilenfolge, die Postgres gerade liefert.
+
+### Entscheidung 8 — Die Voraussetzungsregel bleibt eng
+
+Ein Konzept wird nicht vor einer Voraussetzung ausgegeben, die **in derselben
+Ausgabe** fällig ist. Umgesetzt als stabile topologische Auswahl über die
+Prioritätsreihenfolge; sie terminiert, weil der Prerequisite-Graph zyklenfrei
+ist (Invariante 5 aus AP3), mit einer Notbremse für den Fall, dass er es einmal
+nicht wäre.
+
+Die naheliegende weitere Fassung — „stelle zurück, solange irgendeine
+Voraussetzung schwach ist" — wurde verworfen. Sie bräuchte eine Schwelle für
+„schwach", und Schwellen sind Konfiguration; die Queue soll ohne Konfiguration
+reproduzierbar bleiben. Schlimmer noch: Sie könnte dazu führen, dass gar nichts
+vorgelegt wird, weil ganz unten in der Kette etwas hängt. Der enge Fall deckt
+ab, was in der Praxis stört — erst das Fundament, dann das Darauf-Gebaute, in
+derselben Sitzung.
+
+### Entscheidung 9 — Der Abruf füllt nicht auf
+
+Sind weniger Einträge fällig als angefordert, kommen weniger — aber `dueTotal`
+weist aus, wie viele es tatsächlich waren.
+
+Die Alternative, mit neuem Stoff aufzufüllen, wurde verworfen: Das ist eine
+didaktische Entscheidung („was lernen wir stattdessen?") und gehört zu AP5 und
+AP9, die den Lehrplan kennen. Die Queue weiß nur, was wiederholt gehört. Eine
+Zahl zu erfüllen, indem man etwas erfindet, wäre genau die Art von
+Gefälligkeit, die dieses Projekt an anderer Stelle schon vermeidet.
+
+**Keine neuen Dependencies.**

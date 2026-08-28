@@ -1089,6 +1089,67 @@ denen sie leicht zu brechen gewesen wäre, sind bewusst anders gelöst:
 
 Beides ist getestet, nicht nur zugesagt (`test/learning/determinism.test.ts`).
 
+### Wiederholungssteuerung (neu in AP4.T4.4)
+
+Die zweite der vier Ableitungen hat ihre endgültige Form — an derselben
+Schnittstelle wie zuvor die Mastery-Logik:
+
+```
+   learning_event (Strom eines Konzepts)
+             │
+             ▼
+   derive.ts  foldReviewQueue()          ← nur noch Verdrahtung
+             │   spielt den Zustandsautomaten über den ganzen Strom
+             ▼
+   review.ts  scheduleReview()  ×N       ← SM-2-Schritt (rein)
+             │   reviewOrigin()          ← Fehler | Praxisbefund | Lücke
+             ▼
+      review_queue  (due_at, interval, ease, repetitions, lapses, origin)
+             │
+             │   + concept_mastery (Score)
+             │   + concept_prerequisite (Voraussetzungen)
+             ▼
+   review.ts  prioritizeReviews(candidates, asOf)   ← rein, asOf als Argument
+             │
+             ▼
+   service.ts dueReviews() / upcomingReviews()
+             │
+             ▼
+      AP5 Session · AP7 Drill · AP9 Material   (AP8 filtert über topicAreas)
+```
+
+### Warum der ganze Strom neu gerechnet wird
+
+`foldReviewQueue` spielt den SM-2-Automaten bei jedem Ereignis über **alle**
+Ereignisse des Konzepts, statt nur einen Schritt auf dem gespeicherten Zustand
+zu machen. Das ist dieselbe Entscheidung wie bei der Mastery
+([ADR-0040](./DECISIONS.md)) und hat hier eine zusätzliche, sichtbare Folge:
+Eine Korrektur, die ein altes Ereignis aufhebt, ändert die Fälligkeit
+**rückwirkend richtig**. Bei einer Delta-Rechnung bliebe der Termin stehen, den
+ein Fehler gesetzt hat, den es nie gab.
+
+### Zwei Zeitbegriffe, streng getrennt
+
+- **Fälligkeiten entstehen aus `occurredAt`** des Ereignisses. Der gespeicherte
+  Zustand hängt damit allein am Strom — der Replay reproduziert ihn.
+- **„Was ist jetzt fällig?" ist eine Abfrage.** `dueReviews` und
+  `prioritizeReviews` bekommen den Bezugszeitpunkt als `asOf`-Parameter. Nichts
+  im Lernstand-Kern ruft `Date.now()`.
+
+Dieselbe Trennung wie bei der Konfidenz-Veralterung aus T4.3. Sie ist in
+`test/learning/determinism.test.ts` festgeschrieben und gilt für T4.5 weiter.
+
+### Was die Queue ehrlich macht
+
+Drei Ursprünge, alle aus dem Ereignisstrom abgeleitet: `error`,
+`practice_finding` und `knowledge_gap`. Der dritte ist der wichtigste — er
+greift, wenn ein Konzept **kein einziges objektives Signal** hat, also genau
+den Fall, den T4.3 als `mastered_without_objective_anchors` durchlässt.
+
+Damit schließt sich der Kreis: Wer weitergeht, obwohl der Stand nur auf
+Modellurteilen beruht, bekommt das Konzept später wieder vorgelegt. Die
+adaptive Weiterschaltung ist keine Nachlässigkeit, sondern eine Stundung.
+
 ## 4. Querschnitts-Entscheidungen
 
 - **Node 20.19.6**, fixiert in `.nvmrc`; `engines.node >= 20.19.0`.
