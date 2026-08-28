@@ -25,6 +25,16 @@ const DERIVE_SOURCE = readFileSync(
   'utf8',
 );
 
+/**
+ * Seit T4.3 steht die Mastery-Formel in einem eigenen Modul - die Regel gilt
+ * dort genauso. Ausgenommen ist `evaluateAdvance`: Es bekommt den
+ * Bezugszeitpunkt als `asOf`-Argument herein, statt ihn sich zu nehmen.
+ */
+const MASTERY_SOURCE = readFileSync(
+  fileURLToPath(new URL('../../src/learning/mastery.ts', import.meta.url)),
+  'utf8',
+);
+
 /** Kommentarzeilen zaehlen nicht - die Regel steht dort im Klartext. */
 function codeLines(source: string): string[] {
   return source.split('\n').filter((line) => {
@@ -33,13 +43,22 @@ function codeLines(source: string): string[] {
   });
 }
 
+const FORBIDDEN = [/\bDate\.now\s*\(/, /\bnew Date\s*\(\s*\)/, /\bMath\.random\s*\(/];
+
+function forbiddenCalls(source: string): string[] {
+  return codeLines(source).filter((line) => FORBIDDEN.some((pattern) => pattern.test(line)));
+}
+
 describe('Determinismus der Ableitungen (AP4.T4.2)', () => {
   it('benutzt weder Systemzeit noch Zufall', () => {
-    const forbidden = [/\bDate\.now\s*\(/, /\bnew Date\s*\(\s*\)/, /\bMath\.random\s*\(/];
-    const hits = codeLines(DERIVE_SOURCE).filter((line) =>
-      forbidden.some((pattern) => pattern.test(line)),
-    );
-    expect(hits).toEqual([]);
+    expect(forbiddenCalls(DERIVE_SOURCE)).toEqual([]);
+  });
+
+  it('gilt auch fuer die Mastery-Formel aus T4.3', () => {
+    expect(forbiddenCalls(MASTERY_SOURCE)).toEqual([]);
+    // Der Bezugszeitpunkt der Konfidenz-Veralterung kommt als Argument herein.
+    expect(MASTERY_SOURCE).toContain('readonly asOf: Date;');
+    expect(MASTERY_SOURCE).not.toMatch(/from '\.\.\/db\//);
   });
 
   it('leitet jeden Zeitbezug aus dem Ereignis ab', () => {

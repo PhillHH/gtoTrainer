@@ -82,16 +82,28 @@ describe('recordLearningEvent (AP4.T4.2)', () => {
 
     const after = await derivedState(handle.db);
 
-    // 1. Mastery: Score 0,25 (1 von 4), Konfidenz 1 (rein objektiv).
+    // 1. Mastery: ein Datensatz, Zaehler je Signalklasse gesetzt.
+    //
+    // Bewusst **ohne** feste Score-Zahl: Dieser Test belegt, dass die Ableitung
+    // laeuft, nicht welche Formel gerade gilt. Die Formel selbst ist Sache von
+    // `mastery.test.ts` (T4.3) - so muss sie hier nicht bei jeder Verfeinerung
+    // in T4.4 und T4.5 nachgezogen werden.
     expect(after['conceptMastery']).toHaveLength(1);
+    const masteryRow = after['conceptMastery']?.[0] as {
+      score: number;
+      confidence: number;
+    };
     expect(after['conceptMastery']?.[0]).toMatchObject({
       concept_id: fixture.approvedConceptId,
-      score: 0.25,
-      confidence: 1,
       objective_signals: 1,
       ai_judged_signals: 0,
       self_reported_signals: 0,
     });
+    expect(masteryRow.score).toBeGreaterThanOrEqual(0);
+    // Ein Drill mit 1 von 4 richtigen ist kein guter Stand.
+    expect(masteryRow.score).toBeLessThan(0.5);
+    expect(masteryRow.confidence).toBeGreaterThan(0);
+    expect(masteryRow.confidence).toBeLessThanOrEqual(1);
 
     // 2. Queue: der Drill lief schief, das Konzept kommt wieder.
     expect(after['reviewQueue']).toHaveLength(1);
@@ -378,7 +390,11 @@ describe('recordLearningEvent (AP4.T4.2)', () => {
     );
 
     const state = await derivedState(handle.db);
-    expect(state['conceptMastery']?.[0]).toMatchObject({ score: 1, objective_signals: 1 });
+    // Aus dem Fehlschlag ist ein Treffer geworden: derselbe eine objektive
+    // Beleg, aber ein Score deutlich ueber null. Die konkrete Zahl haengt an
+    // der Formel aus T4.3 und wird dort geprueft.
+    expect(state['conceptMastery']?.[0]).toMatchObject({ objective_signals: 1 });
+    expect((state['conceptMastery']?.[0] as { score: number }).score).toBeGreaterThan(0.4);
     // Kein Fehler mehr - und die Queue ist leer, weil nichts mehr misslang.
     expect(state['errorLog']).toHaveLength(0);
     expect(state['reviewQueue']).toHaveLength(0);

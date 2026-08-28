@@ -1062,8 +1062,11 @@ export const learnerState = pgTable(
     currentConceptId: uuid('current_concept_id').references(() => concept.id, {
       onDelete: 'set null',
     }),
-    /** Lernbezogene Einstellung - T4.3 entscheidet damit ueber Weiterschaltung. */
-    masteryThreshold: doublePrecision('mastery_threshold').notNull().default(0.8),
+    /**
+     * Lernbezogene Einstellung - T4.3 entscheidet damit ueber Weiterschaltung.
+     * Seit T4.3 Default 0.75 statt 0.8 (Migration `0009`, ADR-0042).
+     */
+    masteryThreshold: doublePrecision('mastery_threshold').notNull().default(0.75),
     /** Lernbezogene Einstellung - Mindestanzahl objektiver Anker (T4.3). */
     minObjectiveAnchors: integer('min_objective_anchors').notNull().default(2),
     createdAt,

@@ -1,25 +1,33 @@
-import { asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import {
+  LEARNING_THRESHOLD_RANGES,
   isLearningEventSource,
   isLearningEventType,
   isLearningSignalClass,
   validateLearningEventPayload,
 } from '@gto/shared';
 import type {
+  AdvanceDecision,
   ConceptTopicArea,
   LearningEventType,
+  LearningThresholdUpdate,
+  LearningThresholds,
   RecordLearningEventInput,
   RecordLearningEventResponse,
 } from '@gto/shared';
 import type { Database, Transaction } from '../db/client.js';
 import {
   concept,
+  conceptChart,
   conceptMastery,
   errorLog,
+  learnerState,
   learningEvent,
+  rangeChart,
   reviewQueue,
   skillRating,
 } from '../db/schema.js';
+import { evaluateAdvance } from './mastery.js';
 import {
   applyCorrections,
   foldConceptMastery,
@@ -434,4 +442,147 @@ export async function replayLearningState(db: Database): Promise<ReplayResult> {
       topicAreas: areas.length,
     };
   });
+}
+
+/* -------------------------------------------------------------------------
+ * Weiterschalt-Entscheidung und Schwellen (AP4.T4.3)
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Sind chart-verifizierbare Anker fuer dieses Konzept ueberhaupt moeglich?
+ *
+ * Ermittelt, nicht geraten und nicht fest verdrahtet: ueber die Zuordnung
+ * `concept_chart` aus AP3.T3.2 auf `range_chart` - und dort **nur**
+ * freigegebene Charts. Ein Chart im Zustand `raw`, `validated`, `failed` oder
+ * `unusable` taugt nicht als objektiver Anker; seine Zahlen sind nicht geprueft.
+ *
+ * Stand bei Abschluss von AP3: 16 der 168 Konzepte haben ein freigegebenes
+ * Chart. Fuer alle anderen greift der Uebergangszustand aus Scope-Delta 2 -
+ * siehe `evaluateAdvance`.
+ */
+export async function objectiveAnchorsPossible(
+  db: Database | Transaction,
+  conceptId: string,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(conceptChart)
+    .innerJoin(rangeChart, eq(rangeChart.assetId, conceptChart.assetId))
+    .where(and(eq(conceptChart.conceptId, conceptId), eq(rangeChart.state, 'approved')));
+  return (row?.n ?? 0) > 0;
+}
+
+/** Die lernbezogenen Schwellen aus `learner_state`. */
+export async function readLearningThresholds(
+  db: Database | Transaction,
+): Promise<LearningThresholds> {
+  const [row] = await db
+    .select({
+      masteryThreshold: learnerState.masteryThreshold,
+      minObjectiveAnchors: learnerState.minObjectiveAnchors,
+    })
+    .from(learnerState);
+
+  // Fehlt der Datensatz (noch kein Seed), gelten die Defaults aus dem Vertrag -
+  // aber die Entscheidung faellt trotzdem, statt mit einem Fehler abzubrechen.
+  return {
+    masteryThreshold: row?.masteryThreshold ?? LEARNING_THRESHOLD_RANGES.masteryThreshold.default,
+    minObjectiveAnchors:
+      row?.minObjectiveAnchors ?? LEARNING_THRESHOLD_RANGES.minObjectiveAnchors.default,
+  };
+}
+
+/**
+ * „Darf ich bei diesem Konzept weitergehen?" - die Frage, die AP5 stellt.
+ *
+ * Holt den gespeicherten Mastery-Stand, die Schwellen und die Anker-Moeglichkeit
+ * und uebergibt alles an die **reine** Entscheidungsfunktion. Die Logik selbst
+ * steht in `mastery.ts` und ist ohne Datenbank testbar; hier passiert nur das
+ * Einsammeln.
+ *
+ * `asOf` ist ein ausdrueckliches Argument und hat einen Default: Der Aufrufer
+ * entscheidet, gegen welchen Zeitpunkt die Konfidenz-Veralterung gerechnet
+ * wird. In der Ableitung waere „jetzt" verboten - hier ist es genau richtig,
+ * weil nichts gespeichert wird.
+ */
+export async function evaluateConceptAdvance(
+  db: Database,
+  conceptId: string,
+  asOf: Date = new Date(),
+): Promise<AdvanceDecision> {
+  const [row] = await db
+    .select()
+    .from(conceptMastery)
+    .where(eq(conceptMastery.conceptId, conceptId));
+
+  const [thresholds, anchorsPossible] = await Promise.all([
+    readLearningThresholds(db),
+    objectiveAnchorsPossible(db, conceptId),
+  ]);
+
+  return evaluateAdvance({
+    mastery: row
+      ? {
+          score: row.score,
+          confidence: row.confidence,
+          objectiveSignals: row.objectiveSignals,
+          aiJudgedSignals: row.aiJudgedSignals,
+          selfReportedSignals: row.selfReportedSignals,
+          lastCheckedAt: row.lastCheckedAt,
+        }
+      : null,
+    thresholds,
+    objectiveAnchorsPossible: anchorsPossible,
+    asOf,
+  });
+}
+
+/**
+ * Aendert die Schwellen in `learner_state` - **serverseitig geprueft**.
+ *
+ * Die Grenzen stehen in `LEARNING_THRESHOLD_RANGES` und werden hier
+ * durchgesetzt, nicht nur angezeigt. Ein Wert ausserhalb wird abgelehnt und
+ * nicht auf den Default umgebogen: Sonst zeigte die Oberflaeche spaeter eine
+ * Einstellung, die niemand benutzt (dasselbe Prinzip wie ADR-0029).
+ */
+export async function updateLearningThresholds(
+  db: Database,
+  patch: LearningThresholdUpdate,
+): Promise<LearningThresholds> {
+  const fields: EventFieldError[] = [];
+  const values: Record<string, number> = {};
+
+  const mt = patch.masteryThreshold;
+  if (mt !== undefined) {
+    const range = LEARNING_THRESHOLD_RANGES.masteryThreshold;
+    if (typeof mt !== 'number' || !Number.isFinite(mt) || mt < range.min || mt > range.max) {
+      fields.push({
+        field: 'masteryThreshold',
+        message: `Die Mastery-Schwelle muss zwischen ${range.min} und ${range.max} liegen.`,
+      });
+    } else {
+      values['masteryThreshold'] = mt;
+    }
+  }
+
+  const anchors = patch.minObjectiveAnchors;
+  if (anchors !== undefined) {
+    const range = LEARNING_THRESHOLD_RANGES.minObjectiveAnchors;
+    if (!Number.isInteger(anchors) || anchors < range.min || anchors > range.max) {
+      fields.push({
+        field: 'minObjectiveAnchors',
+        message: `Die Mindestzahl objektiver Anker muss eine ganze Zahl zwischen ${range.min} und ${range.max} sein.`,
+      });
+    } else {
+      values['minObjectiveAnchors'] = anchors;
+    }
+  }
+
+  if (fields.length > 0) throw new LearningEventValidationError(fields);
+
+  if (Object.keys(values).length > 0) {
+    await db.update(learnerState).set({ ...values, updatedAt: new Date() });
+  }
+
+  return readLearningThresholds(db);
 }

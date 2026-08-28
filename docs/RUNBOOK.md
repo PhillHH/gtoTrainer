@@ -1747,7 +1747,7 @@ darauf hin. `missed` am einzelnen Treffer sagt, welches Kriterium nicht saß —
 meist „keine Stacktiefe in der Unterschrift", weil das Buch sie nicht zu jedem
 Chart nennt.
 
-## 16. Lernstand: Migration, Seed, Ereignisse und Replay (AP4.T4.1/T4.2)
+## 16. Lernstand: Migration, Seed, Ereignisse, Replay und Schwellen (AP4.T4.1–T4.3)
 
 Der Lernstand-Kern besteht aus sieben Tabellen (`learning_event`,
 `concept_mastery`, `review_queue`, `error_log`, `skill_rating`,
@@ -1960,6 +1960,104 @@ ist **verboten** — der nächste Replay macht es stillschweigend rückgängig.
 | `violates check constraint "review_queue_ease_check"`                       | Ease-Faktor außerhalb 1,3–3,0.                                                                                          |
 | `duplicate key value … learner_state_singleton_key`                         | Es gibt bereits einen `learner_state`. Es darf nur einen geben; ändern statt einfügen.                                  |
 | `update or delete on table "concept" violates foreign key constraint`       | An dem Konzept hängen Ereignisse. Erst den Lernstand ansehen (16.4), dann entscheiden — der Schutz ist Absicht.         |
+
+### 16.9 Schwellen anpassen (AP4.T4.3)
+
+Die Weiterschaltung hängt an zwei Werten in `learner_state`:
+
+| Schwelle              | Bedeutung                                     | Bereich    | Default |
+| --------------------- | --------------------------------------------- | ---------- | ------- |
+| `masteryThreshold`    | ab welchem Score ein Konzept als sitzend gilt | 0,5 – 0,95 | 0,75    |
+| `minObjectiveAnchors` | wie viele objektive Anker nötig sind          | 0 – 10     | 2       |
+
+Ansehen:
+
+```bash
+pnpm learning:thresholds
+# [learning:thresholds] ... - aktuell: Schwelle 0.75, objektive Anker 2
+```
+
+Ändern:
+
+```bash
+pnpm learning:thresholds --score 0.8 --anchors 3
+# [learning:thresholds] neu: Schwelle 0.8, objektive Anker 3
+```
+
+Die Grenzen prüft der Server, nicht das Skript. Ein Wert außerhalb wird
+abgelehnt und **nicht** auf den Default umgebogen:
+
+```
+[learning:thresholds] Fehlgeschlagen: masteryThreshold: Die Mastery-Schwelle
+muss zwischen 0.5 und 0.95 liegen.
+```
+
+> **`--anchors 0` schaltet die Absicherung gegen Risiko R3 ab.** Dann reicht der
+> Score allein, und eine Serie freundlicher KI-Bewertungen genügt zum
+> Weiterkommen. Das ist erlaubt, aber es sollte eine bewusste Entscheidung sein
+> — nicht der Weg, eine hakelige Stelle zu umgehen.
+
+Ein Wechsel wirkt sofort für alle Konzepte; ein Replay ist nicht nötig, weil die
+Schwellen nicht in den gespeicherten Zustand eingehen, sondern erst bei der
+Abfrage angelegt werden.
+
+### 16.10 Mastery eines Konzepts nachvollziehen (AP4.T4.3)
+
+Wenn eine Zahl im Dashboard nicht plausibel wirkt, geht man von hinten nach
+vorn: erst der gespeicherte Stand, dann die Ereignisse, aus denen er entstand.
+
+**1. Der Stand:**
+
+```bash
+docker compose exec -T postgres psql -U gto -d gto -c "
+  select c.title, m.score, m.confidence,
+         m.objective_signals, m.ai_judged_signals, m.self_reported_signals,
+         m.last_checked_at
+    from concept_mastery m join concept c on c.id = m.concept_id
+   order by m.score desc limit 20"
+```
+
+**2. Sind objektive Anker überhaupt möglich?** Das entscheidet, ob die volle
+Anforderung gilt oder der Übergangszustand aus Scope-Delta 2:
+
+```bash
+docker compose exec -T postgres psql -U gto -d gto -c "
+  select c.title, count(*) filter (where rc.state = 'approved') as approved_charts
+    from concept c
+    left join concept_chart cc on cc.concept_id = c.id
+    left join range_chart rc on rc.asset_id = cc.asset_id
+   group by c.id, c.title having count(*) filter (where rc.state = 'approved') > 0
+   order by c.title"
+```
+
+Kommt nichts zurück, hat **kein** Konzept einen chart-verifizierbaren Anker —
+dann läuft alles über Ersatzanker, und jede Weiterschaltung ist als
+`mastered_without_objective_anchors` gekennzeichnet.
+
+**3. Die Ereignisse, aus denen der Stand entstand:**
+
+```bash
+docker compose exec -T postgres psql -U gto -d gto -c "
+  select e.occurred_at, e.event_type, e.signal_class, e.source, e.payload
+    from learning_event e
+   where e.concept_id = '<konzept-id>'
+   order by e.occurred_at, e.id"
+```
+
+Was man dabei im Kopf haben muss:
+
+- **Ein hoher Score bei niedriger Konfidenz** heißt fast immer: viele
+  KI-Bewertungen, keine objektiven Treffer. Das ist kein Fehler, sondern die
+  Anzeige, die genau davor warnen soll.
+- **Der Score ist nicht der Mittelwert der Ergebnisse.** Er rechnet mit einem
+  Vorwissens-Prior (ein einzelner Treffer ergibt nie 1,0), gewichtet nach
+  Signalklasse und Schwierigkeit, lässt ältere Ereignisse abklingen
+  (Halbwertszeit 30 Tage) und wertet Fehler anderthalbfach. Die Formel steht in
+  INTERFACES.md 19.
+- **Ein aufgehobenes Ereignis zählt nicht mehr.** Prüfen, ob eine
+  `manual_correction` darauf zeigt (Abschnitt 16.6).
+- **Stimmt der gespeicherte Stand nicht zu den Ereignissen**, hat jemand direkt
+  in `concept_mastery` geschrieben. Der Replay stellt es richtig (16.5).
 
 ## 17. Noch nicht abgedeckt
 

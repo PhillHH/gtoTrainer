@@ -143,8 +143,16 @@ export const LEARNER_STATE_DEFAULTS = {
   level: 'einsteiger',
   /** Kapitel 1 des Buches. */
   currentChapter: 1,
-  /** Ab diesem Mastery-Score gilt ein Konzept als sitzend (T4.3 entscheidet damit). */
-  masteryThreshold: 0.8,
+  /**
+   * Ab diesem Mastery-Score gilt ein Konzept als sitzend.
+   *
+   * Seit T4.3 **0,75** statt der 0,8 aus T4.1: Mit der gewichteten Formel
+   * (Vorwissen-Prior, Zeitgewichtung, Fehler-Asymmetrie) erreicht 0,8 erst,
+   * wer vier saubere objektive Treffer hinlegt — für eine Schwelle, die
+   * zusätzlich objektive Anker verlangt, ist das doppelt gemoppelt.
+   * Migration `0009`; Begründung in ADR-0042.
+   */
+  masteryThreshold: 0.75,
   /** So viele objektive Anker müssen mindestens vorliegen (T4.3 wertet sie aus). */
   minObjectiveAnchors: 2,
 } as const;
@@ -296,6 +304,8 @@ export interface LearnerState {
 /** Eine gestellte Frage wurde beantwortet (Theorie-Q&A, Turnier-Zwischenfrage). */
 export interface QuestionAnsweredPayload {
   readonly correct: boolean;
+  /** Schwierigkeit der Frage, 0 bis 1. Fehlt sie, gilt `DEFAULT_DIFFICULTY`. */
+  readonly difficulty?: number;
   /** Kennung der Frage, soweit der Modus eine vergibt. */
   readonly questionId?: string;
   /** Antwort des Lernenden, für die Nachschau. */
@@ -308,6 +318,8 @@ export interface QuestionAnsweredPayload {
 export interface ConceptExplainedPayload {
   /** Bewertung der Erklärung, 0 bis 1. */
   readonly quality: number;
+  /** Schwierigkeit des Konzepts, 0 bis 1. Fehlt sie, gilt `DEFAULT_DIFFICULTY`. */
+  readonly difficulty?: number;
   /** Begründung der Bewertung, für die transparente Anzeige (F02). */
   readonly rationale?: string;
 }
@@ -319,6 +331,8 @@ export interface DrillCompletedPayload {
   /** Gestellte Aufgaben, mindestens 1. */
   readonly total: number;
   readonly drillId?: string;
+  /** Schwierigkeit des Drills, 0 bis 1. Fehlt sie, gilt `DEFAULT_DIFFICULTY`. */
+  readonly difficulty?: number;
 }
 
 /** Eine Hand wurde analysiert (AP8). */
@@ -328,11 +342,15 @@ export interface HandAnalyzedPayload {
   readonly handRef?: string;
   /** Kurzbeschreibung des Fehlers, falls einer vorlag. */
   readonly mistake?: string;
+  /** Schwierigkeit des Spots, 0 bis 1. Fehlt sie, gilt `DEFAULT_DIFFICULTY`. */
+  readonly difficulty?: number;
 }
 
 /** Eine fällige Wiederholung wurde durchgeführt (T4.4). */
 export interface ReviewPerformedPayload {
   readonly correct: boolean;
+  /** Schwierigkeit der Wiederholung, 0 bis 1. Fehlt sie, gilt `DEFAULT_DIFFICULTY`. */
+  readonly difficulty?: number;
 }
 
 /**
@@ -471,11 +489,11 @@ export function validateLearningEventPayload(
   }
 
   const allowed: Record<LearningEventType, readonly string[]> = {
-    question_answered: ['correct', 'questionId', 'given', 'expected'],
-    concept_explained: ['quality', 'rationale'],
-    drill_completed: ['correct', 'total', 'drillId'],
-    hand_analyzed: ['correct', 'handRef', 'mistake'],
-    review_performed: ['correct'],
+    question_answered: ['correct', 'questionId', 'given', 'expected', 'difficulty'],
+    concept_explained: ['quality', 'rationale', 'difficulty'],
+    drill_completed: ['correct', 'total', 'drillId', 'difficulty'],
+    hand_analyzed: ['correct', 'handRef', 'mistake', 'difficulty'],
+    review_performed: ['correct', 'difficulty'],
     manual_correction: ['reason', 'replacementOutcome'],
   };
 
@@ -484,6 +502,16 @@ export function validateLearningEventPayload(
       fields.push({
         field: `payload.${key}`,
         message: `Unbekanntes Feld "${key}" für "${eventType}". Erlaubt: ${allowed[eventType].join(', ')}.`,
+      });
+    }
+  }
+
+  if (eventType !== 'manual_correction') {
+    const difficulty = payload['difficulty'];
+    if (difficulty !== undefined && !isRatio(difficulty)) {
+      fields.push({
+        field: 'payload.difficulty',
+        message: '"difficulty" muss eine Zahl zwischen 0 und 1 sein.',
       });
     }
   }
@@ -556,3 +584,134 @@ export function validateLearningEventPayload(
 
   return fields;
 }
+
+/* -------------------------------------------------------------------------
+ * Weiterschalt-Entscheidung (AP4.T4.3)
+ *
+ * Der Vertrag für die **transparente Anzeige** (F02). AP5 fragt „darf ich
+ * weiter?", AP6 zeigt an, warum beziehungsweise warum nicht.
+ * ---------------------------------------------------------------------- */
+
+/** Fehlt die Angabe am Ereignis, gilt mittlere Schwierigkeit. */
+export const DEFAULT_DIFFICULTY = 0.5;
+
+/**
+ * Warum die Entscheidung so ausfiel. Genau ein Grund je Entscheidung.
+ *
+ * - `mastered` — Score über der Schwelle und genug objektive Anker.
+ * - `mastered_without_objective_anchors` — weitergeschaltet, **obwohl** keine
+ *   chart-verifizierbaren Anker möglich sind (Übergangszustand, Scope-Delta 2).
+ *   Die Anzeige muss das kenntlich machen.
+ * - `score_below_threshold` — der Score reicht nicht.
+ * - `insufficient_objective_anchors` — der Score reicht, die objektiven Anker
+ *   nicht. **Das ist kein Sonderfall, sondern die Regel gegen R3.**
+ * - `insufficient_substitute_anchors` — im Übergangszustand: zu wenige
+ *   Signale, die nicht von einem Modell stammen.
+ * - `no_evidence` — zu diesem Konzept liegt noch nichts vor.
+ */
+export const ADVANCE_REASONS = [
+  'mastered',
+  'mastered_without_objective_anchors',
+  'score_below_threshold',
+  'insufficient_objective_anchors',
+  'insufficient_substitute_anchors',
+  'no_evidence',
+] as const;
+export type AdvanceReason = (typeof ADVANCE_REASONS)[number];
+
+export function isAdvanceReason(value: unknown): value is AdvanceReason {
+  return typeof value === 'string' && (ADVANCE_REASONS as readonly string[]).includes(value);
+}
+
+/** Die Gründe, die eine Weiterschaltung tatsächlich verhindern. */
+export const ADVANCE_BLOCKERS = [
+  'score_below_threshold',
+  'insufficient_objective_anchors',
+  'insufficient_substitute_anchors',
+  'no_evidence',
+] as const;
+export type AdvanceBlocker = (typeof ADVANCE_BLOCKERS)[number];
+
+/**
+ * Das Ergebnisobjekt der Weiterschalt-Entscheidung.
+ *
+ * **Bausteine, keine Sätze.** Jede Zahl, die eine Begründung braucht, steht
+ * hier einzeln — die Formulierung ist Sache des Frontends in AP6. Würde hier
+ * fertiger Text stehen, verwüchsen Logik und Wortlaut, und jede
+ * Textänderung ginge durch das Backend.
+ */
+export interface AdvanceDecision {
+  readonly allowed: boolean;
+  readonly reason: AdvanceReason;
+  /** Alle verletzten Bedingungen, nicht nur die erste. Leer, wenn erlaubt. */
+  readonly blockers: readonly AdvanceBlocker[];
+
+  /** Mastery-Score, 0 bis 1. */
+  readonly score: number;
+  /** Geforderte Schwelle aus `learner_state`. */
+  readonly threshold: number;
+
+  /** Konfidenz zum Zeitpunkt der letzten Prüfung, wie gespeichert. */
+  readonly storedConfidence: number;
+  /** Konfidenz nach Abzug der Veralterung — der Wert für die Anzeige. */
+  readonly confidence: number;
+  /** Tage seit der letzten Prüfung. `null`, wenn es noch keine gab. */
+  readonly daysSinceLastCheck: number | null;
+
+  /** Wie viele objektive Anker vorliegen. */
+  readonly objectiveAnchors: number;
+  /** Wie viele gefordert sind (aus `learner_state`). */
+  readonly requiredObjectiveAnchors: number;
+  /**
+   * Sind chart-verifizierbare Anker für dieses Konzept überhaupt möglich?
+   * Ermittelt aus `concept_chart` × `range_chart.state = 'approved'`.
+   */
+  readonly objectiveAnchorsPossible: boolean;
+  /**
+   * Ersatzanker im Übergangszustand: Signale, die **nicht** von einem Modell
+   * stammen (objektiv + selbst eingeschätzt). Nur relevant, wenn
+   * `objectiveAnchorsPossible === false`.
+   */
+  readonly substituteAnchors: number;
+
+  /** Zähler je Signalklasse — die Datenlage im Klartext. */
+  readonly signalCounts: {
+    readonly objective: number;
+    readonly aiJudged: number;
+    readonly selfReported: number;
+  };
+}
+
+/* -------------------------------------------------------------------------
+ * Schwellenwerte (AP4.T4.3)
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Die lernbezogenen Schwellen aus `learner_state`.
+ *
+ * Sie stehen dort und **nicht** in `config`: Es geht um Lernverhalten, nicht um
+ * Technik (Abgrenzung siehe INTERFACES.md 17).
+ */
+export interface LearningThresholds {
+  readonly masteryThreshold: number;
+  readonly minObjectiveAnchors: number;
+}
+
+/** Teiländerung der Schwellen. */
+export interface LearningThresholdUpdate {
+  readonly masteryThreshold?: number;
+  readonly minObjectiveAnchors?: number;
+}
+
+/**
+ * Erlaubte Bereiche, serverseitig geprüft.
+ *
+ * Die Untergrenze der Mastery-Schwelle ist kein Formalismus: Unter 0,5 hieße
+ * „weitergehen, obwohl mehr dagegen als dafür spricht". Und `minObjectiveAnchors`
+ * darf zwar 0 sein — das ist dann aber eine **bewusste** Entscheidung des
+ * Nutzers gegen die Absicherung aus Risiko R3, keine stille Voreinstellung.
+ */
+export const LEARNING_THRESHOLD_RANGES = {
+  masteryThreshold: { min: 0.5, max: 0.95, default: 0.75 },
+  minObjectiveAnchors: { min: 0, max: 10, default: 2 },
+} as const;

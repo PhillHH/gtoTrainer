@@ -64,6 +64,13 @@
       "when": 1787917951133,
       "tag": "0008_learning_event_append_only",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1787920667638,
+      "tag": "0009_mastery_threshold_default",
+      "breakpoints": true
     }
   ]
 }

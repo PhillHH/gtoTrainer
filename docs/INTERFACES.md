@@ -3,7 +3,7 @@
 Dieses Dokument beschreibt, **wo** sich Komponenten und Arbeitspakete
 gegenseitig berühren. Jeder Task trägt seine Deltas hier nach.
 
-Stand: AP4.T4.2 — Lernstand-Datenmodell (17) und die Event-API (18).
+Stand: AP4.T4.3 — Lernstand-Datenmodell (17), Event-API (18), Mastery und Weiterschaltung (19).
 
 ---
 
@@ -32,6 +32,7 @@ statt ihn hier zu importieren, bricht diese Konvention.
 | `LLMProvider` u. a.   | s. 8         | Vertrag des LLM-Gateways (AP2)                     |
 | Lernstand-Verträge    | s. 17        | Signalklassen, Ereignistypen, Zeilenverträge (AP4) |
 | Ereignis-Vertrag      | s. 18        | `RecordLearningEventInput`, Nutzdaten je Typ (AP4) |
+| `AdvanceDecision`     | s. 19        | Weiterschaltung samt Begründungsbausteinen (AP4)   |
 
 ---
 
@@ -2367,3 +2368,168 @@ Abgesichert ist das **datenbankseitig** über den Primärschlüssel
 (`insert … on conflict (id) do nothing`), nicht über eine Vorabprüfung im Code:
 Zwei gleichzeitige Aufrufe kämen sonst beide durch, weil beide vor dem jeweils
 anderen Schreibvorgang nachsehen. Siehe [ADR-0041](./DECISIONS.md).
+
+---
+
+## 19. Mastery, Konfidenz und die Weiterschalt-Entscheidung (AP4.T4.3)
+
+Die Antwort auf zwei Fragen: „Wie gut sitzt dieses Konzept?" und „Kann ich
+weitergehen?". Der Vertrag für **AP5** (fragt) und **AP6** (zeigt an).
+
+### Wie AP5 die Entscheidung abruft
+
+```ts
+import { evaluateConceptAdvance } from '../learning/service.js';
+
+const decision = await evaluateConceptAdvance(db, conceptId);
+if (!decision.allowed) {
+  // decision.reason und decision.blockers sagen, woran es liegt
+}
+```
+
+Der dritte Parameter `asOf` (Default: jetzt) ist der Bezugszeitpunkt für die
+Veralterung der Konfidenz. Er ist ein **Argument** und keine versteckte
+`Date.now()`-Abfrage — dieselbe Trennung wie bei der Queue: „jetzt" gehört in
+die Abfrage, nie in die Ableitung.
+
+Die reine Entscheidungsfunktion dahinter ist
+`evaluateAdvance(input): AdvanceDecision` in
+`apps/backend/src/learning/mastery.ts` — ohne Datenbank aufrufbar und damit
+ohne Aufbau testbar.
+
+### Die zwei Bedingungen
+
+| #   | Bedingung                                 | Quelle des Werts                          |
+| --- | ----------------------------------------- | ----------------------------------------- |
+| 1   | `score >= masteryThreshold`               | `learner_state.mastery_threshold` (0,75)  |
+| 2   | `objectiveAnchors >= minObjectiveAnchors` | `learner_state.min_objective_anchors` (2) |
+
+**Beide müssen erfüllt sein.** Ein Score von 0,99 aus lauter KI-Bewertungen
+schaltet nicht weiter. Das ist keine Härte um der Härte willen, sondern die
+Gegenmaßnahme zu Risiko R3: Sonst bestünde die Prüfung darin, dass ein
+Sprachmodell einem Sprachmodell zustimmt.
+
+### Begründungsbausteine — `AdvanceDecision`
+
+**Strukturierte Angaben, keine fertigen Sätze.** Die Formulierung ist Sache des
+Frontends in AP6; stünde hier Text, verwüchsen Logik und Wortlaut, und jede
+Textänderung ginge durch das Backend.
+
+| Feld                       | Bedeutung                                                                       |
+| -------------------------- | ------------------------------------------------------------------------------- |
+| `allowed`                  | darf weitergegangen werden                                                      |
+| `reason`                   | **ein** Grund aus `ADVANCE_REASONS`                                             |
+| `blockers`                 | **alle** verletzten Bedingungen aus `ADVANCE_BLOCKERS`; leer, wenn erlaubt      |
+| `score` / `threshold`      | erreichter Score und geforderte Schwelle                                        |
+| `storedConfidence`         | Konfidenz zum Zeitpunkt der letzten Prüfung                                     |
+| `confidence`               | dieselbe, nach Abzug der Veralterung — **der Wert für die Anzeige**             |
+| `daysSinceLastCheck`       | Tage seit der letzten Prüfung; `null`, wenn es keine gab                        |
+| `objectiveAnchors`         | vorhandene objektive Anker                                                      |
+| `requiredObjectiveAnchors` | geforderte Mindestzahl                                                          |
+| `objectiveAnchorsPossible` | sind chart-verifizierbare Anker überhaupt möglich                               |
+| `substituteAnchors`        | Ersatzanker (objektiv + selbst eingeschätzt) — nur im Übergangszustand relevant |
+| `signalCounts`             | `{ objective, aiJudged, selfReported }` — die Datenlage im Klartext             |
+
+`ADVANCE_REASONS`: `mastered` · `mastered_without_objective_anchors` ·
+`score_below_threshold` · `insufficient_objective_anchors` ·
+`insufficient_substitute_anchors` · `no_evidence`.
+
+Steht mehr als eine Bedingung offen, nennt `reason` die **fehlenden Anker**
+zuerst: Sie sind die überraschendere Auskunft. „Dein Score reicht, aber wir
+haben es nie objektiv geprüft" muss der Nutzer als Erstes lesen — sonst hält er
+die Blockade für einen Fehler.
+
+### Übergangszustand: unvollständige Chart-Abdeckung (Scope-Delta 2)
+
+> **Das ist ein Übergang, kein Zielzustand.** Sobald die Chart-Abdeckung steht,
+> gilt für die betroffenen Konzepte wieder die volle Anforderung — ohne dass
+> eine Zeile Code geändert werden muss.
+
+Ob objektive Anker für ein Konzept möglich sind, wird **ermittelt**, nicht
+geraten:
+
+```ts
+// apps/backend/src/learning/service.ts → objectiveAnchorsPossible()
+select count(*) from concept_chart
+  join range_chart on range_chart.asset_id = concept_chart.asset_id
+ where concept_chart.concept_id = $1 and range_chart.state = 'approved'
+```
+
+Nur `approved` zählt — ein Chart in `raw`, `validated`, `failed` oder
+`unusable` ist ungeprüft und taugt nicht als Anker. Stand bei Abschluss von
+AP3: **16 der 168 Konzepte** haben ein freigegebenes Chart; der Übergangsfall
+ist damit derzeit der Regelfall.
+
+Ist `objectiveAnchorsPossible === false`, gilt ersatzweise:
+
+- Score wie gehabt, **und**
+- mindestens `minObjectiveAnchors` **Ersatzanker** — Signale, die nicht von
+  einem Modell stammen (`objective + selfReported`).
+
+Der Ersatzanker ist die wörtliche Umsetzung von „keine Weiterschaltung allein
+auf KI-Bewertungen": Eine reine Serie von Modellurteilen kommt auch hier nicht
+durch (`insufficient_substitute_anchors`). Kommt sie durch, ist das Ergebnis
+als `mastered_without_objective_anchors` gekennzeichnet — **AP6 muss das
+ausweisen** —, und die Konfidenz bleibt von sich aus niedrig.
+
+### Score und Konfidenz
+
+Beide sind reine Funktionen in `mastery.ts` und rechnen ausschließlich auf den
+Ereigniszeitstempeln (Determinismus-Regel aus Abschnitt 18).
+
+```
+           PRIOR_SCORE · PRIOR_WEIGHT + Σ wᵢ · outcomeᵢ
+  score = ---------------------------------------------
+                     PRIOR_WEIGHT + Σ wᵢ
+
+  wᵢ = Signalgewicht · Schwierigkeit · Aktualität · (Fehler? 1,5 : 1)
+
+  confidence = 1 − e^(−Σ Konfidenz-Gewicht · Aktualität / 4)
+```
+
+| Signalklasse    | Score-Gewicht | Konfidenz-Gewicht |
+| --------------- | ------------- | ----------------- |
+| `objective`     | 1,0           | 1,0               |
+| `ai_judged`     | 0,5           | 0,2               |
+| `self_reported` | 0,2           | 0,05              |
+
+**Zwei Gewichtstabellen, und das ist Absicht:** Die eine sagt, _wie weit_ ein
+Signal den Score bewegt, die andere, _wie sehr_ es die Aussage festnagelt. Eine
+KI-Bewertung ist ein brauchbarer Hinweis aufs Niveau, aber ein schwacher Beleg
+dafür, dass es sitzt — ihr Fehler ist **korreliert**: Ist das Modell zu
+freundlich, ist es bei allen zehn Bewertungen zu freundlich. Begründung:
+[ADR-0042](./DECISIONS.md).
+
+Praktische Folge, an Zahlen: 4 objektive Treffer und 8 KI-Bewertungen ergeben
+denselben Score **0,80** — aber die Konfidenz 0,63 gegen 0,33.
+
+Die **Schwierigkeit** kommt aus dem Ereignis (`payload.difficulty`, 0–1) und
+wird nie geraten; fehlt sie, gilt `DEFAULT_DIFFICULTY = 0.5`. Die
+**Aktualität** ist ein exponentieller Abfall mit 30 Tagen Halbwertszeit,
+gemessen gegen das **jüngste Ereignis des Stroms** — nicht gegen die Uhr, sonst
+änderte sich der Score, ohne dass etwas passiert wäre.
+
+Die gespeicherte `confidence` ist der Wert zum Zeitpunkt der letzten Prüfung.
+Die Veralterung seither kommt erst in `evaluateAdvance` dazu (dieselbe
+Halbwertszeit) und steht dort als `confidence` neben `storedConfidence`.
+
+### Schwellen ändern
+
+Sie stehen in `learner_state`, nicht in `config` — es geht um Lernverhalten,
+nicht um Technik (Abgrenzung: Abschnitt 17).
+
+```ts
+await updateLearningThresholds(db, { masteryThreshold: 0.8, minObjectiveAnchors: 3 });
+```
+
+Serverseitig geprüft gegen `LEARNING_THRESHOLD_RANGES`; ein Wert außerhalb wird
+**abgelehnt**, nicht auf den Default umgebogen.
+
+| Schwelle              | Bereich    | Default |
+| --------------------- | ---------- | ------- |
+| `masteryThreshold`    | 0,5 – 0,95 | 0,75    |
+| `minObjectiveAnchors` | 0 – 10     | 2       |
+
+`minObjectiveAnchors = 0` ist erlaubt, aber eine **bewusste** Entscheidung
+gegen die Absicherung aus R3 — keine stille Voreinstellung. Als Kommando:
+`pnpm learning:thresholds` (RUNBOOK 16.9).

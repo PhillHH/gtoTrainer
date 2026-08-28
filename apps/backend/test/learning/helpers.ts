@@ -1,6 +1,13 @@
 import { sql } from 'drizzle-orm';
 import type { Database } from '../../src/db/client.js';
-import { bookChapter, concept } from '../../src/db/schema.js';
+import {
+  bookAsset,
+  bookChapter,
+  bookSection,
+  concept,
+  conceptChart,
+  rangeChart,
+} from '../../src/db/schema.js';
 
 /**
  * Hilfen fuer die Lernstand-Tests (AP4.T4.1).
@@ -16,7 +23,8 @@ export async function clearLearning(db: Database): Promise<void> {
   // (siehe src/learning/reset.ts).
   await db.execute(
     sql`truncate table skill_rating_snapshot, skill_rating, error_log, review_queue,
-        concept_mastery, learning_event, learner_state, concept, book_chapter cascade`,
+        concept_mastery, learning_event, learner_state, concept, range_chart,
+        book_asset, book_chapter cascade`,
   );
 }
 
@@ -133,4 +141,33 @@ export async function derivedState(db: Database): Promise<Record<string, unknown
     skillRating: await read('select * from skill_rating order by topic_area'),
     skillRatingSnapshot: await read('select * from skill_rating_snapshot order by id'),
   };
+}
+
+/**
+ * Haengt ein **freigegebenes** Chart an ein Konzept.
+ *
+ * Damit wird `objectiveAnchorsPossible` fuer dieses Konzept wahr - genau der
+ * Weg, den auch AP3 geht: Asset -> `range_chart` -> `concept_chart`. Nur der
+ * Zustand `approved` zaehlt; alles andere ist ungeprueft.
+ */
+export async function attachApprovedChart(db: Database, conceptId: string): Promise<void> {
+  const [section] = await db.select({ id: bookSection.id }).from(bookSection).limit(1);
+
+  const [asset] = await db
+    .insert(bookAsset)
+    .values({
+      relativePath: `bilder/ak7-${conceptId.slice(0, 8)}.jpeg`,
+      fileName: 'ak7.jpeg',
+      ...(section ? { sectionId: section.id } : {}),
+      assetType: 'hand_range',
+      classificationConfidence: 'certain',
+      classificationRule: 'caption-label',
+      ordinal: 0,
+      contentHash: `hash-ak7-${conceptId.slice(0, 8)}`,
+    })
+    .returning({ id: bookAsset.id });
+  const assetId = (asset as { id: string }).id;
+
+  await db.insert(rangeChart).values({ assetId, state: 'approved', model: 'test', runId: 'ak7' });
+  await db.insert(conceptChart).values({ conceptId, assetId });
 }

@@ -1015,6 +1015,80 @@ zu importieren erlaubt (`no-restricted-imports`). Direkt in `concept_mastery`,
 die Regel steht verbindlich in INTERFACES.md 18 und wird von AP5, AP7, AP8 und
 AP9 vorausgesetzt.
 
+### Mastery-Logik (neu in AP4.T4.3)
+
+Die erste der vier Ableitungen hat ihre endgültige Form. Der Platzhalter aus
+T4.2 ist ersetzt — **an derselben Schnittstelle**, ohne dass der Service davon
+etwas mitbekommen hat:
+
+```
+   learning_event (Strom eines Konzepts)
+             │
+             ▼
+   derive.ts  foldConceptMastery()      ← nur noch Verdrahtung
+             │   Ereignisse → Signale
+             ▼
+   mastery.ts computeMasteryState()     ← die Formel (rein)
+             │
+             ├── score       gewichtetes Mittel mit Vorwissens-Prior
+             └── confidence  eigene Gewichte, eigene Frage
+             │
+             ▼
+      concept_mastery
+             │
+             │   + learner_state (Schwellen)
+             │   + concept_chart × range_chart.approved
+             ▼
+   mastery.ts evaluateAdvance({ …, asOf })   ← rein, asOf als Argument
+             │
+             ▼
+      AdvanceDecision → AP5 (darf ich weiter?) → AP6 (warum nicht?)
+```
+
+`mastery.ts` ist **öffentlich**, anders als `derive.ts`: AP5 muss die
+Entscheidung abrufen können. Es schreibt nichts und kann deshalb auch nichts
+umgehen.
+
+### Warum zwei Gewichtstabellen
+
+Score und Konfidenz beantworten verschiedene Fragen — „wie gut" und „wie
+sicher wissen wir das" —, deshalb hat jede ihre eigenen Gewichte. Der Grund
+liegt in der Natur der Signale: Der Fehler einer KI-Bewertung ist
+**korreliert**. Ist das Modell zu freundlich, ist es bei allen zehn Bewertungen
+zu freundlich; zehn Modellurteile sind also nicht zehnmal so aussagekräftig wie
+eines. Zehn objektive Treffer schon.
+
+Praktische Folge: 4 objektive Treffer und 8 KI-Bewertungen ergeben denselben
+Score 0,80 — aber die Konfidenz 0,63 gegen 0,33. Erst dieser Unterschied macht
+die Anzeige in AP6 ehrlich ([ADR-0042](./DECISIONS.md)).
+
+### Die Ankerpflicht ist die eigentliche Schranke
+
+Weiterschaltung verlangt Score **und** eine Mindestzahl objektiver Anker. Der
+Schutz gegen Risiko R3 sitzt bewusst nicht in einer möglichst hohen Schwelle —
+die ließe sich mit genug freundlichen Modellurteilen erreichen —, sondern in
+einer Bedingung, die ein Sprachmodell gar nicht erfüllen kann.
+
+Solange für ein Konzept kein freigegebenes Chart existiert (derzeit 152 von
+168), treten **Ersatzanker** an ihre Stelle: Signale, die nicht von einem
+Modell stammen. Der Lernpfad bleibt begehbar, das Ergebnis heißt aber
+`mastered_without_objective_anchors` und die Konfidenz bleibt niedrig. Ein
+Übergang, der von selbst endet: Wird ein Chart freigegeben, gilt für dieses
+Konzept wieder die volle Anforderung — ohne Codeänderung.
+
+### Determinismus, zum Zweiten
+
+Die Regel aus T4.2 gilt für die Mastery-Formel unverändert. Zwei Stellen, an
+denen sie leicht zu brechen gewesen wäre, sind bewusst anders gelöst:
+
+- Die **zeitliche Gewichtung** misst gegen das jüngste Ereignis des Stroms,
+  nicht gegen die Uhr. Sonst änderte sich der Score, ohne dass etwas passiert
+  wäre.
+- Die **Veralterung der Konfidenz** ist keine Ableitung, sondern Teil der
+  Abfrage: `evaluateAdvance` bekommt den Bezugszeitpunkt als `asOf`-Argument.
+
+Beides ist getestet, nicht nur zugesagt (`test/learning/determinism.test.ts`).
+
 ## 4. Querschnitts-Entscheidungen
 
 - **Node 20.19.6**, fixiert in `.nvmrc`; `engines.node >= 20.19.0`.

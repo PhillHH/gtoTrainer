@@ -1,3 +1,4 @@
+import { DEFAULT_DIFFICULTY } from '@gto/shared';
 import type {
   ConceptExplainedPayload,
   DrillCompletedPayload,
@@ -8,6 +9,8 @@ import type {
   ManualCorrectionPayload,
   ReviewQueueOrigin,
 } from '@gto/shared';
+import { computeMasteryState } from './mastery.js';
+import type { MasterySignal } from './mastery.js';
 
 /**
  * Die Ableitungen des Lernstands (AP4.T4.2) - **reine Funktionen**.
@@ -164,16 +167,15 @@ export interface MasteryProjection {
 }
 
 /**
- * PLATZHALTER - T4.3 ersetzt die Formel.
+ * Mastery je Konzept - die Formel steht seit T4.3 in `mastery.ts`.
  *
- * `score` ist das arithmetische Mittel der Ergebnisse, `confidence` der Anteil
- * objektiver Signale daran. Beides ist bewusst naiv: Die Gewichtung nach
- * Signalklasse, die Mindestanzahl objektiver Anker und der Umgang mit fehlender
- * Chart-Abdeckung (Scope-Delta 2) sind Gegenstand von T4.3.
+ * Diese Funktion ist nur noch die **Verdrahtung**: Sie uebersetzt den
+ * Ereignisstrom in Signale und reicht sie an die reine Berechnung weiter. Genau
+ * so war der Zuschnitt in T4.2 gedacht - T4.3 hat die Formel ersetzt, ohne den
+ * Service anzufassen.
  *
- * Was hier schon stimmt und stimmen muss: Score und Konfidenz sind **getrennt**
- * gefuehrt, und die Zaehler je Signalklasse sind vollstaendig - T4.3 hat damit
- * alles, was es braucht, ohne das Schema anzufassen.
+ * Die Schwierigkeit kommt aus dem Ereignis (`payload.difficulty`) und wird
+ * nicht geraten; fehlt sie, gilt mittlere Schwierigkeit.
  *
  * `null` = es gibt nichts abzuleiten (kein Ereignis oder alle aufgehoben).
  */
@@ -181,31 +183,35 @@ export function foldConceptMastery(effective: readonly EffectiveEvent[]): Master
   const relevant = contributing(effective);
   if (relevant.length === 0) return null;
 
-  let sum = 0;
-  let objective = 0;
-  let aiJudged = 0;
-  let selfReported = 0;
+  const signals: MasterySignal[] = relevant.map((entry) => ({
+    signalClass: entry.event.signalClass,
+    outcome: entry.outcome as number,
+    difficulty: readDifficulty(entry.event),
+    occurredAt: entry.event.occurredAt,
+  }));
 
-  for (const { event, outcome } of relevant) {
-    sum += outcome as number;
-    if (event.signalClass === 'objective') objective += 1;
-    else if (event.signalClass === 'ai_judged') aiJudged += 1;
-    else selfReported += 1;
-  }
+  const state = computeMasteryState(signals);
+  if (state === null) return null;
 
   const last = relevant[relevant.length - 1] as EffectiveEvent;
 
   return {
-    score: clampRatio(sum / relevant.length),
-    confidence: clampRatio(objective / relevant.length),
-    lastCheckedAt: last.event.occurredAt,
-    objectiveSignals: objective,
-    aiJudgedSignals: aiJudged,
-    selfReportedSignals: selfReported,
+    score: state.score,
+    confidence: state.confidence,
+    lastCheckedAt: state.lastCheckedAt,
+    objectiveSignals: state.objectiveSignals,
+    aiJudgedSignals: state.aiJudgedSignals,
+    selfReportedSignals: state.selfReportedSignals,
     lastEventId: last.event.id,
     // Aus dem Ereignis, nicht aus der Systemzeit - siehe Determinismus-Regel.
     updatedAt: last.event.occurredAt,
   };
+}
+
+/** Schwierigkeit aus den Nutzdaten; fehlt sie, gilt mittlere Schwierigkeit. */
+function readDifficulty(event: StoredLearningEvent): number {
+  const value = event.payload['difficulty'];
+  return typeof value === 'number' && Number.isFinite(value) ? value : DEFAULT_DIFFICULTY;
 }
 
 /** Haelt Rundungsreste sicher innerhalb der CHECK-Constraints aus T4.1. */

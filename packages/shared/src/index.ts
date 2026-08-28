@@ -238,6 +238,11 @@ export {
   RECORD_EVENT_STATUSES,
   isLearningEventErrorResponse,
   validateLearningEventPayload,
+  ADVANCE_BLOCKERS,
+  ADVANCE_REASONS,
+  DEFAULT_DIFFICULTY,
+  LEARNING_THRESHOLD_RANGES,
+  isAdvanceReason,
 } from './learning.js';
 export type {
   ConceptMastery,
@@ -265,4 +270,9 @@ export type {
   RecordLearningEventInput,
   RecordLearningEventResponse,
   ReviewPerformedPayload,
+  AdvanceBlocker,
+  AdvanceDecision,
+  AdvanceReason,
+  LearningThresholdUpdate,
+  LearningThresholds,
 } from './learning.js';

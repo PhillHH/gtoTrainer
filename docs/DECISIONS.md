@@ -2981,3 +2981,177 @@ entstünden Ketten, deren Auflösung von der Reihenfolge abhinge — und die
 Reihenfolge ist genau das, was beim Replay stabil bleiben muss.
 
 **Keine neuen Dependencies.**
+
+---
+
+## ADR-0042 — Signalgewichte, Fehler-Asymmetrie, zeitliche Gewichtung und die Ankerpflicht
+
+- **Datum:** 2026-08-28
+- **Status:** angenommen
+- **Kontext:** AP4.T4.3. Der Mastery-Score entscheidet, ob der Nutzer
+  weitergehen darf. Risiko R3 aus dem Gesamtscope lautet: Ein System, das sich
+  selbst bewertet, ist zu wohlwollend. Ein Sprachmodell, das eine freie Antwort
+  beurteilt, sagt im Zweifel „ja, im Wesentlichen richtig"; wer sich selbst
+  einschätzt, überschätzt sich. Jede Zahl in diesem ADR ist gegen diese
+  Neigung gewählt.
+
+### Entscheidung 1 — Zwei Gewichtstabellen, nicht eine
+
+| Signalklasse    | Score-Gewicht | Konfidenz-Gewicht |
+| --------------- | ------------- | ----------------- |
+| `objective`     | 1,0           | 1,0               |
+| `ai_judged`     | 0,5           | 0,2               |
+| `self_reported` | 0,2           | 0,05              |
+
+Das ist der unauffälligste und zugleich wichtigste Teil dieses ADR. Die beiden
+Tabellen beantworten **verschiedene Fragen**: Die erste, _wie weit_ ein Signal
+den Score bewegt; die zweite, _wie sehr_ es die Aussage festnagelt.
+
+Warum sie auseinanderfallen: Der Fehler einer KI-Bewertung ist **korreliert**.
+Ist das Modell zu freundlich, ist es bei allen zehn Bewertungen zu freundlich.
+Zehn Modellurteile sind deshalb nicht zehnmal so aussagekräftig wie eines —
+zehn objektive Treffer dagegen schon, weil jeder für sich prüfbar ist.
+
+Mit einer einzigen Tabelle wäre genau das nicht darstellbar: Vier objektive
+Treffer und acht KI-Bewertungen ergäben denselben Score **und** dieselbe
+Konfidenz. Mit zwei Tabellen ergeben sie denselben Score 0,80 — und die
+Konfidenz 0,63 gegen 0,33. Das ist die Unterscheidung, die die Anzeige in AP6
+ehrlich macht.
+
+Selbsteinschätzungen bekommen 0,2 beziehungsweise 0,05: Sie zählen, aber sie
+belegen nichts. Sie ganz auf null zu setzen wäre falsch — dann wäre das
+Feynman-Element aus dem Gesamtscope wirkungslos.
+
+### Entscheidung 2 — Vorwissens-Prior statt reinem Mittelwert
+
+```
+          PRIOR_SCORE · PRIOR_WEIGHT + Σ wᵢ · outcomeᵢ
+  score = -------------------------------------------      PRIOR_SCORE = 0
+                    PRIOR_WEIGHT + Σ wᵢ                     PRIOR_WEIGHT = 1
+```
+
+Ohne den Prior hätte ein einziger richtiger Treffer den Score 1,0 — „perfekt
+beherrscht nach einer Frage". Er ist außerdem der Grund, warum die Gewichte
+überhaupt auf den Score durchschlagen: Bei einem reinen gewichteten Mittelwert
+ergäben fünf objektive Treffer und fünf KI-Bewertungen beide 1,0, und die
+Gewichtung wirkte nur, wenn Signale einander widersprechen.
+
+Mit dem Prior ziehen schwache Signale den Score **weniger weit** vom
+Ausgangspunkt weg: fünf objektive Treffer → 5/6 ≈ 0,83, fünf KI-Bewertungen mit
+demselben Ergebnis → 2,5/3,5 ≈ 0,71. Damit ist die Anforderung aus dem Task
+erfüllt, dass eine Serie freundlicher KI-Bewertungen nicht dieselbe Wirkung hat
+wie eine Serie objektiver Treffer.
+
+Der Prior ist 0 und nicht 0,5: Ohne Beleg gilt ein Konzept als nicht
+beherrscht. Bei einem Gate ist das die richtige Richtung des Zweifels.
+
+### Entscheidung 3 — Fehler wiegen anderthalbfach
+
+`FAILURE_WEIGHT_FACTOR = 1.5` für jedes Ergebnis unter 0,5.
+
+Treffer und Fehler sind nicht gleich aussagekräftig. Bei einer Frage mit
+vorgegebenen Antworten kann man raten und trifft; ein Treffer belegt also nur
+„könnte können". Ein Fehler dagegen lässt sich schwer zufällig erzeugen — er
+belegt eine Lücke.
+
+Die Höhe ist bewusst moderat. Belegt an Zahlen (Test „senkt der Fehler nach
+Treffern stärker, als der Treffer nach Fehlern hebt"): Drei Treffer ergeben
+0,7457; ein Fehler danach drückt auf 0,5340, ein Fall um **0,2117**. Umgekehrt
+heben drei Fehler (0,0000) plus ein Treffer nur auf 0,1588, ein Anstieg um
+**0,1588**. Deutlich genug, dass ein Fehler nicht in einer Serie von Treffern
+untergeht — nicht so hart, dass ein einzelner Ausrutscher einen erarbeiteten
+Stand einreißt.
+
+### Entscheidung 4 — Zeitliche Gewichtung gegen das jüngste Ereignis, nicht gegen die Uhr
+
+Exponentieller Abfall mit 30 Tagen Halbwertszeit. Gemessen wird das Alter eines
+Ereignisses **relativ zum jüngsten Ereignis des Stroms**.
+
+Das ist keine Feinheit, sondern die Bedingung dafür, dass es AP4 überhaupt
+gibt. Ein Abfall gegen „jetzt" hieße: Der Score ändert sich, ohne dass etwas
+passiert ist, und der Replay aus T4.2 liefert bei jedem Lauf ein anderes
+Ergebnis. Die Definition-of-Done von AP4 wäre unerreichbar.
+
+Mit dem relativen Bezug hat das jüngste Ereignis immer Faktor 1, und ein Strom,
+zu dem nichts hinzukommt, behält seinen Score. Belegt durch den Test „misst die
+Aktualität gegen das jüngste Ereignis, nicht gegen die Uhr": Derselbe Strom, um
+ein Jahr verschoben, ergibt identische Werte.
+
+Halbwertszeit 30 Tage: lang genug, dass ein Monat Pause den Stand nicht
+entwertet; kurz genug, dass ein guter Start nach einem halben Jahr nicht mehr
+trägt.
+
+### Entscheidung 5 — Die Veralterung der Konfidenz gehört in die Abfrage
+
+Die gespeicherte `confidence` ist der Wert **zum Zeitpunkt der letzten
+Prüfung**. Wie sehr sie seither veraltet ist, rechnet `evaluateAdvance` aus
+einem ausdrücklichen `asOf`-Argument.
+
+Dieselbe Trennung wie bei der Wiederholungs-Queue aus T4.2: „Was ist heute
+fällig?" und „wie sicher sind wir uns heute noch?" sind **Abfragen**. In einer
+Ableitung hätte „jetzt" nichts zu suchen — dort wäre es genau der versteckte
+Zustand, den die Determinismus-Regel verbietet.
+
+### Entscheidung 6 — Die Ankerpflicht ist nicht verhandelbar
+
+Weiterschaltung verlangt Score **und** `minObjectiveAnchors` objektive Anker.
+Ein Score von 0,99 aus lauter KI-Bewertungen schaltet nicht weiter.
+
+Das ist der eigentliche Schutz gegen R3, und er sitzt bewusst **nicht** in
+einer möglichst hohen Schwelle: Eine hohe Schwelle ließe sich mit genug
+freundlichen Modellurteilen erreichen, eine Ankerpflicht nicht. Deshalb wurde
+die Schwelle von 0,8 (T4.1) auf **0,75** gesenkt (Migration `0009`): Mit dem
+Prior und der Asymmetrie erreicht 0,8 erst, wer vier saubere objektive Treffer
+hinlegt — zusammen mit der Ankerpflicht wäre das doppelt gemoppelt, und
+doppelt gemoppelte Hürden lädt man irgendwann ab.
+
+Die Migration zieht bestehende Zeilen mit, die noch exakt auf 0,8 stehen. Das
+überschreibt keine Nutzerentscheidung: Bis T4.3 gab es keinen Weg, den Wert zu
+ändern — weder Endpunkt noch Kommando —, ein vorgefundenes 0,8 ist also
+zwangsläufig der Seed-Wert aus T4.1.
+
+`minObjectiveAnchors` darf auf 0 gesetzt werden. Das ist eine **bewusste**
+Entscheidung des Nutzers gegen die Absicherung, kein stiller Default — und sie
+ist im Ergebnisobjekt sichtbar (`requiredObjectiveAnchors: 0`).
+
+### Entscheidung 7 — Ersatzanker, solange keine Charts da sind (Scope-Delta 2)
+
+Für 152 der 168 Konzepte gibt es derzeit kein freigegebenes Chart. Sie dürfen
+nicht dauerhaft unpassierbar sein, nur weil die Digitalisierung noch läuft —
+das wäre eine Blockade des ganzen Lernpfads durch einen Datenstand.
+
+Ist `objectiveAnchorsPossible === false` (ermittelt aus `concept_chart` ×
+`range_chart.state = 'approved'`), tritt an die Stelle der objektiven Anker die
+gleiche Anzahl **Ersatzanker**: Signale, die nicht von einem Modell stammen
+(`objective + selfReported`).
+
+Drei Eigenschaften, und alle drei sind nötig:
+
+1. **Keine Blockade.** Der Lernpfad bleibt begehbar.
+2. **Keine stillschweigende Gleichbehandlung.** Das Ergebnis heißt
+   `mastered_without_objective_anchors`, nicht `mastered`. AP6 muss das
+   ausweisen, und die Konfidenz bleibt von sich aus niedrig — ohne objektive
+   Signale trägt sie kaum Gewicht.
+3. **Keine Weiterschaltung allein auf KI-Bewertungen.** Eine reine Serie von
+   Modellurteilen kommt auch hier nicht durch
+   (`insufficient_substitute_anchors`).
+
+Die Alternative — die Ankerpflicht bei fehlenden Charts einfach entfallen zu
+lassen — wurde verworfen. Sie wäre genau die Aufweichung „weil es sonst hakt",
+gegen die R3 gerichtet ist, und sie wäre von außen nicht von echter Mastery zu
+unterscheiden.
+
+**Das ist ein Übergangszustand.** Sobald ein Chart freigegeben wird, kippt
+`objectiveAnchorsPossible` von selbst, und für dieses Konzept gilt wieder die
+volle Anforderung — ohne Codeänderung. Belegt durch den Test „verlangt wieder
+die vollen objektiven Anker, sobald ein Chart freigegeben ist".
+
+### Entscheidung 8 — Gespeicherte Kennwerte werden auf sechs Nachkommastellen gerundet
+
+Gleitkomma-Addition ist nicht assoziativ; eine andere Summationsreihenfolge
+liefert Abweichungen in der letzten Stelle. Für einen Mastery-Score ist das
+bedeutungsloses Rauschen — für den Replay-Vergleich aus T4.2 wäre es ein
+Unterschied. Nach dem Runden ist das Ergebnis nachweislich von der Reihenfolge
+unabhängig.
+
+**Keine neuen Dependencies.**
