@@ -78,6 +78,13 @@
       "when": 1787922898587,
       "tag": "0010_level_set_event",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1787924280595,
+      "tag": "0011_pattern_report",
+      "breakpoints": true
     }
   ]
 }

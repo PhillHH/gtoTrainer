@@ -45,6 +45,7 @@ import {
 } from '../db/schema.js';
 import { evaluateAdvance } from './mastery.js';
 import { overdueDays, prioritizeReviews } from './review.js';
+import { refreshPatternTags } from './report.js';
 import type { ReviewCandidate } from './review.js';
 import {
   applyCorrections,
@@ -387,6 +388,10 @@ async function projectConcept(tx: Transaction, conceptId: string): Promise<void>
   await tx.delete(errorLog).where(eq(errorLog.conceptId, conceptId));
   if (errors.length > 0) {
     await tx.insert(errorLog).values(errors.map((entry) => ({ ...entry })));
+    // Muster-Tags aus T4.6 nachziehen. Sie sind eine **Annotation** am
+    // Ereignis und stehen deshalb in `error_pattern_tag`, nicht im
+    // Fehlerprotokoll - sonst waeren sie nach diesem Neuaufbau weg.
+    await refreshPatternTags(tx, conceptId);
   }
 }
 

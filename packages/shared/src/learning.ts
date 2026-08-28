@@ -950,3 +950,205 @@ export interface SkillRatingHistory {
   readonly topicArea: ConceptTopicArea;
   readonly points: readonly SkillRatingHistoryPoint[];
 }
+
+/* -------------------------------------------------------------------------
+ * Muster-Report (AP4.T4.6)
+ *
+ * Aus Einzelfehlern werden erkennbare Muster. Die KI sieht dabei
+ * **ausschließlich aggregierte Kennzahlen** — nie Rohprotokolle.
+ * ---------------------------------------------------------------------- */
+
+/** Job-Typ, über den ein Report angestoßen wird. */
+export const PATTERN_REPORT_JOB = 'learning.pattern-report';
+
+/** `complete` = Muster erkannt. `insufficient_data` = kein Aufruf abgesetzt. */
+export const PATTERN_REPORT_STATUSES = ['complete', 'insufficient_data'] as const;
+export type PatternReportStatus = (typeof PATTERN_REPORT_STATUSES)[number];
+
+/**
+ * Ab wann sich ein Report lohnt.
+ *
+ * Unterhalb dieser Marke wird **kein Aufruf abgesetzt**, sondern ein Hinweis
+ * gespeichert. Ein Muster aus drei Datenpunkten wäre Kaffeesatzleserei — und
+ * ein erfundenes Muster ist schlimmer als gar keins, weil es Lernzeit
+ * fehlleitet.
+ */
+export const PATTERN_REPORT_MINIMUM = {
+  /** So viele Fehler müssen im Zeitraum liegen. */
+  errors: 8,
+  /** Und sie müssen sich auf mindestens so viele Konzepte verteilen. */
+  concepts: 3,
+} as const;
+
+/** Standard-Zeitraum eines Reports in Tagen. */
+export const PATTERN_REPORT_PERIOD_DAYS = 28;
+
+/* --- Die aggregierten Kennzahlen ---------------------------------------- */
+
+/** Fehlerlage eines Konzepts im Zeitraum. */
+export interface ConceptErrorStat {
+  readonly conceptId: string;
+  readonly title: string;
+  readonly topicArea: ConceptTopicArea;
+  readonly errors: number;
+  readonly high: number;
+  readonly medium: number;
+  readonly low: number;
+  readonly firstAt: string;
+  readonly lastAt: string;
+  /**
+   * Fehler, die **nach** einer zwischenzeitlich gelungenen Wiederholung
+   * auftraten. Das stärkste Signal für einen echten, festsitzenden Denkfehler:
+   * Es saß schon einmal und ist wieder gekippt.
+   */
+  readonly repeatedAfterReview: number;
+}
+
+/** Fehlerlage eines Themenbereichs im Zeitraum. */
+export interface TopicAreaErrorStat {
+  readonly topicArea: ConceptTopicArea;
+  readonly label: string;
+  readonly errors: number;
+  readonly concepts: number;
+}
+
+/** Fehler je Woche — für die Frage „wird es besser oder schlechter?". */
+export interface ErrorTrendPoint {
+  /** Montag der Woche in UTC, `YYYY-MM-DD`. */
+  readonly weekStart: string;
+  readonly errors: number;
+}
+
+/** Wohin die Entwicklung zeigt. */
+export const ERROR_TRENDS = ['improving', 'stable', 'worsening', 'unknown'] as const;
+export type ErrorTrend = (typeof ERROR_TRENDS)[number];
+
+/**
+ * Alles, was die KI zu sehen bekommt — **und nichts darüber hinaus**.
+ *
+ * Zwei Gründe für die Verdichtung: Sie hält den Prompt klein
+ * (Kontextdisziplin), und sie zwingt die Auswertung, über Muster zu sprechen
+ * statt Einzelfälle nachzuerzählen.
+ */
+export interface ErrorAggregate {
+  readonly periodStart: string;
+  readonly periodEnd: string;
+  readonly totalErrors: number;
+  readonly totalConcepts: number;
+  readonly bySeverity: { readonly high: number; readonly medium: number; readonly low: number };
+  readonly byConcept: readonly ConceptErrorStat[];
+  readonly byTopicArea: readonly TopicAreaErrorStat[];
+  /** Fehler je Kontext: Theorie, Drill, Praxis. */
+  readonly byContext: readonly {
+    readonly contextKind: LearningEventSource;
+    readonly errors: number;
+  }[];
+  readonly trend: readonly ErrorTrendPoint[];
+  readonly trendDirection: ErrorTrend;
+  /** Konzepte mit wiederholtem Fehler trotz zwischenzeitlicher Wiederholung. */
+  readonly repeatedAfterReview: readonly ConceptErrorStat[];
+}
+
+/* --- Die Antwort der KI -------------------------------------------------- */
+
+/** Wie belastbar ein Muster ist — die KI schätzt das selbst ein. */
+export const PATTERN_CONFIDENCES = ['niedrig', 'mittel', 'hoch'] as const;
+export type PatternConfidence = (typeof PATTERN_CONFIDENCES)[number];
+
+/**
+ * Ein erkanntes Muster.
+ *
+ * **Beobachtung und Deutung sind getrennte Felder.** Was in den Daten steht,
+ * ist nachzählbar; was es bedeutet, ist eine Schlussfolgerung. Beides in einem
+ * Satz zu vermischen wäre genau die Sorte Text, die sicher klingt und nichts
+ * belegt.
+ */
+export interface ErrorPattern {
+  readonly titel: string;
+  /** Was in den Daten steht — nachzählbar. */
+  readonly beobachtung: string;
+  /** Was es bedeuten könnte — mit Begründung. */
+  readonly deutung: string;
+  /** Was der Lernende konkret tun sollte. */
+  readonly empfehlung: string;
+  /** Belege: betroffene Konzepte (Titel aus den übergebenen Daten). */
+  readonly konzepte: readonly string[];
+  readonly themenbereiche: readonly string[];
+  /** Beleg: auf wie vielen Beobachtungen das Muster beruht. */
+  readonly anzahl: number;
+  /** Beleg: über welchen Zeitraum. */
+  readonly zeitraum: string;
+  readonly vertrauen: PatternConfidence;
+}
+
+/**
+ * Schema, gegen das das Template `task/error-patterns` antwortet.
+ *
+ * `hinweis` ist Pflicht und darf leer sein: Findet die Auswertung kein
+ * tragfähiges Muster, steht der Grund dort — statt dass etwas konstruiert
+ * wird, um das Feld zu füllen.
+ */
+export const ERROR_PATTERN_SCHEMA = {
+  type: 'object',
+  properties: {
+    muster: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          titel: { type: 'string' },
+          beobachtung: { type: 'string' },
+          deutung: { type: 'string' },
+          empfehlung: { type: 'string' },
+          konzepte: { type: 'array', items: { type: 'string' } },
+          themenbereiche: { type: 'array', items: { type: 'string' } },
+          anzahl: { type: 'integer' },
+          zeitraum: { type: 'string' },
+          vertrauen: { type: 'string', enum: [...PATTERN_CONFIDENCES] },
+        },
+        required: [
+          'titel',
+          'beobachtung',
+          'deutung',
+          'empfehlung',
+          'konzepte',
+          'themenbereiche',
+          'anzahl',
+          'zeitraum',
+          'vertrauen',
+        ],
+        additionalProperties: false,
+      },
+    },
+    hinweis: { type: 'string' },
+  },
+  required: ['muster', 'hinweis'],
+  additionalProperties: false,
+} as const;
+
+/* --- Der gespeicherte Report --------------------------------------------- */
+
+/** Ein Muster im gespeicherten Report, samt seiner Kurzkennung. */
+export interface StoredPattern extends ErrorPattern {
+  /** Kurzkennung, unter der die zugehörigen Fehler markiert sind. */
+  readonly tag: string;
+  /** Wie viele Fehlereinträge dieser Tag trägt. */
+  readonly taggedErrors: number;
+}
+
+/** Ein gespeicherter Report, wie AP6 ihn liest. */
+export interface PatternReportView {
+  readonly id: string;
+  readonly status: PatternReportStatus;
+  readonly generatedAt: string;
+  readonly periodStart: string;
+  readonly periodEnd: string;
+  readonly model: string | null;
+  readonly provider: string | null;
+  readonly errorCount: number;
+  readonly conceptCount: number;
+  readonly patterns: readonly StoredPattern[];
+  /** Klartext, wenn kein Muster tragfähig war. */
+  readonly note: string | null;
+  readonly durationMs: number | null;
+}

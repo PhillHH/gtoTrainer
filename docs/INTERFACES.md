@@ -3,7 +3,7 @@
 Dieses Dokument beschreibt, **wo** sich Komponenten und Arbeitspakete
 gegenseitig berühren. Jeder Task trägt seine Deltas hier nach.
 
-Stand: AP4.T4.5 — Lernstand-Datenmodell (17), Event-API (18), Mastery (19), Wiederholungs-Queue (20), Ratings und Level (21).
+Stand: AP4.T4.6 — Lernstand-Datenmodell (17), Event-API (18), Mastery (19), Queue (20), Ratings und Level (21), Muster-Report (22).
 
 ---
 
@@ -35,6 +35,7 @@ statt ihn hier zu importieren, bricht diese Konvention.
 | `AdvanceDecision`     | s. 19        | Weiterschaltung samt Begründungsbausteinen (AP4)    |
 | `DueReviewsResponse`  | s. 20        | Abruf fälliger Wiederholungen (AP4)                 |
 | `LevelCalibration`    | s. 21        | Level samt Kennzahlen, Skill-Ratings, Verlauf (AP4) |
+| `PatternReportView`   | s. 22        | Muster-Report samt Belegen und Muster-Tags (AP4)    |
 
 ---
 
@@ -2812,3 +2813,139 @@ wird. Belegt durch den Test „liest den Themenbereich zur Laufzeit aus dem
 Konzept": Nach einem Umzug plus Replay steht das Rating an der neuen Achse.
 
 Die Liste stammt ausschließlich aus `CONCEPT_TOPIC_AREAS` (T3.2, Abschnitt 13).
+
+---
+
+## 22. Fehlerprotokoll und Muster-Report (AP4.T4.6)
+
+Aus Einzelfehlern werden erkennbare Muster. Der Vertrag für **AP6** (zeigt
+Reports und filtert nach Mustern) und für den Betrieb.
+
+> **Der einzige KI-Aufruf in AP4.** Und er sieht ausschließlich aggregierte
+> Kennzahlen — nie ein Rohprotokoll, nie einen Antworttext.
+
+### Der Schweregrad wird abgeleitet, nicht gesetzt
+
+| Signalklasse    | Ergebnis 0 | Ergebnis zwischen 0 und 0,5 |
+| --------------- | ---------- | --------------------------- |
+| `objective`     | `high`     | `medium`                    |
+| `ai_judged`     | `medium`   | `low`                       |
+| `self_reported` | `low`      | `low`                       |
+
+Ein Fehler bei einer eindeutigen, chart-verifizierbaren Frage ist ein harter
+Befund. Eine KI-Bewertung, die eine freie Antwort als unzureichend einstuft,
+kann auch an einer unpräzisen Formulierung liegen — sie taugt als Hinweis,
+nicht als Beweis. Eine Selbsteinschätzung „das konnte ich nicht" ist ehrlich,
+aber kein Messwert. Ein teilweiser Fehlschlag wiegt weniger als ein
+vollständiger ([ADR-0046](./DECISIONS.md)).
+
+Einträge entstehen **ausschließlich** aus dem Ereignisstrom (Abschnitt 18).
+
+### Die Aggregations-Kennzahlen
+
+`ErrorAggregate` — alles, was die Auswertung zu sehen bekommt:
+
+| Feld                           | Bedeutung                                                                        |
+| ------------------------------ | -------------------------------------------------------------------------------- |
+| `totalErrors`, `totalConcepts` | Umfang des Zeitraums                                                             |
+| `bySeverity`                   | `{ high, medium, low }`                                                          |
+| `byConcept`                    | je Konzept: Fehler, Schweregrade, erster/letzter Fehler, **Wiederholungsfehler** |
+| `byTopicArea`                  | je Themenbereich: Fehler und betroffene Konzepte                                 |
+| `byContext`                    | Fehler je Kontext — Theorie, Drill, Praxis                                       |
+| `trend`                        | Fehler je Kalenderwoche, **inklusive der leeren Wochen dazwischen**              |
+| `trendDirection`               | `improving` \| `stable` \| `worsening` \| `unknown`                              |
+| `repeatedAfterReview`          | Konzepte mit Fehler **nach** zwischenzeitlich gelungener Wiederholung            |
+
+**`repeatedAfterReview` ist das stärkste Signal im Datensatz.** Drei Fehler am
+Stück heißen „noch nicht gelernt". Ein Fehler nach einem Erfolg heißt: Es saß
+schon einmal und ist wieder gekippt — ein festsitzender Denkfehler, keine
+Wissenslücke. Das Prompt-Template weist die Auswertung ausdrücklich darauf hin.
+
+Leere Wochen **vor** dem ersten Fehler fallen aus der Reihe: Sie bedeuten nicht
+„damals lief es besser", sondern „damals war noch nichts".
+
+### Job-Typ und manueller Anstoß
+
+```
+learning.pattern-report      Payload: { periodDays?: number, force?: boolean, asOf?: string }
+```
+
+```ts
+await enqueueJob(db, { jobType: PATTERN_REPORT_JOB, payload: { periodDays: 28, force: false } });
+```
+
+Als Kommando: `pnpm learning:report --run` (RUNBOOK 16.16). Der Job läuft über
+die Job-Queue aus AP2 — mit Retry, Protokoll und Dead-Letter. Bei `rate_limit`
+legt der Worker ihn wieder vor; das ist der eingeplante Fall, kein Fehler.
+
+**Wöchentlich ohne eigenen Scheduler:** Jeder Lauf plant seinen Nachfolger mit
+`availableAt = jetzt + 7 Tage` ein. Steht schon einer in der Queue, passiert
+nichts — doppelte Ketten sind damit ausgeschlossen. Fällt der Worker länger
+aus, läuft der Report später, nicht mehrfach.
+
+### Drei Stufen, die den Aufruf verhindern können
+
+1. **Aggregation** — deterministischer Code. Die Auswertung sieht nie ein
+   Rohprotokoll.
+2. **Mindestdatenmenge** — unter **8 Fehlern** oder **3 Konzepten** wird
+   **kein Aufruf abgesetzt**, sondern ein Report mit `status:
+'insufficient_data'` und einem Klartext-Hinweis gespeichert.
+3. **Prüfsumme** — hat sich die Fehlerlage seit dem letzten Report nicht
+   geändert, gibt es keinen zweiten Aufruf. Mit `force: true` erzwingbar. Die
+   Prüfsumme hängt bewusst **nicht** am Zeitfenster: Ein Lauf am Folgetag mit
+   unveränderter Lage soll als „nichts Neues" gelten.
+
+### Wie AP6 Reports liest
+
+```ts
+const latest = await readLatestReport(db); // PatternReportView | null
+const history = await readReportHistory(db, 20); // absteigend nach Zeitpunkt
+```
+
+`PatternReportView`: `id`, `status`, `generatedAt`, `periodStart`/`periodEnd`,
+`model`/`provider`, `errorCount`/`conceptCount`, `patterns`, `note`,
+`durationMs`. Ältere Reports bleiben stehen — dass dasselbe Muster seit sechs
+Wochen drinsteht, ist selbst eine Auskunft.
+
+Je Muster (`StoredPattern`): `titel`, **`beobachtung`** (was in den Zahlen
+steht), **`deutung`** (was es bedeuten könnte), `empfehlung`, `konzepte`,
+`themenbereiche`, `anzahl`, `zeitraum`, `vertrauen` und dazu `tag` sowie
+`taggedErrors`.
+
+**Beobachtung und Deutung sind getrennte Felder.** Beides in einem Satz zu
+vermischen wäre genau die Sorte Text, die sicher klingt und nichts belegt.
+
+Die HTTP-Endpunkte dazu entstehen in T4.7.
+
+### Muster-Tags — wie AP6 filtert
+
+```sql
+select * from error_log where pattern_tag = 'sb-verteidigung-zu-weit';
+```
+
+Der Tag wird aus dem Titel abgeleitet (`SB-Verteidigung zu weit` →
+`sb-verteidigung-zu-weit`) — in einer Abfrage lesbar, anders als `muster-3`.
+
+Ein Fehlereintrag gehört zu **höchstens einem** Muster; sonst müsste die
+Anzeige entscheiden, welches gilt. Zugeteilt wird nach **Spezifität**: Das
+Muster mit den wenigsten genannten Konzepten greift zuerst, weil es das
+aussagekräftigere Etikett ist.
+
+> **`error_log.pattern_tag` ist eine Spiegelung, keine eigene Wahrheit.** Die
+> Zuordnung steht in `error_pattern_tag`, weil das Fehlerprotokoll eine
+> Projektion des Ereignisstroms ist und bei jedem neuen Ereignis des Konzepts
+> neu aufgebaut wird — ein direkt hineingeschriebener Tag wäre beim nächsten
+> Schreibvorgang weg und nach einem Replay ohnehin. Wer Tags setzt, schreibt
+> nach `error_pattern_tag`, nie ins Fehlerprotokoll.
+
+### Was der Report nicht tut
+
+**Er verändert keinen Lernstand.** Mastery, Queue, Ratings und Level bleiben
+deterministisch berechnet (T4.3 bis T4.5); der Report deutet nur, was ohnehin
+in den Zahlen steht. Belegt durch den Test „laesst Mastery, Queue und Ratings
+unveraendert".
+
+Ein **Schema-Verstoß in der Antwort ist ein Fehler**, kein leerer Report. Ein
+leerer Report sähe aus wie „keine Muster gefunden", wäre aber „die Antwort war
+unbrauchbar" — der Unterschied ist für den Nutzer entscheidend und im
+Nachhinein nicht mehr erkennbar.

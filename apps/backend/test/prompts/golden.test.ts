@@ -127,6 +127,36 @@ const REQUEST_CASES: readonly RequestCase[] = [
     },
   },
   {
+    // Muster-Report (AP4.T4.6). Die Kennzahlen sind erfunden und kurz - der
+    // Golden-Fall sichert die Prompt-Fassung, nicht die Datenlage. Wichtig ist,
+    // dass hier **nur** Zaehlstaende stehen und kein Rohprotokoll.
+    name: 'task-error-patterns',
+    templateId: 'task/error-patterns',
+    values: {
+      zeitraum: '2026-01-01 bis 2026-01-28',
+      kennzahlen: [
+        'Zeitraum: 2026-01-01 bis 2026-01-28',
+        'Fehler gesamt: 14 über 4 Konzepte',
+        'Schweregrad: 6 schwer, 5 mittel, 3 leicht',
+        '',
+        'Fehler je Konzept (Konzept | Themenbereich | Fehler | davon schwer | Wiederholungsfehler | letzter Fehler):',
+        '- Small-Blind-Verteidigung | Preflop-Verteidigung | 7 | 4 | 3 | 2026-01-26',
+        '- C-Bet-Frequenz | Flop-Spiel | 4 | 2 | 0 | 2026-01-20',
+        '',
+        'Fehler je Kontext (Kontext | Fehler):',
+        '- drill | 9',
+        '- theory_session | 5',
+        '',
+        'Fehler je Woche (Entwicklung: worsening):',
+        '- 2026-01-05 | 2',
+        '- 2026-01-12 | 5',
+        '',
+        'Wiederholte Fehler trotz zwischenzeitlich gelungener Wiederholung:',
+        '- Small-Blind-Verteidigung | 3 von 7 Fehlern',
+      ].join('\n'),
+    },
+  },
+  {
     name: 'task-concept-explanation',
     templateId: 'task/concept-explanation',
     values: {

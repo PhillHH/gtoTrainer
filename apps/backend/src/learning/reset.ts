@@ -22,8 +22,8 @@ import { countLearningRows, seedLearningState } from './seed.js';
  */
 export async function resetLearningState(db: Database): Promise<void> {
   await db.execute(
-    sql`truncate table skill_rating_snapshot, skill_rating, error_log, review_queue,
-        concept_mastery, learning_event, learner_state`,
+    sql`truncate table error_pattern_tag, pattern_report, skill_rating_snapshot, skill_rating,
+        error_log, review_queue, concept_mastery, learning_event, learner_state`,
   );
   await seedLearningState(db);
 }

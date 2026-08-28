@@ -250,6 +250,13 @@ export {
   MANUAL_LEVEL_GRACE_DAYS,
   isGlobalLearningEventType,
   isLearnerLevel,
+  ERROR_PATTERN_SCHEMA,
+  ERROR_TRENDS,
+  PATTERN_CONFIDENCES,
+  PATTERN_REPORT_JOB,
+  PATTERN_REPORT_MINIMUM,
+  PATTERN_REPORT_PERIOD_DAYS,
+  PATTERN_REPORT_STATUSES,
 } from './learning.js';
 export type {
   ConceptMastery,
@@ -296,4 +303,14 @@ export type {
   SkillRatingHistory,
   SkillRatingHistoryPoint,
   SkillRatingView,
+  ConceptErrorStat,
+  ErrorAggregate,
+  ErrorPattern,
+  ErrorTrend,
+  ErrorTrendPoint,
+  PatternConfidence,
+  PatternReportStatus,
+  PatternReportView,
+  StoredPattern,
+  TopicAreaErrorStat,
 } from './learning.js';

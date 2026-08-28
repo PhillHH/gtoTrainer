@@ -1747,7 +1747,7 @@ darauf hin. `missed` am einzelnen Treffer sagt, welches Kriterium nicht saß —
 meist „keine Stacktiefe in der Unterschrift", weil das Buch sie nicht zu jedem
 Chart nennt.
 
-## 16. Lernstand: Migration, Seed, Ereignisse, Replay, Schwellen, Queue, Level (AP4.T4.1–T4.5)
+## 16. Lernstand: Migration, Seed, Ereignisse, Replay, Schwellen, Queue, Level, Muster-Report (AP4.T4.1–T4.6)
 
 Der Lernstand-Kern besteht aus sieben Tabellen (`learning_event`,
 `concept_mastery`, `review_queue`, `error_log`, `skill_rating`,
@@ -2205,6 +2205,109 @@ Zwei Dinge, die man dabei wissen muss:
 - **Eine laufende manuelle Level-Setzung überlebt den Replay**, weil sie im
   Ereignisprotokoll steht. Ihre 30-Tage-Frist läuft ab dem ursprünglichen
   Zeitpunkt weiter, nicht ab dem Replay.
+
+### 16.16 Muster-Report anstoßen und einsehen (AP4.T4.6)
+
+Den jüngsten Report ansehen:
+
+```bash
+pnpm learning:report
+```
+
+Einen neuen einplanen — ausgeführt wird er vom Job-Worker, nicht vom Skript:
+
+```bash
+pnpm learning:report --run              # 28 Tage, nur bei geänderter Datenlage
+pnpm learning:report --run --days 56    # längerer Zeitraum
+pnpm learning:report --force            # auch bei unveränderter Datenlage
+pnpm learning:report --history          # alle bisherigen Reports
+```
+
+Der Report läuft **wöchentlich von selbst**: Jeder Lauf plant seinen Nachfolger
+sieben Tage später ein. Ein eigener Scheduler-Dienst existiert bewusst nicht.
+Prüfen, ob die Kette steht:
+
+```bash
+docker compose exec -T postgres psql -U gto -d gto -c "
+  select id, status, available_at from job_queue
+   where job_type = 'learning.pattern-report' and status in ('queued','running')"
+```
+
+Kommt nichts zurück, ist die Kette abgerissen (etwa nach einem Dead-Letter).
+Ein `pnpm learning:report --run` setzt sie wieder in Gang.
+
+Alle Reports mit Kennzahlen:
+
+```bash
+docker compose exec -T postgres psql -U gto -d gto -c "
+  select generated_at, status, error_count, concept_count,
+         jsonb_array_length(patterns) as muster, model, duration_ms
+    from pattern_report order by generated_at desc limit 10"
+```
+
+Fehler eines bestimmten Musters — so filtert später auch AP6:
+
+```bash
+docker compose exec -T postgres psql -U gto -d gto -c "
+  select c.title, e.occurred_at, e.severity, e.description
+    from error_log e join concept c on c.id = e.concept_id
+   where e.pattern_tag = 'sb-verteidigung-zu-weit'
+   order by e.occurred_at"
+```
+
+### 16.17 Wenn kein Report entsteht (AP4.T4.6)
+
+Das ist meistens kein Fehler. Drei Stufen können den Aufruf verhindern, und
+jede sagt etwas anderes:
+
+| Beobachtung                                                                  | Bedeutung                                                                                                                                             |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Report mit `status = 'insufficient_data'` und Hinweis                        | Unter 8 Fehlern oder unter 3 Konzepten. **Kein Aufruf abgesetzt** — Absicht: Ein Muster aus drei Datenpunkten wäre Kaffeesatzleserei.                 |
+| Kein neuer Report, Log sagt „nichts geändert"                                | Die Fehlerlage ist seit dem letzten Report unverändert. Mit `--force` erzwingen.                                                                      |
+| Job im Dead-Letter mit `JobPayloadError`                                     | Die Antwort hielt sich nicht ans Schema. **Kein leerer Report** gespeichert — das wäre nicht von „keine Muster gefunden" zu unterscheiden.            |
+| Job in `queued` mit späterem `available_at`, `last_error` nennt `rate_limit` | Kontingentgrenze. Der Worker legt ihn wieder vor — der eingeplante Fall. Läuft parallel der Chart-Massenlauf, diesen kurz pausieren (Abschnitt 13.4). |
+
+Kennzahlen ansehen, ohne einen Aufruf abzusetzen:
+
+```bash
+docker compose exec -T postgres psql -U gto -d gto -c "
+  select count(*) as fehler, count(distinct concept_id) as konzepte,
+         min(occurred_at)::date as seit
+    from error_log where occurred_at > now() - interval '28 days'"
+```
+
+### 16.18 Wenn ein Muster offensichtlich falsch ist (AP4.T4.6)
+
+Ein Muster ist eine **Deutung**, keine Messung. Dass eine danebenliegt, ist
+möglich — und kein Grund, an den Zahlen zu drehen.
+
+**Was zu tun ist, in dieser Reihenfolge:**
+
+1. **`beobachtung` gegen die Daten prüfen.** Stimmen die genannten Zahlen nicht
+   mit `error_log` überein, ist das ein ernster Befund: Dann hat die Auswertung
+   erfunden, was das Daten-Wahrheits-Partial ausdrücklich verbietet. Prompt und
+   Modellwahl gehören auf den Prüfstand.
+2. **Stimmt die Beobachtung, ist nur die `deutung` falsch.** Das ist der
+   Normalfall und harmlos: Der Report hat aus richtigen Zahlen den falschen
+   Schluss gezogen. Report verwerfen, keine Codeänderung.
+3. **Report zurückziehen** — die Tags gehen mit, das Fehlerprotokoll bleibt:
+
+   ```bash
+   docker compose exec -T postgres psql -U gto -d gto -c "
+     delete from pattern_report where id = '<report-id>'"
+   pnpm learning:replay   # error_log.pattern_tag nachziehen
+   ```
+
+4. **Neu auswerten:** `pnpm learning:report --force`.
+
+> **Kein Muster verändert je den Lernstand.** Mastery, Queue, Ratings und Level
+> sind deterministisch berechnet (T4.3 bis T4.5). Ein falsches Muster kostet
+> Aufmerksamkeit, keine Daten — deshalb ist ein Report auch gefahrlos zu
+> löschen.
+
+Häufigste Ursache für eine schiefe Deutung ist eine dünne Datenlage. Der Report
+sagt das selbst: `vertrauen: 'niedrig'` an einem Muster und der `hinweis` am
+Report sind ernst zu nehmen.
 
 ## 17. Noch nicht abgedeckt
 

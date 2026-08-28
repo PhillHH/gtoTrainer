@@ -3558,3 +3558,149 @@ anzeigen, dass Selbsteinschätzung und Kennzahlen auseinandergehen, statt den
 Unterschied zu verschweigen.
 
 **Keine neuen Dependencies.**
+
+---
+
+## ADR-0046 — Schweregrad aus Signalklasse und Ergebnis, Aggregation vor jedem Aufruf, Muster-Tags neben dem Protokoll
+
+- **Datum:** 2026-08-28
+- **Status:** angenommen
+- **Kontext:** AP4.T4.6 ist der einzige Task in AP4 mit KI-Aufrufen. Der
+  Grundsatz „deterministischer Kern, KI am Rand" muss hier zeigen, was er wert
+  ist: Alles, was sich rechnen lässt, wird gerechnet; das Modell bekommt nur
+  die Deutung.
+
+### Entscheidung 1 — Der Schweregrad kommt aus Signalklasse und Ergebnis
+
+| Signalklasse    | Ergebnis 0 | Ergebnis zwischen 0 und 0,5 |
+| --------------- | ---------- | --------------------------- |
+| `objective`     | `high`     | `medium`                    |
+| `ai_judged`     | `medium`   | `low`                       |
+| `self_reported` | `low`      | `low`                       |
+
+Beide Angaben stehen ohnehin am Ereignis — der Schweregrad wird damit
+abgeleitet und nicht geschätzt.
+
+Die Rangfolge ist dieselbe wie bei den Signalgewichten aus ADR-0042, und aus
+demselben Grund: Ein Fehler bei einer chart-verifizierbaren Frage ist ein
+harter Befund, da gibt es nichts zu deuten. Eine KI-Bewertung, die eine freie
+Antwort als unzureichend einstuft, kann auch an einer unpräzisen Formulierung
+liegen — sie taugt als Hinweis, nicht als Beweis. Eine Selbsteinschätzung „das
+konnte ich nicht" ist ehrlich, aber kein Messwert.
+
+Die zweite Achse — vollständiger gegen teilweisen Fehlschlag — trennt „1 von 4
+richtig" von „0 von 4 richtig". Das erste zeigt Ansätze, das zweite keine.
+
+### Entscheidung 2 — Aggregieren, bevor irgendetwas an ein Modell geht
+
+Die Auswertung sieht `ErrorAggregate` und sonst nichts: Zählstände je Konzept,
+Themenbereich, Kontext, Woche und Schweregrad. **Keine Beschreibungstexte,
+keine Ereignis-IDs, keine Antworten des Lernenden.**
+
+Zwei Gründe, und beide zählen:
+
+1. **Kontextdisziplin.** Ein Jahr Fehlerprotokoll wären Tausende Zeilen; die
+   Aggregation macht daraus wenige Kilobyte.
+2. **Sie erzwingt die Musterrede.** Wer nur Zählstände sieht, kann keine
+   Einzelfälle nacherzählen. Genau das ist der Zweck: nicht „am Dienstag lief
+   das schief", sondern „du verteidigst systematisch zu weit aus dem Small
+   Blind".
+
+Die wichtigste Kennzahl ist `repeatedAfterReview`: Fehler **nach** einer
+zwischenzeitlich gelungenen Wiederholung. Drei Fehler am Stück heißen „noch
+nicht gelernt". Ein Fehler nach einem Erfolg heißt: Es saß schon einmal und ist
+wieder gekippt — ein festsitzender Denkfehler, keine Wissenslücke. Das ist die
+Unterscheidung, die einen Report überhaupt nützlich macht, und das Template
+weist die Auswertung ausdrücklich darauf hin.
+
+**Nachtrag aus dem Live-Lauf.** Die erste Fassung zählte auch leere Wochen
+**vor** dem ersten Fehler mit. Das Modell hat den Widerspruch selbst gemeldet:
+Die Reihe 0-3-2-3-1 war als `worsening` gekennzeichnet, obwohl die letzte Woche
+die beste war — die führende Null zog den Vergleich der ersten Hälfte nach
+unten. Leere Wochen vor dem ersten Fehler heißen nicht „damals lief es besser",
+sondern „damals war noch nichts"; sie fallen jetzt heraus. Lücken **zwischen**
+Fehlern bleiben stehen, denn die sind eine Auskunft.
+
+### Entscheidung 3 — Mindestdatenmenge: 8 Fehler über 3 Konzepte
+
+Darunter wird **kein Aufruf abgesetzt**, sondern ein Report mit `status:
+'insufficient_data'` und einem Klartext-Hinweis gespeichert.
+
+Ein Muster aus drei Datenpunkten wäre Kaffeesatzleserei. Schlimmer: Ein
+erfundenes Muster ist schädlicher als gar keins, weil es Lernzeit in die
+falsche Richtung lenkt und der Lernende keine Möglichkeit hat, den Fehler zu
+bemerken. Dazu kommt das Kontingent, das sich der Report mit dem
+Chart-Massenlauf aus AP3 teilt.
+
+Die zweite Bedingung — mindestens drei Konzepte — trennt Muster von
+Wissenslücken: Acht Fehler an einem einzigen Konzept sind kein Muster, sondern
+eine Lücke, und die steht schon in der Wiederholungs-Queue.
+
+Dass ein Hinweis **gespeichert** wird statt einfach nichts zu passieren, ist
+Absicht: „Es gab zu wenig Daten" ist eine Antwort. Ein leeres Dashboard ist
+keine.
+
+### Entscheidung 4 — Wiederholungsvermeidung über eine Prüfsumme
+
+Vor dem Aufruf wird eine SHA-256-Prüfsumme über die Aggregation gebildet und
+mit der des letzten Reports verglichen. Stimmen sie überein, gibt es keinen
+zweiten Aufruf.
+
+Der Zeitraum geht bewusst **nicht** in die Prüfsumme ein: Ein Lauf am Folgetag
+mit unveränderter Fehlerlage soll als „nichts Neues" erkannt werden, obwohl
+sich das Zeitfenster verschoben hat. Sonst liefe jeder Wochenreport, auch wenn
+in der Woche nichts passiert ist.
+
+### Entscheidung 5 — Wöchentlich ohne eigenen Scheduler
+
+Jeder Lauf plant seinen Nachfolger mit `availableAt = jetzt + 7 Tage` in die
+Job-Queue ein. Steht dort schon einer, passiert nichts.
+
+Die Queue aus AP2 kann verzögern, wiederholen und protokollieren — ein
+zusätzlicher Dienst dafür wäre ein zweites Stück Infrastruktur für eine
+Aufgabe, die einmal pro Woche anfällt. Fällt der Worker länger aus, läuft der
+Report später, **nicht mehrfach**: Ein nachgeholter Wochenreport ist nützlich,
+fünf nachgeholte sind Kontingentverschwendung.
+
+### Entscheidung 6 — Muster-Tags stehen neben dem Protokoll, nicht darin
+
+Die Zuordnung Muster → Fehlerereignis liegt in `error_pattern_tag`;
+`error_log.pattern_tag` wird beim Projizieren von dort befüllt.
+
+Der Grund ist zwingend: `error_log` ist eine **Projektion** des Ereignisstroms
+(ADR-0040) und wird bei jedem neuen Ereignis des Konzepts neu aufgebaut. Ein
+direkt hineingeschriebener Tag wäre beim nächsten Schreibvorgang weg — und nach
+einem Replay ohnehin. Der Tag ist eine **Annotation** am Ereignis, keine
+Ableitung daraus; er gehört deshalb neben den Strom, nicht hinein. So überlebt
+er beides, und `error_log.pattern_tag` bleibt die bequeme Spiegelung für die
+Abfrage, die T4.1 vorgesehen hat.
+
+Ein Ereignis gehört zu höchstens einem Muster — sonst müsste die Anzeige
+entscheiden, welches gilt. Zugeteilt wird nach **Spezifität**: Das Muster mit
+den wenigsten genannten Konzepten greift zuerst. Auch das ein Befund aus dem
+Live-Lauf: Ohne diese Sortierung zog ein breites Muster („durchgängig hoher
+Schweregrad", alle drei Konzepte) alle Einträge an sich, und das
+aussagekräftige („wiederkehrende Fehler bei X und Y") blieb leer.
+
+### Entscheidung 7 — Ein Schema-Verstoß ist ein Fehler, kein leerer Report
+
+Hält sich die Antwort nicht ans Schema, wirft der Job einen `JobPayloadError` —
+nicht wiederholbar, ab in den Dead-Letter. Gespeichert wird nichts.
+
+Einen leeren Report zu speichern wäre die schlimmere Variante: Er sähe aus wie
+„keine Muster gefunden", wäre aber „die Antwort war unbrauchbar". Der
+Unterschied ist für den Nutzer entscheidend und im Nachhinein nicht mehr
+erkennbar.
+
+### Entscheidung 8 — Der Report verändert keinen Lernstand
+
+Mastery, Queue, Ratings und Level bleiben deterministisch berechnet. Der Report
+schreibt in `pattern_report` und `error_pattern_tag`, sonst nirgends.
+
+Das ist die Grenze zwischen deterministischem Kern und KI am Rand, an genau der
+Stelle, an der sie am meisten in Versuchung führt: Ein Modell, das gerade ein
+Muster erkannt hat, könnte auch gleich die Mastery korrigieren. Dann hinge der
+Lernstand aber an einem Sprachmodell — und der Replay aus T4.2 wäre nicht mehr
+reproduzierbar.
+
+**Keine neuen Dependencies.**

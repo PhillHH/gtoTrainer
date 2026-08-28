@@ -48,6 +48,7 @@ describe('Laden aus Dateien', () => {
       'task/chart-recheck',
       'task/concept-explanation',
       'task/concept-taxonomy',
+      'task/error-patterns',
     ]);
   });
 

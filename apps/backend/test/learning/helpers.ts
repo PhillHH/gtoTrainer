@@ -22,9 +22,9 @@ export async function clearLearning(db: Database): Promise<void> {
   // deshalb ist es der einzige Weg, das Protokoll ueberhaupt zu leeren
   // (siehe src/learning/reset.ts).
   await db.execute(
-    sql`truncate table skill_rating_snapshot, skill_rating, error_log, review_queue,
-        concept_mastery, learning_event, learner_state, concept, range_chart,
-        book_asset, book_chapter cascade`,
+    sql`truncate table error_pattern_tag, pattern_report, skill_rating_snapshot, skill_rating,
+        error_log, review_queue, concept_mastery, learning_event, learner_state, concept,
+        range_chart, book_asset, book_chapter cascade`,
   );
 }
 

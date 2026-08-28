@@ -1219,6 +1219,73 @@ je Ereignis: höchstens 12 × 365 Zeilen im Jahr statt Tausender. Die IDs sind
 aus Themenbereich und Tag abgeleitet (UUIDv5), damit der Replay dieselben
 Zeilen erzeugt und nicht bloß inhaltlich gleiche.
 
+### Fehlerprotokoll und Muster-Report (neu in AP4.T4.6)
+
+Der einzige KI-Aufruf in AP4 — und er steht am Ende einer Kette, die ihn
+dreimal verhindern kann:
+
+```
+   learning_event  ──►  derive.ts foldErrorLog()  ──►  error_log
+                            Schweregrad aus Signalklasse × Ergebnis
+                                        │
+                                        ▼
+                    patterns.ts  aggregateErrors()        ← rein, deterministisch
+                            je Konzept · Themenbereich · Kontext · Woche
+                            + repeatedAfterReview  ← das stärkste Signal
+                                        │
+        ┌───────────────────────────────┼───────────────────────────────┐
+        │  Stufe 2: Mindestdatenmenge   │  < 8 Fehler / < 3 Konzepte?   │
+        │                               │  → Hinweis speichern, Ende    │
+        │  Stufe 3: Prüfsumme           │  unverändert? → Ende          │
+        └───────────────────────────────┼───────────────────────────────┘
+                                        ▼
+              renderAggregate()  →  task/error-patterns  →  Provider-Registry
+                            (nur Zählstände, nie ein Rohprotokoll)
+                                        │
+                                        ▼
+                    pattern_report  +  error_pattern_tag
+                                        │
+                                        └──►  error_log.pattern_tag (Spiegelung)
+```
+
+### Warum die Aggregation vor dem Aufruf steht
+
+Zwei Gründe, und beide zählen. Sie hält den Prompt klein — ein Jahr
+Fehlerprotokoll wären Tausende Zeilen, aggregiert sind es wenige Kilobyte. Und
+sie **erzwingt die Musterrede**: Wer nur Zählstände sieht, kann keine
+Einzelfälle nacherzählen. Genau das ist der Zweck des Reports.
+
+Die wichtigste Kennzahl heißt `repeatedAfterReview` — Fehler nach einer
+zwischenzeitlich gelungenen Wiederholung. Drei Fehler am Stück heißen „noch
+nicht gelernt". Ein Fehler nach einem Erfolg heißt: Es saß schon einmal und ist
+wieder gekippt.
+
+### Die Tags stehen neben dem Protokoll
+
+`error_log` ist eine Projektion und wird bei jedem neuen Ereignis des Konzepts
+neu aufgebaut. Ein direkt hineingeschriebener Muster-Tag wäre beim nächsten
+Schreibvorgang weg. Deshalb liegt die Zuordnung in `error_pattern_tag`, und
+`error_log.pattern_tag` ist ihre Spiegelung — sie überlebt damit sowohl neue
+Ereignisse als auch einen vollständigen Replay
+([ADR-0046](./DECISIONS.md)).
+
+### Die Grenze, an der es am meisten in Versuchung führt
+
+Der Report **verändert keinen Lernstand**. Mastery, Queue, Ratings und Level
+bleiben deterministisch berechnet; er schreibt nach `pattern_report` und
+`error_pattern_tag`, sonst nirgends.
+
+Ein Modell, das gerade ein Muster erkannt hat, könnte auch gleich die Mastery
+korrigieren. Dann hinge der Lernstand aber an einem Sprachmodell — und der
+Replay aus T4.2 wäre nicht mehr reproduzierbar. Hier verläuft die Linie
+zwischen deterministischem Kern und KI am Rand.
+
+### Wöchentlich ohne Scheduler
+
+Jeder Lauf plant seinen Nachfolger sieben Tage später in die Job-Queue aus AP2
+ein; steht dort schon einer, passiert nichts. Ein eigener Scheduler-Dienst wäre
+ein zweites Stück Infrastruktur für eine Aufgabe, die einmal pro Woche anfällt.
+
 ## 4. Querschnitts-Entscheidungen
 
 - **Node 20.19.6**, fixiert in `.nvmrc`; `engines.node >= 20.19.0`.

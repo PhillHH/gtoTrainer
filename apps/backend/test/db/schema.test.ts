@@ -8,6 +8,7 @@ import {
   CHART_TABLES,
   CONCEPT_TABLES,
   LEARNING_TABLES,
+  REPORT_TABLES,
 } from '../../src/db/schema.js';
 import { TEST_DATABASE_URL } from './setup.js';
 
@@ -35,13 +36,15 @@ describe('Migration und Verbindung', () => {
 
     const tables = result.rows.map((row) => row.table_name);
     // Basisschema aus T1.2, Buch-Wissensbasis aus AP3.T3.1, Konzept-Graph aus
-    // AP3.T3.2, Chart-Daten aus AP3.T3.3, Lernstand-Kern aus AP4.T4.1.
+    // AP3.T3.2, Chart-Daten aus AP3.T3.3, Lernstand-Kern aus AP4.T4.1,
+    // Muster-Report aus AP4.T4.6.
     const expected = [
       ...BASE_TABLES,
       ...BOOK_TABLES,
       ...CONCEPT_TABLES,
       ...CHART_TABLES,
       ...LEARNING_TABLES,
+      ...REPORT_TABLES,
     ];
     expect(tables).toEqual([...expected].sort());
     expect(tables).toHaveLength(expected.length);

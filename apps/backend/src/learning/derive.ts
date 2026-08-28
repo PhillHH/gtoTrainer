@@ -351,8 +351,36 @@ function describe(entry: EffectiveEvent): string {
 }
 
 /**
- * PLATZHALTER der Schweregrad-Einstufung - T4.6 wertet die Eintraege aus.
+ * Schweregrad eines Fehlers - **abgeleitet, nicht geraten** (T4.6).
  *
+ * Die Regel kombiniert zwei Angaben, die ohnehin am Ereignis stehen:
+ *
+ * | Signalklasse    | Ergebnis 0 | Ergebnis zwischen 0 und 0,5 |
+ * | --------------- | ---------- | --------------------------- |
+ * | `objective`     | `high`     | `medium`                    |
+ * | `ai_judged`     | `medium`   | `low`                       |
+ * | `self_reported` | `low`      | `low`                       |
+ *
+ * Begruendung (ADR-0046): Ein Fehler bei einer eindeutigen, chart-verifizierbaren
+ * Frage ist ein harter Befund - da gibt es nichts zu deuten. Eine
+ * KI-Bewertung, die eine freie Antwort als unzureichend einstuft, kann auch an
+ * einer unpraezisen Formulierung liegen; sie taugt als Hinweis, nicht als
+ * Beweis. Und eine Selbsteinschaetzung "das konnte ich nicht" ist ehrlich, aber
+ * kein Messwert.
+ *
+ * Ein teilweiser Fehlschlag wiegt weniger als ein vollstaendiger: 1 von 4
+ * richtig zeigt Ansaetze, 0 von 4 zeigt keine.
+ */
+export function errorSeverity(
+  signalClass: LearningSignalClass,
+  outcome: number,
+): LearningErrorSeverity {
+  if (signalClass === 'self_reported') return 'low';
+  if (signalClass === 'ai_judged') return outcome === 0 ? 'medium' : 'low';
+  return outcome === 0 ? 'high' : 'medium';
+}
+
+/**
  * Ein Eintrag entsteht fuer jedes misslungene Ergebnis. **Kein zweiter
  * Schreibweg:** Was nicht im Ereignisstrom steht, kann nicht im Fehlerlog
  * stehen. Ein aufgehobenes Ereignis erzeugt keinen Eintrag mehr - genau das
@@ -369,7 +397,7 @@ export function foldErrorLog(effective: readonly EffectiveEvent[]): readonly Err
       contextKind: entry.event.source,
       contextRef: contextRef(entry.event),
       description: describe(entry),
-      severity: (entry.outcome as number) === 0 ? 'high' : 'medium',
+      severity: errorSeverity(entry.event.signalClass, entry.outcome as number),
       createdAt: entry.event.occurredAt,
     }));
 }

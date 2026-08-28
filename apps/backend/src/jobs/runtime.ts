@@ -11,6 +11,7 @@ import { createChartLegendJob } from './handlers/chart-legend.js';
 import { createChartRecheckJob } from './handlers/chart-recheck.js';
 import { createConceptExtractJob } from './handlers/concept-extract.js';
 import { createLlmCompleteJob } from './handlers/llm-complete.js';
+import { createPatternReportJob } from './handlers/pattern-report.js';
 import { JobHandlerRegistry } from './types.js';
 import { JobWorker } from './worker.js';
 
@@ -113,6 +114,16 @@ export function createLlmRuntime(options: CreateRuntimeOptions): LlmRuntime {
     )
     .register(
       createChartRecheckJob({
+        providers,
+        templates,
+        defaultModel: llmConfig.model,
+        settings,
+      }),
+    )
+    // Muster-Report des Fehlerprotokolls (AP4.T4.6) - der einzige KI-Aufruf
+    // in AP4. Ein kleiner Aufruf auf aggregierten Kennzahlen, kein Massenlauf.
+    .register(
+      createPatternReportJob({
         providers,
         templates,
         defaultModel: llmConfig.model,

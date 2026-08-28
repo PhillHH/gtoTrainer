@@ -23,6 +23,7 @@
     "learning:replay": "tsx src/learning/cli-replay.ts",
     "learning:thresholds": "tsx src/learning/cli-thresholds.ts",
     "learning:level": "tsx src/learning/cli-level.ts",
+    "learning:report": "tsx src/learning/cli-report.ts",
     "auth:set-password": "tsx src/auth/cli-set-password.ts",
     "llm:runner": "tsx src/llm/runner-main.ts",
     "prompts:golden": "UPDATE_GOLDEN=1 vitest run test/prompts/golden.test.ts",

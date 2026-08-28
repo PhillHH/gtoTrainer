@@ -1110,3 +1110,101 @@ export const LEARNING_TABLES = [
   'skill_rating_snapshot',
   'learner_state',
 ] as const;
+
+/* -------------------------------------------------------------------------
+ * Muster-Report (AP4.T4.6)
+ *
+ * Zwei Tabellen: der gespeicherte Report und die Zuordnung erkannter Muster
+ * zu einzelnen Fehler-Ereignissen.
+ *
+ * Warum die Zuordnung eine eigene Tabelle bekommt und nicht einfach in
+ * `error_log.pattern_tag` steht: `error_log` ist eine **Projektion** des
+ * Ereignisstroms (T4.2) und wird bei jedem neuen Ereignis des Konzepts neu
+ * aufgebaut. Ein direkt hineingeschriebener Tag waere beim naechsten
+ * Schreibvorgang weg. Der Tag ist eine **Annotation** am Ereignis, keine
+ * Ableitung daraus - er gehoert deshalb neben den Strom, nicht hinein.
+ * `error_log.pattern_tag` wird beim Projizieren von hier befuellt.
+ * ---------------------------------------------------------------------- */
+
+export const PATTERN_REPORT_STATUSES = ['complete', 'insufficient_data'] as const;
+
+/**
+ * Ein gespeicherter Muster-Report.
+ *
+ * Aeltere Reports bleiben stehen: Die Entwicklung ueber die Zeit ist selbst
+ * eine Auskunft ("dasselbe Muster steht seit sechs Wochen drin").
+ */
+export const patternReport = pgTable(
+  'pattern_report',
+  {
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    /** `insufficient_data` = kein Aufruf abgesetzt, nur ein Hinweis gespeichert. */
+    status: text('status').notNull(),
+    generatedAt: timestamp('generated_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Abgedeckter Zeitraum. */
+    periodStart: timestamp('period_start', { withTimezone: true }).notNull(),
+    periodEnd: timestamp('period_end', { withTimezone: true }).notNull(),
+    /** Modell und Provider - Herkunftsnachweis. NULL ohne Aufruf. */
+    model: text('model'),
+    provider: text('provider'),
+    /** Wie viele Fehler und Konzepte im Zeitraum lagen. */
+    errorCount: integer('error_count').notNull().default(0),
+    conceptCount: integer('concept_count').notNull().default(0),
+    /** Die erkannten Muster samt Belegen. Leer bei `insufficient_data`. */
+    patterns: jsonb('patterns')
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    /** Die aggregierten Kennzahlen, aus denen der Report entstand. */
+    aggregate: jsonb('aggregate')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    /** Klartext, wenn kein Muster tragfaehig war. */
+    note: text('note'),
+    /**
+     * Pruefsumme der Eingabe.
+     *
+     * Damit erkennt der Job, dass sich seit dem letzten Report nichts
+     * Nennenswertes geaendert hat - und setzt keinen zweiten Aufruf ab, der
+     * dasselbe Ergebnis kostet.
+     */
+    inputDigest: text('input_digest').notNull(),
+    durationMs: integer('duration_ms'),
+    createdAt,
+  },
+  (table) => [
+    index('pattern_report_generated_idx').on(table.generatedAt),
+    check(
+      'pattern_report_status_check',
+      sql.raw(`status in (${sqlList(PATTERN_REPORT_STATUSES)})`),
+    ),
+  ],
+);
+
+/**
+ * Zuordnung eines erkannten Musters zu einem Fehler-Ereignis.
+ *
+ * Der Schluessel ist die **Ereignis-ID** - dieselbe, unter der der Eintrag im
+ * `error_log` steht (T4.2). Ein Ereignis gehoert zu hoechstens einem Muster;
+ * ein neuer Report ueberschreibt die Zuordnung.
+ */
+export const errorPatternTag = pgTable(
+  'error_pattern_tag',
+  {
+    /** Ereignis-ID = `error_log.id`. */
+    eventId: uuid('event_id')
+      .primaryKey()
+      .references(() => learningEvent.id, { onDelete: 'restrict' }),
+    reportId: uuid('report_id')
+      .notNull()
+      .references(() => patternReport.id, { onDelete: 'cascade' }),
+    /** Kurzkennung des Musters, aus seinem Titel abgeleitet. */
+    tag: text('tag').notNull(),
+    createdAt,
+  },
+  (table) => [index('error_pattern_tag_report_idx').on(table.reportId, table.tag)],
+);
+
+/** Tabellen des Muster-Reports (AP4.T4.6). */
+export const REPORT_TABLES = ['pattern_report', 'error_pattern_tag'] as const;
