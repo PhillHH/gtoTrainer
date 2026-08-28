@@ -19,6 +19,7 @@
     "db:migrate": "tsx src/db/cli-migrate.ts",
     "db:seed": "tsx src/db/cli-seed.ts",
     "db:reset": "tsx src/db/cli-reset.ts",
+    "learning:reset": "tsx src/learning/cli-reset.ts",
     "auth:set-password": "tsx src/auth/cli-set-password.ts",
     "llm:runner": "tsx src/llm/runner-main.ts",
     "prompts:golden": "UPDATE_GOLDEN=1 vitest run test/prompts/golden.test.ts",

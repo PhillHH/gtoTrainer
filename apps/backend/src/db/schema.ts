@@ -1,3 +1,4 @@
+import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import {
   boolean,
   check,
@@ -738,4 +739,356 @@ export const CHART_TABLES = [
   'range_chart_cell',
   'chart_finding',
   'chart_recheck',
+] as const;
+
+/* -------------------------------------------------------------------------
+ * Lernstand-Kern (AP4.T4.1)
+ *
+ * Sechs Tabellen plus eine Begleittabelle fuer den Rating-Verlauf. Das Modell
+ * ist **ereignisbasiert**: `learning_event` ist die Wahrheit, alles andere ist
+ * daraus abgeleitet und in T4.2 aus dem Ereignisstrom rekonstruierbar.
+ *
+ * Bauprinzipien:
+ * - `learning_event` ist **append-only**. Das erzwingt kein Constraint,
+ *   sondern ein Trigger; er kommt aus der handgeschriebenen Migration
+ *   `0008_learning_event_append_only.sql`. Ohne diese Absicherung waere der
+ *   Replay wertlos - ein still geaendertes Ereignis erzeugte einen anderen
+ *   Zustand, ohne dass es jemand merkt.
+ * - Fremdschluessel auf `concept` und `learning_event` stehen auf
+ *   `ON DELETE RESTRICT`, wo eine Zeile das Protokoll traegt. Ein CASCADE
+ *   koennte Ereignisse loeschen und damit den Append-only-Trigger auf einem
+ *   Umweg aushebeln.
+ * - Wertebereiche (Score, Konfidenz, Ease) sind CHECK-Constraints, keine
+ *   Zusicherungen in der Doku.
+ * - Die Listen sind - wie bei den Buch-, Konzept- und Charttabellen -
+ *   dupliziert, weil drizzle-kit das Workspace-Paket beim Buendeln nicht
+ *   aufloest; `test/learning/schema.test.ts` haelt sie mit `packages/shared`
+ *   deckungsgleich.
+ * ---------------------------------------------------------------------- */
+
+export const LEARNING_SIGNAL_CLASSES = ['objective', 'ai_judged', 'self_reported'] as const;
+
+export const LEARNING_EVENT_TYPES = [
+  'question_answered',
+  'concept_explained',
+  'drill_completed',
+  'hand_analyzed',
+  'review_performed',
+  'manual_correction',
+] as const;
+
+export const LEARNING_EVENT_SOURCES = [
+  'theory_session',
+  'drill',
+  'hand_analysis',
+  'tournament',
+  'journal',
+  'manual',
+] as const;
+
+export const REVIEW_QUEUE_ORIGINS = ['error', 'knowledge_gap', 'practice_finding'] as const;
+
+export const LEARNING_ERROR_SEVERITIES = ['low', 'medium', 'high'] as const;
+
+/**
+ * Ereignis-Protokoll des Lernstands - die zentrale Tabelle von AP4.
+ *
+ * Der Primaerschluessel hat **bewusst keinen Default**: Die Ereignis-ID wird
+ * vom Aufrufer vergeben und traegt die Idempotenz in T4.2. Ein
+ * `gen_random_uuid()` wuerde einen vergessenen Aufrufer nicht auffallen
+ * lassen, sondern ihm still ein zweites Ereignis anlegen.
+ */
+export const learningEvent = pgTable(
+  'learning_event',
+  {
+    /** Vom Aufrufer vergeben. Kein Default - siehe Kommentar oben. */
+    id: uuid('id').primaryKey(),
+    eventType: text('event_type').notNull(),
+    source: text('source').notNull(),
+    /** Wie belastbar das Signal ist. Gewichtet wird erst in T4.3. */
+    signalClass: text('signal_class').notNull(),
+    /** Fachlicher Zeitpunkt des Geschehens, vom Aufrufer gesetzt. */
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+    conceptId: uuid('concept_id')
+      .notNull()
+      .references(() => concept.id, { onDelete: 'restrict' }),
+    /** Chart, gegen das geprueft wurde - Beleg eines objektiven Signals. */
+    chartId: uuid('chart_id').references(() => rangeChart.id, { onDelete: 'restrict' }),
+    /**
+     * Nur bei `manual_correction`: das korrigierte Ereignis. Selbstbezug auf
+     * dieselbe Tabelle - eine Korrektur zeigt nie ins Leere.
+     */
+    correctsEventId: uuid('corrects_event_id').references((): AnyPgColumn => learningEvent.id, {
+      onDelete: 'restrict',
+    }),
+    payload: jsonb('payload')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    createdAt,
+  },
+  (table) => [
+    // Die drei Zugriffsmuster ab T4.2: je Konzept (Replay, Mastery), nach
+    // Zeit (Verlauf, Muster-Report) und nach Quelle (Modus-Auswertung).
+    index('learning_event_concept_idx').on(table.conceptId, table.occurredAt),
+    index('learning_event_occurred_at_idx').on(table.occurredAt),
+    index('learning_event_source_idx').on(table.source),
+    index('learning_event_corrects_idx').on(table.correctsEventId),
+    check('learning_event_type_check', sql.raw(`event_type in (${sqlList(LEARNING_EVENT_TYPES)})`)),
+    check('learning_event_source_check', sql.raw(`source in (${sqlList(LEARNING_EVENT_SOURCES)})`)),
+    check(
+      'learning_event_signal_class_check',
+      sql.raw(`signal_class in (${sqlList(LEARNING_SIGNAL_CLASSES)})`),
+    ),
+    // Eine Korrektur ist immer ein `manual_correction` - und ein
+    // `manual_correction` verweist immer auf das korrigierte Ereignis. Ohne
+    // diese Aequivalenz gaebe es Korrekturen ohne Bezug und Ereignisse, die
+    // sich als Korrektur ausgeben, ohne eine zu sein.
+    check(
+      'learning_event_correction_check',
+      sql.raw(`(event_type = 'manual_correction') = (corrects_event_id is not null)`),
+    ),
+    check('learning_event_no_self_correction_check', sql`${table.correctsEventId} <> ${table.id}`),
+  ],
+);
+
+/**
+ * Abgeleiteter Lernstand je Konzept. Genau eine Zeile je Konzept - der
+ * Primaerschluessel ist die Konzept-ID selbst, eine zweite Zeile ist damit
+ * ausgeschlossen.
+ *
+ * Score und Konfidenz stehen getrennt nebeneinander, die Zaehler je
+ * Signalklasse daneben: Erst sie machen sichtbar, **woraus** ein Score
+ * entstanden ist.
+ */
+export const conceptMastery = pgTable(
+  'concept_mastery',
+  {
+    conceptId: uuid('concept_id')
+      .primaryKey()
+      .references(() => concept.id, { onDelete: 'cascade' }),
+    score: doublePrecision('score').notNull().default(0),
+    confidence: doublePrecision('confidence').notNull().default(0),
+    lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
+    objectiveSignals: integer('objective_signals').notNull().default(0),
+    aiJudgedSignals: integer('ai_judged_signals').notNull().default(0),
+    selfReportedSignals: integer('self_reported_signals').notNull().default(0),
+    /** Ereignis, das diesen Stand zuletzt fortgeschrieben hat. */
+    lastEventId: uuid('last_event_id').references(() => learningEvent.id, {
+      onDelete: 'restrict',
+    }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // "Welche Konzepte sitzen?" - die haeufigste Abfrage des Dashboards.
+    index('concept_mastery_score_idx').on(table.score),
+    check('concept_mastery_score_check', sql`${table.score} >= 0 and ${table.score} <= 1`),
+    check(
+      'concept_mastery_confidence_check',
+      sql`${table.confidence} >= 0 and ${table.confidence} <= 1`,
+    ),
+    check(
+      'concept_mastery_counters_check',
+      sql`${table.objectiveSignals} >= 0 and ${table.aiJudgedSignals} >= 0
+          and ${table.selfReportedSignals} >= 0`,
+    ),
+  ],
+);
+
+/**
+ * Wiederholungssteuerung. Genau eine Zeile je Konzept: Ein Konzept ist
+ * entweder in der Queue oder nicht, es hat nicht mehrere Faelligkeiten.
+ *
+ * Die Felder sind der Zustand des SM-2-Verfahrens; **gerechnet** wird damit
+ * erst in T4.4.
+ */
+export const reviewQueue = pgTable(
+  'review_queue',
+  {
+    conceptId: uuid('concept_id')
+      .primaryKey()
+      .references(() => concept.id, { onDelete: 'cascade' }),
+    dueAt: timestamp('due_at', { withTimezone: true }).notNull().defaultNow(),
+    intervalDays: integer('interval_days').notNull().default(0),
+    easeFactor: doublePrecision('ease_factor').notNull().default(2.5),
+    repetitions: integer('repetitions').notNull().default(0),
+    lapses: integer('lapses').notNull().default(0),
+    /** Woher der Eintrag stammt - Eingang in die Priorisierung (T4.4). */
+    origin: text('origin').notNull(),
+    lastReviewedAt: timestamp('last_reviewed_at', { withTimezone: true }),
+    createdAt,
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // "Gib mir die faelligen Eintraege" ist der mit Abstand haeufigste Zugriff.
+    index('review_queue_due_idx').on(table.dueAt),
+    index('review_queue_origin_idx').on(table.origin, table.dueAt),
+    check('review_queue_origin_check', sql.raw(`origin in (${sqlList(REVIEW_QUEUE_ORIGINS)})`)),
+    check('review_queue_interval_check', sql`${table.intervalDays} >= 0`),
+    // 1.3 ist die untere Schranke von SM-2; darunter waechst das Intervall
+    // praktisch nicht mehr. 3.0 deckelt nach oben, damit ein Rechenfehler
+    // nicht zu Intervallen von Jahren fuehrt.
+    check(
+      'review_queue_ease_check',
+      sql`${table.easeFactor} >= 1.3 and ${table.easeFactor} <= 3.0`,
+    ),
+    check('review_queue_counters_check', sql`${table.repetitions} >= 0 and ${table.lapses} >= 0`),
+  ],
+);
+
+/**
+ * Fehlerprotokoll.
+ *
+ * Jeder Eintrag haengt an genau einem `learning_event`. Damit gibt es keinen
+ * zweiten Schreibweg: Was nicht im Ereignisstrom steht, kann auch nicht im
+ * Fehlerlog stehen (AK-Kern von T4.6).
+ */
+export const errorLog = pgTable(
+  'error_log',
+  {
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    eventId: uuid('event_id')
+      .notNull()
+      .references(() => learningEvent.id, { onDelete: 'restrict' }),
+    conceptId: uuid('concept_id')
+      .notNull()
+      .references(() => concept.id, { onDelete: 'cascade' }),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+    /** In welchem Modus der Fehler entstand - dieselbe Liste wie `source`. */
+    contextKind: text('context_kind').notNull(),
+    /** Kennung der Session, des Drills oder der Hand. Vergeben ab AP5. */
+    contextRef: text('context_ref'),
+    description: text('description').notNull(),
+    severity: text('severity').notNull(),
+    /** Bleibt leer, bis der Muster-Report aus T4.6 ihn setzt. */
+    patternTag: text('pattern_tag'),
+    createdAt,
+  },
+  (table) => [
+    index('error_log_concept_idx').on(table.conceptId, table.occurredAt),
+    index('error_log_occurred_at_idx').on(table.occurredAt),
+    index('error_log_event_idx').on(table.eventId),
+    index('error_log_pattern_idx').on(table.patternTag),
+    check(
+      'error_log_context_kind_check',
+      sql.raw(`context_kind in (${sqlList(LEARNING_EVENT_SOURCES)})`),
+    ),
+    check(
+      'error_log_severity_check',
+      sql.raw(`severity in (${sqlList(LEARNING_ERROR_SEVERITIES)})`),
+    ),
+  ],
+);
+
+/**
+ * Skill-Rating je Themenbereich - die zweite Dimension neben dem
+ * Kapitelfortschritt.
+ *
+ * Der Themenbereich ist der Primaerschluessel: genau eine Achse je Bereich,
+ * und der CHECK bindet ihn an die feste Liste aus T3.2. Ein erfundener
+ * Themenbereich wird abgelehnt, nicht angelegt.
+ */
+export const skillRating = pgTable(
+  'skill_rating',
+  {
+    topicArea: text('topic_area').primaryKey(),
+    rating: doublePrecision('rating').notNull().default(0),
+    /** Wie viele Ereignisse eingeflossen sind - Datenlage der Achse. */
+    eventCount: integer('event_count').notNull().default(0),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    check(
+      'skill_rating_topic_area_check',
+      sql.raw(`topic_area in (${sqlList(CONCEPT_TOPIC_AREAS)})`),
+    ),
+    check('skill_rating_value_check', sql`${table.rating} >= 0 and ${table.rating} <= 1`),
+    check('skill_rating_event_count_check', sql`${table.eventCount} >= 0`),
+  ],
+);
+
+/**
+ * Verlauf der Skill-Ratings als Snapshots (Begleittabelle, ADR-0038).
+ *
+ * Getrennt vom aktuellen Wert, weil beide unterschiedlich gelesen und
+ * geschrieben werden: Der aktuelle Wert wird bei jedem Ereignis
+ * ueberschrieben und vom Dashboard staendig gelesen; der Verlauf waechst
+ * unbegrenzt und wird nur fuer die Zeitreihe in AP6 gebraucht.
+ */
+export const skillRatingSnapshot = pgTable(
+  'skill_rating_snapshot',
+  {
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    topicArea: text('topic_area')
+      .notNull()
+      .references(() => skillRating.topicArea, { onDelete: 'cascade' }),
+    rating: doublePrecision('rating').notNull(),
+    capturedAt: timestamp('captured_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // Zeitreihe einer Achse - die einzige Abfrage auf dieser Tabelle.
+    uniqueIndex('skill_rating_snapshot_key').on(table.topicArea, table.capturedAt),
+    check('skill_rating_snapshot_value_check', sql`${table.rating} >= 0 and ${table.rating} <= 1`),
+  ],
+);
+
+/**
+ * Globaler Lernzustand. **Genau ein Datensatz** (Single-User).
+ *
+ * Die Einzigartigkeit haengt an `singleton`: Die Spalte darf nur `true` sein
+ * (CHECK) und ist eindeutig (Unique-Index). Eine zweite Zeile ist damit
+ * unmoeglich, ohne dass der Primaerschluessel von der uuid-Konvention
+ * abweichen muesste.
+ *
+ * Abgrenzung: Hier steht **nur Lernbezogenes**. Provider, Modell, Timeouts und
+ * alles andere Technische bleiben in `config` (AP1) - siehe INTERFACES.md 17.
+ */
+export const learnerState = pgTable(
+  'learner_state',
+  {
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    /** Immer `true`. Traegt zusammen mit dem Unique-Index die Einzigartigkeit. */
+    singleton: boolean('singleton').notNull().default(true),
+    /** Niveau, auf dem unterrichtet wird. Dieselbe Liste wie `concept.min_level`. */
+    level: text('level').notNull().default('einsteiger'),
+    /** Position im Kapitelfortschritt (1-14). */
+    currentChapter: integer('current_chapter').notNull().default(1),
+    /** Zuletzt bearbeitetes Konzept; leer beim Erststart. */
+    currentConceptId: uuid('current_concept_id').references(() => concept.id, {
+      onDelete: 'set null',
+    }),
+    /** Lernbezogene Einstellung - T4.3 entscheidet damit ueber Weiterschaltung. */
+    masteryThreshold: doublePrecision('mastery_threshold').notNull().default(0.8),
+    /** Lernbezogene Einstellung - Mindestanzahl objektiver Anker (T4.3). */
+    minObjectiveAnchors: integer('min_objective_anchors').notNull().default(2),
+    createdAt,
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('learner_state_singleton_key').on(table.singleton),
+    check('learner_state_singleton_check', sql`${table.singleton}`),
+    check('learner_state_level_check', sql.raw(`level in (${sqlList(CONCEPT_LEVELS)})`)),
+    check('learner_state_chapter_check', sql`${table.currentChapter} >= 1`),
+    check(
+      'learner_state_threshold_check',
+      sql`${table.masteryThreshold} >= 0 and ${table.masteryThreshold} <= 1`,
+    ),
+    check('learner_state_anchors_check', sql`${table.minObjectiveAnchors} >= 0`),
+  ],
+);
+
+/** Tabellen des Lernstand-Kerns (AP4.T4.1). */
+export const LEARNING_TABLES = [
+  'learning_event',
+  'concept_mastery',
+  'review_queue',
+  'error_log',
+  'skill_rating',
+  'skill_rating_snapshot',
+  'learner_state',
 ] as const;

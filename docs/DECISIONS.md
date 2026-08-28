@@ -2626,3 +2626,202 @@ die Rundung zweier Nachkommastellen.
   Sichtung. Das ist ehrlicher als eine Prüfung, die nichts prüft.
 
 **Keine neuen Dependencies.**
+
+---
+
+## ADR-0037 — Lernstand als Ereignisprotokoll: Signalklasse am Ereignis, Ereignis-ID vom Aufrufer
+
+- **Datum:** 2026-08-28
+- **Status:** angenommen
+- **Kontext:** AP4.T4.1 legt das Datenmodell an, das ab AP5 jeden Lernfortschritt
+  trägt. Ein zu enger Zuschnitt hier erzwingt später Schema-Brüche (Risiko R4).
+  Drei Fragen waren zu entscheiden: Was steht am Ereignis, was wird abgeleitet,
+  und wer vergibt die Ereignis-ID.
+
+### Entscheidung 1 — `learning_event` ist die Wahrheit, alles andere ist abgeleitet
+
+`concept_mastery`, `review_queue`, `error_log` und `skill_rating` sind
+**Projektionen** des Ereignisstroms, keine eigenständigen Datenbestände. Sie
+existieren, weil ein Dashboard nicht bei jedem Aufruf 50 000 Ereignisse
+zusammenrechnen soll — nicht, weil sie eine zweite Wahrheit wären.
+
+Das ist die Voraussetzung für den DoD-Kern von AP4: Ein vollständiger Replay
+aus dem Protokoll muss denselben Zustand erzeugen wie der inkrementelle Weg.
+Wäre auch nur eine dieser Tabellen an einer Stelle direkt beschreibbar, wäre
+dieser Vergleich nicht mehr aussagekräftig.
+
+### Entscheidung 2 — Die Signalklasse hängt am Ereignis, nicht an der Berechnung
+
+`signal_class` (`objective` | `ai_judged` | `self_reported`) wird beim
+Aufzeichnen gesetzt und nie neu bestimmt.
+
+Die Alternative — die Klasse erst in der Mastery-Logik aus dem Ereignistyp
+ableiten — wurde verworfen. Sie wäre kompakter gewesen, hätte aber genau den
+Replay kaputt gemacht, den AP4 verlangt: Dieselbe beantwortete Frage könnte je
+nach Codestand einmal als objektiver Treffer und einmal als Selbsteinschätzung
+gelten. Ein Replay von 2027 ergäbe dann etwas anderes als der inkrementelle
+Lauf von 2026, ohne dass ein Datum sich geändert hätte.
+
+Die Klasse gehört zur **Beobachtung**, die Gewichtung zur **Auswertung**. T4.3
+gewichtet, T4.1 protokolliert.
+
+Drei Klassen und nicht mehr: Der Gesamtscope nennt genau die Rangfolge
+„objektive Treffer > KI-Bewertung > Selbsteinschätzung". Eine vierte Klasse
+hätte keinen Beleg im Scope und wäre eine Vermutung über spätere Modi.
+
+### Entscheidung 3 — Die Ereignis-ID vergibt der Aufrufer, ohne Default
+
+`learning_event.id` ist der einzige Primärschlüssel im Projekt **ohne**
+`gen_random_uuid()`. Das weicht bewusst von der Schema-Konvention aus
+INTERFACES.md 3 ab.
+
+Grund: Die Idempotenz in T4.2 hängt an dieser ID. „Dasselbe Ereignis zweimal
+gesendet ändert den Zustand nur einmal" funktioniert nur, wenn der Aufrufer die
+ID mitbringt und der Primärschlüssel den zweiten Einfügeversuch abweist. Mit
+einem Default würde ein Aufrufer, der die ID vergisst, kein Fehlverhalten
+sehen — er bekäme still ein zweites Ereignis und einen doppelt gezählten
+Lernfortschritt. Ohne Default schlägt derselbe Fehler sofort und laut fehl.
+
+### Entscheidung 4 — Fremdschlüssel auf `concept` mit RESTRICT, nicht CASCADE
+
+`learning_event.concept_id` steht auf `ON DELETE RESTRICT`. Ein CASCADE hätte
+Ereignisse löschen können — auf dem Umweg über eine Konzeptlöschung wäre die
+Append-only-Eigenschaft ausgehebelt gewesen, ohne dass jemand `delete from
+learning_event` geschrieben hätte.
+
+Das ist verträglich mit AP3: Der Buchimport löscht nicht, er markiert
+`removed_at` (INTERFACES.md 12). Ein Konzept, an dem Lernfortschritt hängt,
+lässt sich damit nicht mehr stillschweigend entfernen — was die richtige
+Reihenfolge erzwingt: erst den Lernstand ansehen, dann aufräumen.
+
+Die abgeleiteten Tabellen (`concept_mastery`, `review_queue`) stehen dagegen auf
+CASCADE: Sie sind rekonstruierbar, ihr Verlust ist kein Datenverlust.
+
+### Alternativen
+
+- **Ein Ereignis ohne Konzeptbezug (nur Session-Bezug):** verworfen. Mastery
+  hängt an Konzepten; ein Ereignis ohne Konzept ließe sich nirgends verrechnen.
+- **`payload` normalisieren statt `jsonb`:** verworfen. Die Nutzdaten
+  unterscheiden sich je Modus (AP5 bis AP9) erheblich; eine gemeinsame
+  Spaltenmenge wäre entweder zu eng oder größtenteils NULL. Ausgewertet wird
+  `payload` von den Modi selbst, nicht von der Lernstandslogik.
+
+**Keine neuen Dependencies.**
+
+---
+
+## ADR-0038 — Rating-Verlauf als Begleittabelle, Themenbereich als Primärschlüssel
+
+- **Datum:** 2026-08-28
+- **Status:** angenommen
+- **Kontext:** AP4.T4.1, Subtask 6. Die Skill-Ratings brauchen einen aktuellen
+  Wert **und** einen Verlauf (AP6 zeigt eine Entwicklung über Zeit). Wo der
+  Verlauf liegt, war ausdrücklich als begründete Entscheidung gefordert.
+
+### Entscheidung
+
+Zwei Tabellen: `skill_rating` (aktueller Wert, `topic_area` als
+Primärschlüssel) und `skill_rating_snapshot` (Verlauf, eine Zeile je Messpunkt,
+Unique über `(topic_area, captured_at)`).
+
+### Begründung
+
+Beide Daten werden **unterschiedlich gelesen und geschrieben**:
+
+- Der aktuelle Wert wird bei jedem Ereignis überschrieben und vom Dashboard
+  bei jedem Aufruf gelesen. Er ist genau zwölf Zeilen groß und bleibt es.
+- Der Verlauf wächst unbegrenzt und wird nur für eine Zeitreihe gebraucht.
+
+Ein JSON-Array am Rating-Datensatz hätte beides in eine Zeile gepackt. Das
+klingt sparsam, hat aber zwei konkrete Nachteile: Jede Fortschreibung schriebe
+die gesamte Historie neu (Postflop-Ratings ändern sich potenziell bei jedem
+Drill), und „Verlauf der letzten 30 Tage" wäre keine Abfrage mehr, sondern
+Anwendungscode.
+
+`topic_area` als Primärschlüssel statt einer eigenen uuid: Es gibt genau eine
+Achse je Themenbereich, und der fachliche Schlüssel ist zugleich der
+Konsistenzträger — dieselbe Überlegung wie bei `concept_mastery.concept_id`.
+Der CHECK auf die Liste aus T3.2 hängt damit am Schlüssel selbst.
+
+### Warum ein CHECK und kein Fremdschlüssel
+
+Die Themenbereiche sind eine Liste in `packages/shared`, keine Tabelle. Eine
+Tabelle anzulegen, nur damit ein Fremdschlüssel darauf zeigen kann, hätte die
+Liste an zwei Orten geführt — genau das, was ADR-0031 vermeiden wollte.
+
+### Alternativen
+
+- **Verlauf in derselben Tabelle als `jsonb`:** siehe oben, verworfen.
+- **Verlauf aus dem Ereignisstrom nachrechnen statt speichern:** verworfen. Der
+  Ratingwert entsteht aus einer EWMA (T4.5); ihn für jeden Zeitpunkt neu zu
+  rechnen hieße, den ganzen Strom erneut abzuspielen, nur um eine Grafik zu
+  zeichnen. Ein Snapshot ist die günstigere Projektion.
+
+**Keine neuen Dependencies.**
+
+---
+
+## ADR-0039 — Append-only als Datenbank-Trigger, nicht als Vereinbarung
+
+- **Datum:** 2026-08-28
+- **Status:** angenommen
+- **Kontext:** AP4.T4.1, Subtask 1 und 9. `learning_event` darf nie geändert und
+  nie gelöscht werden. Die Frage war, ob das dokumentiert oder erzwungen wird.
+
+### Entscheidung
+
+Zwei Zeilentrigger auf `learning_event` (`learning_event_no_update`,
+`learning_event_no_delete`) rufen eine Funktion, die bedingungslos eine
+Ausnahme mit SQLSTATE `23001` (`restrict_violation`) wirft. Sie stehen in der
+handgeschriebenen Migration `0008_learning_event_append_only.sql`, angelegt über
+`drizzle-kit generate --custom` — drizzle-kit erzeugt keine Trigger, das Journal
+kennt die Datei aber regulär.
+
+Die Meldung nennt den Ausweg:
+
+> `learning_event ist append-only: UPDATE ist nicht zulaessig. Eine Korrektur
+wird als neues Ereignis vom Typ manual_correction mit corrects_event_id
+angelegt.`
+
+### Begründung
+
+Ohne technische Absicherung ist der Replay in T4.2 wertlos. Der DoD-Kern von
+AP4 lautet: „Ein vollständiger Replay aus dem Event-Log erzeugt denselben
+abgeleiteten Zustand wie der inkrementelle Weg." Dieser Vergleich prüft nur
+dann etwas, wenn das Log zwischen beiden Läufen dasselbe ist. Ein einziges
+`update learning_event set …` — sei es ein Bugfix, ein Migrationsskript oder ein
+manueller Eingriff um drei Uhr nachts — bräche die Zusage still, und der
+nächste Replay meldete eine Abweichung, deren Ursache niemand mehr findet.
+
+Ein Trigger kostet praktisch nichts (er läuft nur auf Pfaden, die es nicht
+geben soll) und macht den Fehler zum frühestmöglichen Zeitpunkt sichtbar.
+
+### Was bewusst nicht abgedeckt ist: TRUNCATE
+
+`TRUNCATE` umgeht Zeilentrigger. Das ist hier kein Versehen, sondern der
+gewählte Ausweg: Der dokumentierte Neuanfang (`resetLearningState`, RUNBOOK
+16.3) muss das Protokoll verwerfen können, und ein DELETE kann er nicht
+benutzen. `TRUNCATE` verlangt ein eigenes Tabellenrecht und ist keine
+schleichende Änderung, sondern eine ausdrückliche Verwerfung.
+
+Ein Statement-Trigger auf `TRUNCATE` wurde erprobt und wieder entfernt: Er hätte
+jedes `TRUNCATE … CASCADE` auf `concept` oder `book_chapter` mitgerissen — also
+die Aufräumpfade der Buch- und Konzepttests aus AP3, die mit dem Lernstand gar
+nichts zu tun haben. Der Preis (eine ganze Testinfrastruktur umbauen) stand in
+keinem Verhältnis zum Gewinn (einen Befehl absichern, der ohnehin ausdrücklich
+gegeben werden muss).
+
+### Alternativen
+
+- **Nur Dokumentation und Code-Review:** verworfen — siehe oben.
+- **Rechte-Entzug (`REVOKE UPDATE, DELETE`) statt Trigger:** verworfen. Das
+  Backend verbindet sich als Eigentümer der Tabellen; ein Entzug wäre
+  wirkungslos, solange keine zweite Rolle eingeführt wird. Eine zweite Rolle
+  einzuführen, nur für diese eine Tabelle, wäre für einen Single-User-Betrieb
+  unverhältnismäßig.
+- **Ereignisse „logisch" löschen (`voided_at`):** verworfen. Das ist ein UPDATE
+  mit anderem Namen und hätte dieselbe Lücke gerissen. Eine Korrektur ist ein
+  neues Ereignis, das auf das alte zeigt — durchgesetzt vom CHECK
+  `learning_event_correction_check`.
+
+**Keine neuen Dependencies.**

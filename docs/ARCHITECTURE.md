@@ -867,6 +867,82 @@ Folge-APs und darf es nicht. Beide leben nebeneinander, weil sie verschiedene
 Fragen beantworten — und weil die Review-Ansicht der einzige Aufrufer ist, der
 `includeUnapproved` überhaupt setzen darf.
 
+## 3l. Lernstand-Kern (neu in AP4.T4.1)
+
+Das Herzstück ab AP4: ein gemeinsamer, **ereignisbasierter** Lernzustand. Er
+liegt quer zu allen Modi — Theorie-Session (AP5), Drills (AP7), Hand-Analyse,
+Turnier und Journal (AP8) schreiben und lesen ausschließlich hier.
+
+```
+   AP5 Session   AP7 Drill   AP8 Hand/Turnier/Journal   AP9 Material
+        │            │                 │                     │
+        └────────────┴────────┬────────┴─────────────────────┘
+                              │  recordLearningEvent()   (T4.2 — noch nicht gebaut)
+                              ▼
+                   ┌────────────────────┐
+                   │   learning_event   │   append-only (Trigger)
+                   └─────────┬──────────┘
+                             │  Ableitungen (T4.2 stößt sie an)
+       ┌─────────────┬───────┴────────┬──────────────┐
+       ▼             ▼                ▼              ▼
+ concept_mastery  review_queue    error_log     skill_rating
+  (Score +         (SM-2:          (Fehler mit    (+ _snapshot
+   Konfidenz +      due/ease/       Ereignis-      als Verlauf)
+   Zähler je        lapses)         bezug)
+   Signalklasse)
+                             │
+                             ▼
+                    ┌─────────────────┐
+                    │  learner_state  │  genau ein Datensatz
+                    └─────────────────┘
+                             │  Read-API (T4.7)
+                             ▼
+                      AP6 Dashboard
+```
+
+**Der Kern ist in T4.1 nur Struktur.** Die Pfeile „recordLearningEvent" und
+„Ableitungen" sind das Bauprogramm von T4.2 bis T4.6; dieser Task legt die
+Tabellen, Invarianten und Verträge an, damit alle folgenden Tasks dieselbe
+Grundlage haben.
+
+### Warum ein Ereignisprotokoll und nicht direkt der Zustand
+
+Ein Zustand ohne Protokoll beantwortet „wie gut kann ich das?", aber nicht
+„woher weiß das System das?". Für AP4 sind beide Fragen wichtig: Die
+Weiterschalt-Entscheidung in T4.3 muss begründbar sein (F02), und eine
+nachträgliche Korrektur der Gewichtung darf nicht bedeuten, dass der bisherige
+Lernstand verloren ist. Mit dem Protokoll ist ein Neuberechnen ein Replay; ohne
+es wäre es ein Datenverlust.
+
+Daraus folgt die Härtung: `learning_event` nimmt weder UPDATE noch DELETE an
+(Trigger, [ADR-0039](./DECISIONS.md)). Alles andere ist rekonstruierbar und
+darf deshalb überschrieben werden.
+
+### Wo die Bausteine liegen
+
+| Baustein                            | Ort                                                        |
+| ----------------------------------- | ---------------------------------------------------------- |
+| Schema der sieben Tabellen          | `apps/backend/src/db/schema.ts`                            |
+| Migration                           | `apps/backend/drizzle/0007_learnstate.sql`                 |
+| Append-only-Trigger                 | `apps/backend/drizzle/0008_learning_event_append_only.sql` |
+| Geschlossene Mengen und Zeilentypen | `packages/shared/src/learning.ts`                          |
+| Ersteinrichtung                     | `apps/backend/src/learning/seed.ts`                        |
+| Neuanfang                           | `apps/backend/src/learning/reset.ts`                       |
+
+### Zwei Dimensionen des Fortschritts
+
+Der Lernstand misst auf zwei Achsen, die sich nicht ineinander umrechnen
+lassen:
+
+- **Je Konzept** (`concept_mastery`) — feinkörnig, an den Konzept-Graphen aus
+  AP3 gebunden, Grundlage der Weiterschaltung.
+- **Je Themenbereich** (`skill_rating`) — zwölf Achsen aus T3.2, Grundlage der
+  Level-Kalibrierung in T4.5 und der Zeitreihe in AP6.
+
+Dazu kommt in `learner_state` die Position im Kapitelfortschritt. Kapitel,
+Konzepte und Themenbereiche sind drei Sichten auf dasselbe Buch — deshalb hängt
+der Lernstand am Konzept-Graphen und legt keine eigene Gliederung an.
+
 ## 4. Querschnitts-Entscheidungen
 
 - **Node 20.19.6**, fixiert in `.nvmrc`; `engines.node >= 20.19.0`.

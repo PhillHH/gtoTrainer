@@ -3,7 +3,7 @@
 Dieses Dokument beschreibt, **wo** sich Komponenten und Arbeitspakete
 gegenseitig berühren. Jeder Task trägt seine Deltas hier nach.
 
-Stand: AP2.T2.6 — AP2 abgeschlossen.
+Stand: AP4.T4.1 — Lernstand-Domänenmodell (Abschnitt 17).
 
 ---
 
@@ -23,13 +23,14 @@ statt ihn hier zu importieren, bricht diese Konvention.
 
 ### Aktueller Inhalt
 
-| Export                | Art          | Bedeutung                         |
-| --------------------- | ------------ | --------------------------------- |
-| `HealthResponse`      | `interface`  | Antwortvertrag von `GET /healthz` |
-| `HEALTH_STATUS_OK`    | `const 'ok'` | Einziger gültiger Health-Status   |
-| `isHealthResponse(v)` | Type-Guard   | Laufzeitprüfung gegen den Vertrag |
-| Auth-Verträge         | s. 2a        | Login, Session, CSRF              |
-| `LLMProvider` u. a.   | s. 8         | Vertrag des LLM-Gateways (AP2)    |
+| Export                | Art          | Bedeutung                                          |
+| --------------------- | ------------ | -------------------------------------------------- |
+| `HealthResponse`      | `interface`  | Antwortvertrag von `GET /healthz`                  |
+| `HEALTH_STATUS_OK`    | `const 'ok'` | Einziger gültiger Health-Status                    |
+| `isHealthResponse(v)` | Type-Guard   | Laufzeitprüfung gegen den Vertrag                  |
+| Auth-Verträge         | s. 2a        | Login, Session, CSRF                               |
+| `LLMProvider` u. a.   | s. 8         | Vertrag des LLM-Gateways (AP2)                     |
+| Lernstand-Verträge    | s. 17        | Signalklassen, Ereignistypen, Zeilenverträge (AP4) |
 
 ---
 
@@ -1282,8 +1283,9 @@ Default umgebogen — weder beim Import noch über die Review-Ansicht.
 ### Wie AP4 Konzepte und Themenbereiche liest
 
 Mastery, Wiederholungs-Queue und Skill-Ratings hängen an `concept.id`.
-**Nur `approved` Konzepte** sind für AP4 verbindlich; `draft` ist ungeprüfter
-Modellvorschlag.
+Für den **Lernpfad** ab AP5 sind die bestätigten Konzepte verbindlich; `draft`
+ist ungeprüfter Modellvorschlag. Der **Lernstand** dagegen lässt sich seit
+T4.1 auf jedem Konzept führen, auch auf `draft` (Scope-Delta 3, Abschnitt 17).
 
 ```ts
 import { and, asc, eq } from 'drizzle-orm';
@@ -1996,3 +1998,209 @@ müsste.
 **Was `validated` nicht heißt:** dass ein Mensch die Zahlen gesehen hat. Der
 Zustandsvertrag steht in Abschnitt 15; die Content-API liefert `validated`
 deshalb genauso wenig aus wie `raw`.
+
+---
+
+## 17. Lernstand-Kern — Schema, Invarianten und Verträge (AP4.T4.1)
+
+Der Lernstand ist **ereignisbasiert**: `learning_event` ist das Protokoll, die
+übrigen Tabellen sind daraus abgeleitet. Quelle der Wahrheit für das Schema ist
+`apps/backend/src/db/schema.ts`, Quelle der geschlossenen Mengen ist
+`packages/shared/src/learning.ts`.
+
+> **Ab T4.2 wird ausschließlich über `recordLearningEvent` geschrieben.** Kein
+> Modus — weder Theorie-Session (AP5), Drill (AP7), Hand-Analyse, Turnier oder
+> Journal (AP8) noch der Materialtrigger (AP9) — fasst diese Tabellen direkt an.
+> Wer `insert into concept_mastery` schreibt, umgeht die Ableitung und macht den
+> Replay wertlos. T4.1 legt nur die Struktur an; die Schreibstelle selbst
+> entsteht in T4.2.
+
+### Geschlossene Mengen (Quelle: `packages/shared/src/learning.ts`)
+
+| Menge                       | Werte                                                                                                                 |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `LEARNING_SIGNAL_CLASSES`   | `objective`, `ai_judged`, `self_reported`                                                                             |
+| `LEARNING_EVENT_TYPES`      | `question_answered`, `concept_explained`, `drill_completed`, `hand_analyzed`, `review_performed`, `manual_correction` |
+| `LEARNING_EVENT_SOURCES`    | `theory_session`, `drill`, `hand_analysis`, `tournament`, `journal`, `manual`                                         |
+| `REVIEW_QUEUE_ORIGINS`      | `error`, `knowledge_gap`, `practice_finding`                                                                          |
+| `LEARNING_ERROR_SEVERITIES` | `low`, `medium`, `high`                                                                                               |
+| `LEARNER_LEVELS`            | **= `CONCEPT_LEVELS`** aus T3.2: `einsteiger`, `fortgeschritten`, `experte` — keine zweite Liste                      |
+
+**Die Signalklasse hängt am Ereignis, nicht an der Berechnung.** Sie sagt, wie
+belastbar eine Beobachtung ist: `objective` ist deterministisch prüfbar
+(typischerweise gegen eine freigegebene Chart-Zelle aus T3.5), `ai_judged` ist
+ein Modellurteil, `self_reported` eine Selbsteinschätzung. Läge die Einstufung
+in der Mastery-Logik, wäre sie beim Replay nicht rekonstruierbar
+([ADR-0037](./DECISIONS.md)). **Gewichtet** wird sie erst in T4.3.
+
+Die Listen sind in `schema.ts` gespiegelt (drizzle-kit löst das Workspace-Paket
+beim Bündeln nicht auf); `test/learning/schema.test.ts` hält beide
+deckungsgleich — dieselbe Handhabung wie bei Buch-, Konzept- und Charttabellen.
+
+### `learning_event` — das Protokoll
+
+| Spalte              | Typ                          | Hinweis                                                                       |
+| ------------------- | ---------------------------- | ----------------------------------------------------------------------------- |
+| `id`                | `uuid` PK                    | **ohne Default** — vom Aufrufer vergeben, trägt die Idempotenz in T4.2        |
+| `event_type`        | `text`                       | CHECK gegen `LEARNING_EVENT_TYPES`                                            |
+| `source`            | `text`                       | CHECK gegen `LEARNING_EVENT_SOURCES`                                          |
+| `signal_class`      | `text`                       | CHECK gegen `LEARNING_SIGNAL_CLASSES`                                         |
+| `occurred_at`       | `timestamptz`                | fachlicher Zeitpunkt des Geschehens                                           |
+| `concept_id`        | `uuid` FK → `concept`        | `ON DELETE RESTRICT` — ein Konzept mit Ereignissen lässt sich nicht wegräumen |
+| `chart_id`          | `uuid` FK → `range_chart`    | NULL; Beleg eines objektiven Signals                                          |
+| `corrects_event_id` | `uuid` FK → `learning_event` | NULL; nur bei `manual_correction`                                             |
+| `payload`           | `jsonb`                      | Default `'{}'`; Nutzdaten je Ereignistyp                                      |
+| `created_at`        | `timestamptz`                | Zeitpunkt der Aufzeichnung                                                    |
+
+Indizes für die Zugriffsmuster ab T4.2: `learning_event_concept_idx
+(concept_id, occurred_at)`, `learning_event_occurred_at_idx`,
+`learning_event_source_idx`, `learning_event_corrects_idx`.
+
+### `concept_mastery` — abgeleiteter Zustand je Konzept
+
+| Spalte                                                            | Typ                          | Hinweis                                |
+| ----------------------------------------------------------------- | ---------------------------- | -------------------------------------- |
+| `concept_id`                                                      | `uuid` PK, FK → `concept`    | PK = **genau eine Zeile je Konzept**   |
+| `score`                                                           | `double precision`           | 0–1 (CHECK)                            |
+| `confidence`                                                      | `double precision`           | 0–1 (CHECK), **getrennt vom Score**    |
+| `last_checked_at`                                                 | `timestamptz` NULL           |                                        |
+| `objective_signals`, `ai_judged_signals`, `self_reported_signals` | `integer`                    | Zähler je Signalklasse, ≥ 0 (CHECK)    |
+| `last_event_id`                                                   | `uuid` FK → `learning_event` | welches Ereignis den Stand fortschrieb |
+| `updated_at`                                                      | `timestamptz`                |                                        |
+
+Warum Score und Konfidenz getrennt: Ein Score von 0,9 aus lauter KI-Bewertungen
+ist etwas anderes als derselbe Score aus objektiven Treffern. Die drei Zähler
+machen sichtbar, **woraus** ein Score entstand — sie sind die Datengrundlage
+der objektiven Anker in T4.3 (Scope-Delta 2).
+
+### `review_queue` — Wiederholungssteuerung
+
+| Spalte                     | Typ                       | Hinweis                            |
+| -------------------------- | ------------------------- | ---------------------------------- |
+| `concept_id`               | `uuid` PK, FK → `concept` | genau ein Queue-Eintrag je Konzept |
+| `due_at`                   | `timestamptz`             | Index `review_queue_due_idx`       |
+| `interval_days`            | `integer`                 | ≥ 0 (CHECK)                        |
+| `ease_factor`              | `double precision`        | 1.3 – 3.0 (CHECK), Default 2.5     |
+| `repetitions`, `lapses`    | `integer`                 | ≥ 0 (CHECK)                        |
+| `origin`                   | `text`                    | CHECK gegen `REVIEW_QUEUE_ORIGINS` |
+| `last_reviewed_at`         | `timestamptz` NULL        |                                    |
+| `created_at`, `updated_at` | `timestamptz`             |                                    |
+
+Der häufigste Zugriff ist „gib mir die fälligen Einträge"; genau dafür der
+Index auf `due_at`, für die Priorisierung zusätzlich `(origin, due_at)`.
+
+### `error_log` — Fehlerprotokoll
+
+| Spalte         | Typ                          | Hinweis                                                   |
+| -------------- | ---------------------------- | --------------------------------------------------------- |
+| `id`           | `uuid` PK                    |                                                           |
+| `event_id`     | `uuid` FK → `learning_event` | `ON DELETE RESTRICT` — **kein zweiter Schreibweg**        |
+| `concept_id`   | `uuid` FK → `concept`        |                                                           |
+| `occurred_at`  | `timestamptz`                |                                                           |
+| `context_kind` | `text`                       | CHECK gegen `LEARNING_EVENT_SOURCES` (dieselbe Liste)     |
+| `context_ref`  | `text` NULL                  | Kennung der Session, des Drills oder der Hand — ab AP5    |
+| `description`  | `text`                       |                                                           |
+| `severity`     | `text`                       | CHECK gegen `LEARNING_ERROR_SEVERITIES`                   |
+| `pattern_tag`  | `text` NULL                  | bleibt leer, bis der Muster-Report aus **T4.6** ihn setzt |
+
+### `skill_rating` und `skill_rating_snapshot` — die Themenbereichs-Achsen
+
+| Spalte        | Typ                | Hinweis                                                 |
+| ------------- | ------------------ | ------------------------------------------------------- |
+| `topic_area`  | `text` PK          | CHECK gegen die **feste Liste aus T3.2** (Abschnitt 13) |
+| `rating`      | `double precision` | 0–1 (CHECK)                                             |
+| `event_count` | `integer`          | ≥ 0 (CHECK); Datenlage der Achse                        |
+| `updated_at`  | `timestamptz`      |                                                         |
+
+Der Verlauf liegt in der Begleittabelle `skill_rating_snapshot`
+(`topic_area` FK, `rating`, `captured_at`, Unique über `(topic_area,
+captured_at)`) — Begründung: [ADR-0038](./DECISIONS.md).
+
+**Die Themenbereiche stammen ausschließlich aus `CONCEPT_TOPIC_AREAS`
+(T3.2).** Es gibt keine zweite Liste. Ein erfundener Bereich wird vom CHECK
+abgelehnt, nicht auf einen Default umgebogen.
+
+### `learner_state` — der globale Zustand
+
+| Spalte                  | Typ                   | Hinweis                                              |
+| ----------------------- | --------------------- | ---------------------------------------------------- |
+| `id`                    | `uuid` PK             |                                                      |
+| `singleton`             | `boolean`             | immer `true` (CHECK) + Unique-Index → **eine Zeile** |
+| `level`                 | `text`                | CHECK gegen `CONCEPT_LEVELS`                         |
+| `current_chapter`       | `integer`             | ≥ 1 (CHECK)                                          |
+| `current_concept_id`    | `uuid` FK → `concept` | NULL beim Erststart                                  |
+| `mastery_threshold`     | `double precision`    | 0–1 (CHECK), Default 0.8                             |
+| `min_objective_anchors` | `integer`             | ≥ 0 (CHECK), Default 2                               |
+
+#### Abgrenzung `learner_state` gegen `config`
+
+Beide Tabellen halten Einstellungen — und genau deshalb muss die Grenze
+scharf sein:
+
+| Gehört in `learner_state` (AP4)                              | Gehört in `config` (AP1)                                     |
+| ------------------------------------------------------------ | ------------------------------------------------------------ |
+| **Lernbezogenes:** Level, Kapitelposition, aktuelles Konzept | **Technisches:** Provider, Modell, Timeouts, Nebenläufigkeit |
+| Mastery-Schwelle, Mindestanzahl objektiver Anker             | `schema_version`, Betriebsschalter                           |
+| Was sich durch **Lernen** ändert                             | Was sich durch **Konfigurieren** ändert                      |
+| Typisiert, ein Datensatz, Constraints je Feld                | Key/Value als `jsonb`, beliebig viele Schlüssel              |
+
+**Faustregel:** Würde ein Neuanfang („ich fange von vorn an") den Wert
+zurücksetzen? Dann gehört er in `learner_state`. Überlebt er einen Neuanfang,
+gehört er in `config`.
+
+Folge daraus: Der in AP1 angelegte Konfigurationsschlüssel
+`learning.mastery_threshold` ist **abgelöst**. Der Seed setzt ihn seit T4.1
+nicht mehr, und gelesen wird er nirgends; maßgeblich ist
+`learner_state.mastery_threshold`. Auf bestehenden Installationen bleibt die
+alte Zeile wirkungslos stehen — sie wird nicht gelöscht, weil ein Seed keine
+Daten wegräumt.
+
+### Invarianten
+
+| #   | Invariante                                                            | Durchgesetzt von                                                                  |
+| --- | --------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| 1   | **Ereignisse sind unveränderlich** — kein UPDATE, kein DELETE         | Trigger `learning_event_no_update` / `learning_event_no_delete`                   |
+| 2   | Eine Korrektur ist ein neues Ereignis mit Bezug auf das ursprüngliche | CHECK `learning_event_correction_check` + Selbst-FK, `…_no_self_correction_check` |
+| 3   | Ereignistyp, Quelle und Signalklasse stammen aus festen Listen        | CHECK je Spalte                                                                   |
+| 4   | Mastery-Score und Konfidenz liegen zwischen 0 und 1                   | CHECK `concept_mastery_score_check` / `…_confidence_check`                        |
+| 5   | Zähler je Signalklasse sind nicht negativ                             | CHECK `concept_mastery_counters_check`                                            |
+| 6   | **Genau ein Mastery-Datensatz je Konzept**                            | Primärschlüssel `concept_mastery_pkey`                                            |
+| 7   | **Genau ein `learner_state`**                                         | CHECK `learner_state_singleton_check` + `learner_state_singleton_key`             |
+| 8   | Ease-Faktor bleibt zwischen 1.3 und 3.0                               | CHECK `review_queue_ease_check`                                                   |
+| 9   | **Skill-Ratings nur für Themenbereiche aus T3.2**                     | CHECK `skill_rating_topic_area_check`                                             |
+| 10  | Ein Fehlerlog-Eintrag hat immer sein auslösendes Ereignis             | FK `error_log_event_id_learning_event_id_fk` (RESTRICT)                           |
+| 11  | Mastery, Queue und Ereignisse nur auf existierenden Konzepten         | FK auf `concept`                                                                  |
+| 12  | Mastery-Schwelle liegt zwischen 0 und 1, Kapitel ≥ 1                  | CHECK `learner_state_threshold_check` / `…_chapter_check`                         |
+
+Zu 1: Die Absicherung ist ein Trigger, keine Zusage in der Doku — der Replay in
+T4.2 vergleicht den rekonstruierten mit dem inkrementellen Zustand, und ein
+still geändertes Ereignis machte diesen Vergleich wertlos
+([ADR-0039](./DECISIONS.md)). Nicht abgedeckt ist `TRUNCATE`; das ist der
+ausdrückliche Weg für den Neuanfang (`resetLearningState`, RUNBOOK 16.3).
+
+Zu 9: Der CHECK, nicht ein Fremdschlüssel — es gibt keine Tabelle der
+Themenbereiche, die Liste lebt in `packages/shared`.
+
+### Draft-Konzepte (Scope-Delta 3)
+
+`concept.state` ist eine Eigenschaft des **Konzepts**, keine Bedingung des
+Lernstands. Mastery, Queue, Fehlerlog und Ereignisse lassen sich auf
+`draft`-Konzepten genauso führen wie auf `approved` — kein Constraint prüft den
+Zustand. Belegt durch `test/learning/schema.test.ts` → „führt Mastery und Queue
+auch auf einem draft-Konzept (Scope-Delta 3)".
+
+Damit ist die frühere Formulierung in Abschnitt 13 („Nur `approved` Konzepte
+sind für AP4 verbindlich") präzisiert: Verbindlich für den **Lernpfad** ab AP5
+sind die bestätigten Konzepte; der **Lernstand** kann auf jedem Konzept geführt
+werden.
+
+### Ersteinrichtung und Neuanfang
+
+| Funktion                                           | Wirkung                                                                 |
+| -------------------------------------------------- | ----------------------------------------------------------------------- |
+| `seedLearningState(db)` (`src/learning/seed.ts`)   | legt `learner_state` und je Themenbereich ein Rating an; **idempotent** |
+| `countLearningRows(db)`                            | Zeilenzahlen aller Lernstand-Tabellen — Nachweis in Tests und RUNBOOK   |
+| `resetLearningState(db)` (`src/learning/reset.ts`) | verwirft den Lernfortschritt und legt die Ersteinrichtung neu an        |
+
+`pnpm db:seed` ruft `seedLearningState` mit auf. Der Neuanfang läuft über
+`pnpm learning:reset` und verlangt `LEARNING_RESET_CONFIRM=yes`.

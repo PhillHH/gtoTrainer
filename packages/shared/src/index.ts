@@ -219,3 +219,35 @@ export type {
   SpotMatch,
   SpotSearchResponse,
 } from './content.js';
+
+export {
+  LEARNER_LEVELS,
+  LEARNER_STATE_DEFAULTS,
+  LEARNING_ERROR_SEVERITIES,
+  LEARNING_EVENT_SOURCES,
+  LEARNING_EVENT_TYPES,
+  LEARNING_SIGNAL_CLASSES,
+  REVIEW_EASE_RANGE,
+  REVIEW_QUEUE_ORIGINS,
+  SKILL_RATING_START,
+  isLearningErrorSeverity,
+  isLearningEventSource,
+  isLearningEventType,
+  isLearningSignalClass,
+  isReviewQueueOrigin,
+} from './learning.js';
+export type {
+  ConceptMastery,
+  LearnerLevel,
+  LearnerState,
+  LearningErrorEntry,
+  LearningErrorSeverity,
+  LearningEvent,
+  LearningEventSource,
+  LearningEventType,
+  LearningSignalClass,
+  ReviewQueueEntry,
+  ReviewQueueOrigin,
+  SkillRating,
+  SkillRatingSnapshot,
+} from './learning.js';

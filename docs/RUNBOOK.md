@@ -1747,7 +1747,119 @@ darauf hin. `missed` am einzelnen Treffer sagt, welches Kriterium nicht saß —
 meist „keine Stacktiefe in der Unterschrift", weil das Buch sie nicht zu jedem
 Chart nennt.
 
-## 16. Noch nicht abgedeckt
+## 16. Lernstand: Migration, Seed und Neuanfang (AP4.T4.1)
+
+Der Lernstand-Kern besteht aus sieben Tabellen (`learning_event`,
+`concept_mastery`, `review_queue`, `error_log`, `skill_rating`,
+`skill_rating_snapshot`, `learner_state`). Schema und Invarianten stehen in
+INTERFACES.md 17.
+
+> **Vor dem ersten Einspielen ein Backup ziehen** (`deploy/backup.sh`). AP4
+> legt das zentrale Datenmodell an.
+
+### 16.1 Migration einspielen
+
+```bash
+pnpm db:migrate
+```
+
+Spielt `0007_learnstate.sql` (Tabellen, Indizes, CHECK-Constraints) und
+`0008_learning_event_append_only.sql` (die beiden Trigger) ein. Beide sind
+additiv; bereits eingespielte Migrationen überspringt Drizzle.
+
+Gegenprobe, dass alle sieben Tabellen stehen:
+
+```bash
+docker compose exec -T postgres psql -U gto -d gto -c "
+  select table_name from information_schema.tables
+   where table_schema='public' and table_type='BASE TABLE'
+     and table_name in ('learning_event','concept_mastery','review_queue',
+                        'error_log','skill_rating','skill_rating_snapshot','learner_state')
+   order by table_name"
+```
+
+Und dass die Append-only-Trigger hängen:
+
+```bash
+docker compose exec -T postgres psql -U gto -d gto -c "
+  select tgname from pg_trigger
+   where tgrelid='learning_event'::regclass and not tgisinternal order by tgname"
+# learning_event_no_delete
+# learning_event_no_update
+```
+
+### 16.2 Ersteinrichtung (Seed)
+
+```bash
+pnpm db:seed
+```
+
+Legt an, was vor dem ersten Ereignis dastehen muss:
+
+- **einen** `learner_state` mit Level `einsteiger`, Kapitel 1,
+  Mastery-Schwelle 0,8 und zwei geforderten objektiven Ankern,
+- **zwölf** `skill_rating`-Achsen — je Themenbereich aus T3.2 eine, Startwert 0.
+
+Die Ausgabe endet mit einer Zeile wie:
+
+```
+[seed] Lernstand: learner_state=1, skill_rating=12, learning_event=0
+```
+
+**Der Seed ist idempotent.** Ein zweiter Lauf legt nichts an und — wichtiger —
+setzt **nichts zurück**: Eine vom Nutzer geänderte Mastery-Schwelle überlebt
+jeden weiteren Seed. Gegenprobe: `pnpm db:seed` zweimal laufen lassen, die
+beiden Zeilen müssen identisch sein.
+
+### 16.3 Lernstand für einen Neuanfang zurücksetzen
+
+```bash
+LEARNING_RESET_CONFIRM=yes pnpm learning:reset
+```
+
+Verwirft **den kompletten Lernfortschritt** — Ereignisse, Mastery, Queue,
+Fehlerlog, Ratings und Verlauf — und legt die Ersteinrichtung aus 16.2 neu an.
+
+Was **nicht** angefasst wird: Buchdaten, Konzept-Graph, Charts, Benutzer,
+Sessions und die technische Konfiguration in `config`.
+
+Ohne die Bestätigung bricht das Skript ab:
+
+```
+[learning:reset] Fehlgeschlagen: learning:reset ist blockiert: Bestaetigung fehlt.
+Setze LEARNING_RESET_CONFIRM=yes, um den kompletten Lernfortschritt zu verwerfen.
+Buchdaten, Konzepte und Charts bleiben erhalten.
+```
+
+Anders als `pnpm db:reset` ist dieser Vorgang auch im Produktivbetrieb
+legitim — „ich fange von vorn an" ist eine fachliche Entscheidung, kein
+Entwicklungswerkzeug. Deshalb sperrt ihn `NODE_ENV=production` nicht.
+
+### 16.4 Zählstände ansehen
+
+```bash
+docker compose exec -T postgres psql -U gto -d gto -c "
+  select 'learning_event' t, count(*) from learning_event
+  union all select 'concept_mastery', count(*) from concept_mastery
+  union all select 'review_queue',    count(*) from review_queue
+  union all select 'error_log',       count(*) from error_log
+  union all select 'skill_rating',    count(*) from skill_rating
+  union all select 'learner_state',   count(*) from learner_state"
+```
+
+### 16.5 Typische Fehlerbilder
+
+| Meldung                                                                     | Ursache und Abhilfe                                                                                                     |
+| --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `learning_event ist append-only: UPDATE ist nicht zulaessig`                | Gewollt. Ereignisse werden nie geändert; eine Korrektur ist ein neues Ereignis vom Typ `manual_correction`.             |
+| `learning_event ist append-only: DELETE ist nicht zulaessig`                | Gewollt. Zum Verwerfen des ganzen Protokolls 16.3 benutzen.                                                             |
+| `violates foreign key constraint … learning_event_concept_id_concept_id_fk` | Das Konzept gibt es nicht (mehr). Ereignisse hängen immer an einem Konzept aus AP3.                                     |
+| `violates check constraint "skill_rating_topic_area_check"`                 | Themenbereich außerhalb der Liste aus T3.2. Die Liste steht in `packages/shared/src/concept.ts` — keine zweite anlegen. |
+| `violates check constraint "review_queue_ease_check"`                       | Ease-Faktor außerhalb 1,3–3,0.                                                                                          |
+| `duplicate key value … learner_state_singleton_key`                         | Es gibt bereits einen `learner_state`. Es darf nur einen geben; ändern statt einfügen.                                  |
+| `update or delete on table "concept" violates foreign key constraint`       | An dem Konzept hängen Ereignisse. Erst den Lernstand ansehen (16.4), dann entscheiden — der Schutz ist Absicht.         |
+
+## 17. Noch nicht abgedeckt
 
 - Der Host-Nginx-vhost und das TLS-Zertifikat sind vorbereitet, aber noch nicht
   eingespielt: Beides erfordert Root auf dem Host (Abschnitte 8.4 und 8.5).

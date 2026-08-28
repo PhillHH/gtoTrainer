@@ -4,6 +4,7 @@ import type { Database } from './client.js';
 import { config, user } from './schema.js';
 import { loadConfig } from '../config/env.js';
 import { redact } from './migrate.js';
+import { countLearningRows, seedLearningState } from '../learning/seed.js';
 
 /**
  * Basis-Konfigurationseintraege. Werte sind bewusst konservativ und werden in
@@ -13,13 +14,19 @@ export const BASE_CONFIG_ENTRIES: ReadonlyArray<{ key: string; value: unknown }>
   { key: 'schema_version', value: 1 },
   { key: 'llm.provider', value: null },
   { key: 'llm.model', value: null },
-  { key: 'learning.mastery_threshold', value: 0.8 },
+  // Fachliche Lerneinstellungen stehen seit AP4.T4.1 in `learner_state`, nicht
+  // hier. Der frueher angelegte Schluessel `learning.mastery_threshold` wird
+  // nicht mehr gesetzt und nicht mehr gelesen; Abgrenzung siehe
+  // INTERFACES.md 17.
 ];
 
 export interface SeedResult {
   readonly configKeys: number;
   readonly userCreated: boolean;
   readonly userSkippedReason?: string;
+  /** Ersteinrichtung des Lernstands (AP4.T4.1). */
+  readonly learnerStateCreated: boolean;
+  readonly skillRatingsTotal: number;
 }
 
 /**
@@ -33,6 +40,11 @@ export interface SeedResult {
  *   Hash akzeptiert - Passwort-Hashing (argon2) ist AP1.T1.3.
  */
 export async function seedDatabase(db: Database): Promise<SeedResult> {
+  // Der Lernstand hat eine eigene Ersteinrichtung (learner_state und je
+  // Themenbereich eine Rating-Achse). Sie laeuft in einer eigenen Transaktion,
+  // damit sie unabhaengig vom Benutzer-Zweig unten immer greift.
+  const learning = await seedLearningState(db);
+
   return db.transaction(async (tx) => {
     for (const entry of BASE_CONFIG_ENTRIES) {
       await tx
@@ -54,6 +66,8 @@ export async function seedDatabase(db: Database): Promise<SeedResult> {
     if (!username || !passwordHash) {
       return {
         configKeys: BASE_CONFIG_ENTRIES.length,
+        learnerStateCreated: learning.learnerStateCreated,
+        skillRatingsTotal: learning.skillRatingsTotal,
         userCreated: false,
         userSkippedReason:
           'SEED_USER_USERNAME und/oder SEED_USER_PASSWORD_HASH nicht gesetzt - kein Benutzer angelegt.',
@@ -68,6 +82,8 @@ export async function seedDatabase(db: Database): Promise<SeedResult> {
 
     return {
       configKeys: BASE_CONFIG_ENTRIES.length,
+      learnerStateCreated: learning.learnerStateCreated,
+      skillRatingsTotal: learning.skillRatingsTotal,
       userCreated: inserted.length > 0,
       ...(inserted.length === 0
         ? { userSkippedReason: `Benutzer "${username}" existiert bereits.` }
@@ -102,7 +118,12 @@ export async function main(): Promise<void> {
         `Benutzer angelegt: ${result.userCreated ? 'ja' : 'nein'}` +
         (result.userSkippedReason ? ` (${result.userSkippedReason})` : ''),
     );
+    const learning = await countLearningRows(handle.db);
     console.error(`[seed] Zeilen jetzt: config=${counts.config}, user=${counts.user}`);
+    console.error(
+      `[seed] Lernstand: learner_state=${learning.learnerState}, ` +
+        `skill_rating=${learning.skillRating}, learning_event=${learning.learningEvent}`,
+    );
   } finally {
     await handle.close();
   }

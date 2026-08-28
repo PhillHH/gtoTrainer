@@ -21,6 +21,7 @@
     "db:migrate": "pnpm --filter @gto/backend db:migrate",
     "db:seed": "pnpm --filter @gto/backend db:seed",
     "db:reset": "pnpm --filter @gto/backend db:reset",
+    "learning:reset": "pnpm --filter @gto/backend learning:reset",
     "auth:set-password": "pnpm --filter @gto/backend auth:set-password",
     "llm:runner": "pnpm --filter @gto/backend llm:runner",
     "prompts:golden": "pnpm --filter @gto/backend prompts:golden",
