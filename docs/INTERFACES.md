@@ -3,7 +3,7 @@
 Dieses Dokument beschreibt, **wo** sich Komponenten und Arbeitspakete
 gegenseitig berühren. Jeder Task trägt seine Deltas hier nach.
 
-Stand: AP4.T4.6 — Lernstand-Datenmodell (17), Event-API (18), Mastery (19), Queue (20), Ratings und Level (21), Muster-Report (22).
+Stand: **AP4 abgeschlossen** — Lernstand-Datenmodell (17), Event-API (18), Mastery (19), Queue (20), Ratings und Level (21), Muster-Report (22), State-API (23).
 
 ---
 
@@ -502,6 +502,18 @@ Details siehe [`data/book-source/README.md`](../data/book-source/README.md).
 | Prompt-Template-Registry                                    | AP2.T2.4    |
 | LLM-Job-Worker, SSE-Statuskanal, `llm_call_log`-Schreibpfad | AP2.T2.5    |
 | Settings-Endpunkte für Provider/Modell                      | AP2.T2.6    |
+
+Mit AP4 stehen alle Lernstand-Schnittstellen (Abschnitte 17 bis 23). Noch
+offen und in späteren Arbeitspaketen:
+
+| Schnittstelle                                    | Entsteht in |
+| ------------------------------------------------ | ----------- |
+| Theorie-Sessions, Fragen, Feynman-Prüfung        | AP5         |
+| Dashboard, Skill-Radar, Fehleransicht (Frontend) | AP6         |
+| Drills                                           | AP7         |
+| Hand-Analyse, Turnier-Modus, Journal             | AP8         |
+| Materialtrigger und PDF-Erzeugung                | AP9         |
+| Einstufungstest beim Onboarding                  | AP10        |
 
 ---
 
@@ -2096,17 +2108,17 @@ Index auf `due_at`, für die Priorisierung zusätzlich `(origin, due_at)`.
 
 ### `error_log` — Fehlerprotokoll
 
-| Spalte         | Typ                          | Hinweis                                                   |
-| -------------- | ---------------------------- | --------------------------------------------------------- |
-| `id`           | `uuid` PK                    |                                                           |
-| `event_id`     | `uuid` FK → `learning_event` | `ON DELETE RESTRICT` — **kein zweiter Schreibweg**        |
-| `concept_id`   | `uuid` FK → `concept`        |                                                           |
-| `occurred_at`  | `timestamptz`                |                                                           |
-| `context_kind` | `text`                       | CHECK gegen `LEARNING_EVENT_SOURCES` (dieselbe Liste)     |
-| `context_ref`  | `text` NULL                  | Kennung der Session, des Drills oder der Hand — ab AP5    |
-| `description`  | `text`                       |                                                           |
-| `severity`     | `text`                       | CHECK gegen `LEARNING_ERROR_SEVERITIES`                   |
-| `pattern_tag`  | `text` NULL                  | bleibt leer, bis der Muster-Report aus **T4.6** ihn setzt |
+| Spalte         | Typ                          | Hinweis                                                                                   |
+| -------------- | ---------------------------- | ----------------------------------------------------------------------------------------- |
+| `id`           | `uuid` PK                    |                                                                                           |
+| `event_id`     | `uuid` FK → `learning_event` | `ON DELETE RESTRICT` — **kein zweiter Schreibweg**                                        |
+| `concept_id`   | `uuid` FK → `concept`        |                                                                                           |
+| `occurred_at`  | `timestamptz`                |                                                                                           |
+| `context_kind` | `text`                       | CHECK gegen `LEARNING_EVENT_SOURCES` (dieselbe Liste)                                     |
+| `context_ref`  | `text` NULL                  | Kennung der Session, des Drills oder der Hand — ab AP5                                    |
+| `description`  | `text`                       |                                                                                           |
+| `severity`     | `text`                       | CHECK gegen `LEARNING_ERROR_SEVERITIES`                                                   |
+| `pattern_tag`  | `text` NULL                  | **Spiegelung** von `error_pattern_tag`; gesetzt vom Muster-Report aus T4.6 (Abschnitt 22) |
 
 ### `skill_rating` und `skill_rating_snapshot` — die Themenbereichs-Achsen
 
@@ -2332,16 +2344,22 @@ Jede ist eine reine Funktion `(EffectiveEvent[]) → Projektion | null`, und jed
 ist in T4.3 bis T4.5 austauschbar, **ohne die Verdrahtung im Service
 anzufassen**:
 
-| Funktion             | Schreibt in       | Ersetzt in | Fassung in T4.2 (Platzhalter)                                        |
-| -------------------- | ----------------- | ---------- | -------------------------------------------------------------------- |
-| `foldConceptMastery` | `concept_mastery` | T4.3       | Score = Mittel der Ergebnisse, Konfidenz = Anteil objektiver Signale |
-| `foldReviewQueue`    | `review_queue`    | T4.4       | Eintrag ab dem ersten Fehlschlag, fällig einen Tag später            |
-| `foldErrorLog`       | `error_log`       | T4.6       | Eintrag je Ergebnis < 0,5; Schweregrad `high` bei 0, sonst `medium`  |
-| `foldSkillRating`    | `skill_rating`    | T4.5       | Mittel der Ergebnisse des Themenbereichs                             |
+**Stand nach AP4** — alle vier Platzhalter aus T4.2 sind ersetzt. Die
+Verdrahtung im Service wurde dabei kein einziges Mal angefasst; jeder Tausch
+betraf nur den Rumpf der jeweiligen `fold*`-Funktion:
 
-Die Zähler je Signalklasse, `repetitions`, `lapses` und der Ursprung des
-Queue-Eintrags werden **schon jetzt** vollständig geführt — T4.3 und T4.4 haben
-damit alles, was sie brauchen, ohne das Schema anzufassen.
+| Funktion             | Schreibt in       | Formel liegt in                                   | Abschnitt |
+| -------------------- | ----------------- | ------------------------------------------------- | --------- |
+| `foldConceptMastery` | `concept_mastery` | `learning/mastery.ts` (T4.3)                      | 19        |
+| `foldReviewQueue`    | `review_queue`    | `learning/review.ts` (T4.4)                       | 20        |
+| `foldSkillRating`    | `skill_rating`    | `learning/rating.ts` (T4.5)                       | 21        |
+| `foldErrorLog`       | `error_log`       | `learning/derive.ts` — Schweregrad-Regel aus T4.6 | 22        |
+
+Dazu `foldSkillRatingSnapshots` (T4.5), das den verdichteten Rating-Verlauf
+schreibt.
+
+Wer eine Formel ändert, ändert damit nur eine Datei — und zieht den
+bestehenden Bestand mit `pnpm learning:replay` nach (RUNBOOK 16.15).
 
 `error_log.id` ist **die Ereignis-ID**. Ein Ereignis erzeugt höchstens einen
 Eintrag, und der Replay erzeugt damit dieselben Zeilen statt neuer UUIDs.
@@ -2949,3 +2967,84 @@ Ein **Schema-Verstoß in der Antwort ist ein Fehler**, kein leerer Report. Ein
 leerer Report sähe aus wie „keine Muster gefunden", wäre aber „die Antwort war
 unbrauchbar" — der Unterschied ist für den Nutzer entscheidend und im
 Nachhinein nicht mehr erkennbar.
+
+---
+
+## 23. State-API — die einzige Lesestelle (AP4.T4.7)
+
+Vier Abrufe, gegen die **AP6** baut. Alle auth-geschützt, alle lesend.
+
+| Endpunkt                         | Servicefunktion       | Liefert                                        |
+| -------------------------------- | --------------------- | ---------------------------------------------- |
+| `GET /api/learning/dashboard`    | `readDashboard`       | `LearningDashboard` — alles für die Startseite |
+| `GET /api/learning/concepts/:id` | `readConceptDetail`   | `ConceptLearningDetail`                        |
+| `GET /api/learning/queue`        | `readQueuePreview`    | `QueuePreview`                                 |
+| `GET /api/learning/ratings`      | `readRatingsOverview` | `RatingsOverview`                              |
+
+Gemeinsame Abfrageparameter: `asOf` (ISO-Zeitstempel; **vorbelegt mit jetzt**).
+Dazu `context`, `limit`, `withinDays` bei der Queue und `days` bei den Ratings.
+Ein unbrauchbarer Wert ist `400`, kein stiller Rückfall auf einen Default.
+
+> **Lesend heißt lesend.** Kein `GET` erzeugt ein Ereignis, verschiebt eine
+> Fälligkeit oder aktualisiert ein Rating. Belegt durch den Test „veraendert
+> bei keinem der vier Abrufe den Lernstand", der nicht nur Zeilenzahlen,
+> sondern auch die Summen von Score und Rating vergleicht.
+
+> **Durchreichen, nicht neu rechnen.** Die Ergebnisse aus T4.3 bis T4.6 werden
+> weitergegeben, nicht umgedeutet. Eine zweite Berechnungslogik hier wäre der
+> Anfang von Parallelbuchhaltung — zwei Zahlen für dasselbe, und niemand weiß,
+> welche stimmt.
+
+Weil `GET` nichts ändert, greift der CSRF-Hook aus T1.3 hier nicht — das ist
+richtig so und getestet („braucht fuer einen Lese-Endpunkt kein CSRF-Token").
+
+### Dashboard-Aggregat
+
+Alles in **einem** Abruf: Kapitelfortschritt mit Mastery-Verteilung, alle zwölf
+Rating-Achsen, Level samt Herkunft, fällige Wiederholungen mit Kurzvorschau,
+Gesamtzahlen und der jüngste Muster-Report in Kurzform (nur die Titel).
+
+**Kein N+1:** Die Zahl der Abfragen ist **konstant 11** — gemessen bei 4 und
+bei 24 Konzepten (Test „kommt ohne N+1 aus"). Der Kapitelfortschritt kommt aus
+_einer_ gruppierten Abfrage, die fünf Zählstände aus _einer_ weiteren.
+
+**Erststart:** Bei leerem Lernstand kommt eine vollständige Antwort mit
+`empty: true`, allen Kapiteln auf `untouched`, allen zwölf Achsen auf 0 und
+Level `einsteiger` — keine Fehlermeldung, keine fehlenden Felder. Das ist der
+Zustand beim ersten Öffnen und der häufigste Grund für einen Absturz dort.
+
+### Konzeptdetail
+
+Stammdaten aus AP3, Voraussetzungen in **beide** Richtungen, Score **und
+getrennt** die Konfidenz mit den Zählern je Signalklasse, die
+Weiterschalt-Entscheidung **unverändert durchgereicht** (Abschnitt 19),
+Mastery-Historie, Queue-Zustand, freigegebene Charts und
+`objectiveAnchorsPossible`.
+
+Die **Mastery-Historie ist neu gerechnet, nicht gespeichert**: Es gibt keine
+Mastery-Snapshots. Statt eine zweite Tabelle einzuführen, wird der Verlauf aus
+dem Ereignisstrom rekonstruiert — mit **derselben** reinen Funktion, die auch
+die Ableitung benutzt (`computeMasteryState`). Keine zweite Formel, nur eine
+zweite Auswertung derselben. Bezahlbar, weil es um ein Konzept geht.
+
+Ein unbekanntes Konzept ist `404`, kein Serverfehler.
+
+### Queue-Vorschau
+
+Reicht `dueReviews` und `upcomingReviews` aus Abschnitt 20 durch — inklusive
+`dueTotal`, damit sichtbar bleibt, wie viele **tatsächlich** fällig waren.
+Fälligkeiten stehen fest (sie stammen aus den Ereigniszeitstempeln); `asOf`
+entscheidet nur, was davon jetzt dran ist.
+
+### Ratings- und Level-Verlauf
+
+Alle zwölf Achsen mit ihrem Verlauf aus den Snapshots (T4.5), dazu der
+**Level-Verlauf**: die Tage, an denen sich das Niveau geändert hat, jeweils mit
+den Kennzahlen, die den Wechsel getragen haben — die Antwort auf „warum bin ich
+aufgestiegen?".
+
+Auch dieser Verlauf ist neu gerechnet: Eine Level-Historie in der Datenbank
+hätte den Replay verkompliziert (er kalibriert einmal am Ende, nicht je
+Ereignis). Gerechnet wird über die Tage **mit** Ereignissen — an einem Tag ohne
+Ereignis kann sich nichts geändert haben — mit denselben reinen Funktionen aus
+T4.3 und T4.5.

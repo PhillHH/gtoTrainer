@@ -1152,3 +1152,207 @@ export interface PatternReportView {
   readonly note: string | null;
   readonly durationMs: number | null;
 }
+
+/* -------------------------------------------------------------------------
+ * Lese-Verträge der State-API (AP4.T4.7)
+ *
+ * Die **einzige Lesestelle** des Lernstands. Vier Abrufe, gegen die AP6 baut.
+ *
+ * Zuschnitt: Das Dashboard braucht Übersicht, das Konzeptdetail Tiefe. Keine
+ * Antwort schleppt Daten mit, die die aufrufende Ansicht nicht anzeigt — sonst
+ * lädt die Startseite Volltexte, die niemand sieht.
+ * ---------------------------------------------------------------------- */
+
+/** Ein Kapitel im Fortschrittsbalken des Dashboards. */
+export interface ChapterProgress {
+  readonly chapterNumber: number;
+  readonly title: string;
+  readonly concepts: number;
+  /** Konzepte mit Score ≥ Schwelle **und** belastbarer Konfidenz. */
+  readonly mastered: number;
+  /** Konzepte mit Belegen, die noch nicht sitzen. */
+  readonly inProgress: number;
+  /** Konzepte ohne ein einziges Ereignis. */
+  readonly untouched: number;
+  /** Mittlerer Score über die Konzepte **mit** Belegen; 0 ohne Datenlage. */
+  readonly averageScore: number;
+}
+
+/** Ein Muster im Dashboard — nur der Titel, nicht der volle Text. */
+export interface PatternHeadline {
+  readonly titel: string;
+  readonly tag: string;
+  readonly vertrauen: PatternConfidence;
+  readonly anzahl: number;
+}
+
+/** Kurzform des jüngsten Muster-Reports fürs Dashboard. */
+export interface DashboardReport {
+  readonly id: string;
+  readonly status: PatternReportStatus;
+  readonly generatedAt: string;
+  readonly patterns: readonly PatternHeadline[];
+  readonly note: string | null;
+}
+
+/**
+ * Das Dashboard-Aggregat — **ein** Abruf für die ganze Startseite.
+ *
+ * Bewusst als ein Vertrag und nicht als fünf Abrufe: Das Dashboard wird bei
+ * jedem Start geladen, und fünf Rundreisen über eine Verbindung sind
+ * spürbar. Wichtiger noch: Ein einziger Abruf zeigt immer einen **in sich
+ * stimmigen** Stand; fünf könnten sich überschneiden.
+ */
+export interface LearningDashboard {
+  /** Bezugszeitpunkt, gegen den Fälligkeiten gerechnet wurden. */
+  readonly asOf: string;
+  /** `true`, solange kein einziges Ereignis vorliegt — der Erststart. */
+  readonly empty: boolean;
+
+  readonly level: LearnerLevel;
+  readonly levelSource: LevelSource;
+  /** Was die Kennzahlen allein hergäben — sichtbar auch bei manueller Setzung. */
+  readonly automaticLevel: LearnerLevel;
+
+  readonly chapters: readonly ChapterProgress[];
+  /** Das Kapitel, an dem gerade gearbeitet wird. */
+  readonly currentChapter: number;
+
+  readonly ratings: readonly SkillRatingView[];
+
+  /** Wie viele Wiederholungen jetzt fällig sind. */
+  readonly dueCount: number;
+  /** Die dringendsten davon, in der Reihenfolge aus T4.4. */
+  readonly duePreview: readonly DueReviewItem[];
+  /** Wie viele in den nächsten sieben Tagen fällig werden. */
+  readonly upcomingCount: number;
+
+  /** Konzepte gesamt und wie viele davon belastbar sitzen. */
+  readonly totals: {
+    readonly concepts: number;
+    readonly withEvidence: number;
+    readonly mastered: number;
+    readonly events: number;
+    readonly openErrors: number;
+  };
+
+  /** Der jüngste Muster-Report in Kurzform; `null`, wenn es keinen gibt. */
+  readonly report: DashboardReport | null;
+}
+
+/* --- Konzeptdetail -------------------------------------------------------- */
+
+/** Ein Punkt der Mastery-Historie — ein Wert je Kalendertag mit Ereignissen. */
+export interface MasteryHistoryPoint {
+  /** Kalendertag in UTC, `YYYY-MM-DD`. */
+  readonly day: string;
+  readonly score: number;
+  readonly confidence: number;
+}
+
+/** Der Queue-Zustand eines Konzepts im Detail. */
+export interface ConceptQueueState {
+  readonly dueAt: string;
+  readonly overdueDays: number;
+  readonly intervalDays: number;
+  readonly easeFactor: number;
+  readonly repetitions: number;
+  readonly lapses: number;
+  readonly origin: ReviewQueueOrigin;
+}
+
+/** Ein zugeordnetes, **freigegebenes** Chart. */
+export interface ConceptChartRef {
+  readonly chartId: string;
+  readonly assetId: string;
+  readonly caption: string | null;
+}
+
+/**
+ * „Wie steht es um dieses Konzept?" — die Detailansicht.
+ *
+ * Score **und getrennt** die Konfidenz, dazu die Zähler je Signalklasse: Erst
+ * zusammen machen sie sichtbar, worauf die Einschätzung beruht (T4.3).
+ */
+export interface ConceptLearningDetail {
+  readonly conceptId: string;
+  readonly title: string;
+  readonly summary: string;
+  readonly chapterNumber: number;
+  readonly chapterTitle: string;
+  readonly topicArea: ConceptTopicArea;
+  readonly topicAreaLabel: string;
+  /** `draft` oder `approved` — AP6 weist den Zustand aus (Scope-Delta 3). */
+  readonly state: string;
+  readonly minLevel: LearnerLevel;
+
+  /** Voraussetzungen in **beide** Richtungen. */
+  readonly prerequisites: readonly { readonly id: string; readonly title: string }[];
+  readonly dependents: readonly { readonly id: string; readonly title: string }[];
+
+  /** Der gespeicherte Stand; `null`, wenn es noch keine Belege gibt. */
+  readonly mastery: {
+    readonly score: number;
+    readonly confidence: number;
+    readonly lastCheckedAt: string | null;
+    readonly signalCounts: {
+      readonly objective: number;
+      readonly aiJudged: number;
+      readonly selfReported: number;
+    };
+  } | null;
+
+  /** Die Weiterschalt-Entscheidung aus T4.3 — **unverändert durchgereicht**. */
+  readonly advance: AdvanceDecision;
+
+  readonly history: readonly MasteryHistoryPoint[];
+  readonly queue: ConceptQueueState | null;
+
+  /** Freigegebene Charts am Konzept. */
+  readonly charts: readonly ConceptChartRef[];
+  /** Sind chart-verifizierbare Anker überhaupt möglich (Scope-Delta 2)? */
+  readonly objectiveAnchorsPossible: boolean;
+
+  /** Offene Fehlereinträge zu diesem Konzept, jüngste zuerst. */
+  readonly recentErrors: readonly {
+    readonly occurredAt: string;
+    readonly severity: LearningErrorSeverity;
+    readonly description: string;
+    readonly contextKind: LearningEventSource;
+    readonly patternTag: string | null;
+  }[];
+}
+
+/* --- Queue-Vorschau ------------------------------------------------------- */
+
+/** Was jetzt fällig ist und was demnächst kommt. */
+export interface QueuePreview {
+  readonly asOf: string;
+  readonly context: ReviewContext;
+  readonly due: DueReviewsResponse;
+  readonly upcoming: UpcomingReviewsResponse;
+}
+
+/* --- Ratings- und Level-Verlauf ------------------------------------------- */
+
+/** Ein Level-Wechsel mit den Kennzahlen, die ihn ausgelöst haben. */
+export interface LevelHistoryPoint {
+  /** Kalendertag in UTC, `YYYY-MM-DD`. */
+  readonly day: string;
+  readonly level: LearnerLevel;
+  readonly previousLevel: LearnerLevel;
+  readonly source: LevelSource;
+  /** Das „warum": die Kennzahlen an diesem Tag. */
+  readonly signals: LevelSignals;
+}
+
+/** Ratings mit Verlauf plus Level-Verlauf — die Entwicklungsansicht in AP6. */
+export interface RatingsOverview {
+  readonly asOf: string;
+  /** Länge des betrachteten Zeitraums in Tagen. */
+  readonly days: number;
+  readonly current: readonly SkillRatingView[];
+  readonly history: readonly SkillRatingHistory[];
+  readonly level: LearnerLevel;
+  readonly levelHistory: readonly LevelHistoryPoint[];
+}

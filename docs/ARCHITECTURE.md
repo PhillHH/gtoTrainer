@@ -1286,6 +1286,53 @@ Jeder Lauf plant seinen Nachfolger sieben Tage später in die Job-Queue aus AP2
 ein; steht dort schon einer, passiert nichts. Ein eigener Scheduler-Dienst wäre
 ein zweites Stück Infrastruktur für eine Aufgabe, die einmal pro Woche anfällt.
 
+### State-API und AP4-Abschluss (neu in AP4.T4.7)
+
+Damit steht der Lernstand-Kern: **genau eine Schreibstelle und genau eine
+Lesestelle.**
+
+```
+   AP5 · AP7 · AP8 · AP9                          AP6 (Anzeige)
+            │                                          ▲
+            │ POST /api/learning/events                │ GET /api/learning/…
+            ▼                                          │
+   recordLearningEvent()                    readDashboard · readConceptDetail
+            │                               readQueuePreview · readRatingsOverview
+            ▼                                          ▲
+      learning_event  ──►  derive.ts  ──►  abgeleiteter Zustand ──┘
+       (append-only)       (rein)          mastery · queue · error_log
+                                           skill_rating · learner_state
+                                           pattern_report
+```
+
+Die Lesestelle **rechnet nichts neu**. Sie reicht die Ergebnisse aus T4.3 bis
+T4.6 durch — Mastery, Konfidenz, Weiterschalt-Entscheidung, Fälligkeiten,
+Ratings, Level, Muster. Eine zweite Berechnungslogik hier wäre der Anfang von
+Parallelbuchhaltung: zwei Zahlen für dasselbe, und niemand weiß, welche stimmt.
+
+Die beiden Ausnahmen sind bewusst keine: Mastery- und Level-**Verlauf** werden
+aus dem Ereignisstrom rekonstruiert, weil es dafür keine Snapshots gibt — aber
+mit **denselben reinen Funktionen**, die auch die Ableitung benutzt. Keine
+zweite Formel, nur eine zweite Auswertung derselben.
+
+### Warum das Aggregat ein Aggregat ist
+
+Das Dashboard lädt bei jedem Start. Fünf Abrufe wären fünf Rundreisen — und,
+wichtiger, fünf Momentaufnahmen, die sich überschneiden könnten. Ein Abruf
+zeigt immer einen in sich stimmigen Stand.
+
+Gemessen: **11 Abfragen, konstant** — bei 4 wie bei 24 Konzepten. Der
+Kapitelfortschritt kommt aus einer gruppierten Abfrage, die fünf Zählstände aus
+einer weiteren.
+
+### Der Erststart ist ein eigener Fall
+
+Bei leerem Lernstand liefert das Aggregat eine vollständige Antwort:
+`empty: true`, alle Kapitel auf `untouched`, alle zwölf Achsen auf 0, Level
+`einsteiger`. Kein Fehler, keine fehlenden Felder. Das ist der Zustand beim
+ersten Öffnen — und in der Praxis der häufigste Grund, warum ein Dashboard
+dort abstürzt.
+
 ## 4. Querschnitts-Entscheidungen
 
 - **Node 20.19.6**, fixiert in `.nvmrc`; `engines.node >= 20.19.0`.

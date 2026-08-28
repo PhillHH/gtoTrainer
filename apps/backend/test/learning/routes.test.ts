@@ -131,6 +131,87 @@ describe('POST /api/learning/events', () => {
     expect(second.json()).toMatchObject({ status: 'duplicate' });
   });
 
+  /* --- Lese-Endpunkte (T4.7) -------------------------------------------- */
+
+  /** Die vier Lesestellen, gegen die AP6 baut. */
+  const READ_ROUTES = [
+    '/api/learning/dashboard',
+    '/api/learning/queue',
+    '/api/learning/ratings',
+  ] as const;
+
+  it('lehnt jeden Lese-Endpunkt ohne Session mit 401 ab', async () => {
+    for (const url of [...READ_ROUTES, `/api/learning/concepts/${fixture.approvedConceptId}`]) {
+      const response = await context.app.inject({ method: 'GET', url });
+      expect(response.statusCode, url).toBe(401);
+    }
+  });
+
+  it('liefert die Lese-Endpunkte mit gueltiger Session aus', async () => {
+    const headers = { cookie: cookieHeader };
+
+    for (const url of READ_ROUTES) {
+      const response = await context.app.inject({ method: 'GET', url, headers });
+      expect(response.statusCode, url).toBe(200);
+      expect(response.json()).toHaveProperty('asOf');
+    }
+
+    const detail = await context.app.inject({
+      method: 'GET',
+      url: `/api/learning/concepts/${fixture.approvedConceptId}`,
+      headers,
+    });
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json()).toMatchObject({ conceptId: fixture.approvedConceptId });
+  });
+
+  it('braucht fuer einen Lese-Endpunkt kein CSRF-Token', async () => {
+    // Lesende Anfragen aendern nichts - der CSRF-Hook greift zu Recht nur bei
+    // zustandsaendernden Methoden.
+    const response = await context.app.inject({
+      method: 'GET',
+      url: '/api/learning/dashboard',
+      headers: { cookie: cookieHeader },
+    });
+    expect(response.statusCode).toBe(200);
+  });
+
+  it('meldet ein unbekanntes Konzept mit 404, nicht mit 500', async () => {
+    const response = await context.app.inject({
+      method: 'GET',
+      url: '/api/learning/concepts/00000000-0000-4000-8000-000000000000',
+      headers: { cookie: cookieHeader },
+    });
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('lehnt unbrauchbare Abfrageparameter mit 400 ab', async () => {
+    const headers = { cookie: cookieHeader };
+    const faelle = [
+      '/api/learning/dashboard?asOf=gestern',
+      '/api/learning/queue?context=turnierchen',
+      '/api/learning/queue?limit=viele',
+      '/api/learning/ratings?days=0',
+    ];
+
+    for (const url of faelle) {
+      const response = await context.app.inject({ method: 'GET', url, headers });
+      expect(response.statusCode, url).toBe(400);
+    }
+  });
+
+  it('nimmt den Bezugszeitpunkt aus der Anfrage entgegen', async () => {
+    const response = await context.app.inject({
+      method: 'GET',
+      url: '/api/learning/queue?asOf=2026-03-01T12:00:00.000Z',
+      headers: { cookie: cookieHeader },
+    });
+
+    expect(response.statusCode).toBe(200);
+    // Ohne Angabe gaelte "jetzt"; die Vorbelegung sitzt an der HTTP-Grenze.
+    expect(response.json().asOf).toBe('2026-03-01T12:00:00.000Z');
+  });
+
   it('lehnt ungueltige Nutzdaten feldweise mit 400 ab', async () => {
     const response = await context.app.inject({
       method: 'POST',

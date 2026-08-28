@@ -1747,7 +1747,7 @@ darauf hin. `missed` am einzelnen Treffer sagt, welches Kriterium nicht saß —
 meist „keine Stacktiefe in der Unterschrift", weil das Buch sie nicht zu jedem
 Chart nennt.
 
-## 16. Lernstand: Migration, Seed, Ereignisse, Replay, Schwellen, Queue, Level, Muster-Report (AP4.T4.1–T4.6)
+## 16. Lernstand: Betrieb des Lernstand-Kerns (AP4)
 
 Der Lernstand-Kern besteht aus sieben Tabellen (`learning_event`,
 `concept_mastery`, `review_queue`, `error_log`, `skill_rating`,
@@ -2309,6 +2309,40 @@ Häufigste Ursache für eine schiefe Deutung ist eine dünne Datenlage. Der Repo
 sagt das selbst: `vertrauen: 'niedrig'` an einem Muster und der `hinweis` am
 Report sind ernst zu nehmen.
 
+### 16.19 State-API abfragen (AP4.T4.7)
+
+Die vier Lesestellen, gegen die AP6 baut — alle auth-geschützt:
+
+```bash
+# Anmelden (siehe Abschnitt 15.1), dann:
+curl -sS -b "$COOKIES" https://gto.growento.com/api/learning/dashboard | jq
+curl -sS -b "$COOKIES" https://gto.growento.com/api/learning/concepts/<konzept-id> | jq
+curl -sS -b "$COOKIES" "https://gto.growento.com/api/learning/queue?context=session&limit=10" | jq
+curl -sS -b "$COOKIES" "https://gto.growento.com/api/learning/ratings?days=90" | jq
+```
+
+Ohne Session antwortet jeder davon mit `401`:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' https://gto.growento.com/api/learning/dashboard
+# 401
+```
+
+| Parameter    | Gilt für  | Bedeutung                                      |
+| ------------ | --------- | ---------------------------------------------- |
+| `asOf`       | alle vier | Bezugszeitpunkt (ISO); **vorbelegt mit jetzt** |
+| `context`    | Queue     | `session` \| `drill` \| `tournament`           |
+| `limit`      | Queue     | wie viele Einträge höchstens                   |
+| `withinDays` | Queue     | Vorausschau der Vorschau                       |
+| `days`       | Ratings   | Länge des betrachteten Zeitraums               |
+
+Ein unbrauchbarer Wert ist `400` — es gibt keinen stillen Rückfall auf einen
+Default. `asOf` ist nützlich zum Nachstellen: „was wäre am 1. März fällig
+gewesen?" beantwortet ein Abruf mit `?asOf=2026-03-01T12:00:00.000Z`.
+
+> **Diese Abrufe ändern nichts.** Sie sind gefahrlos gegen die produktive
+> Datenbank auszuführen — auch mehrfach, auch mit verstelltem `asOf`.
+
 ## 17. Noch nicht abgedeckt
 
 - Der Host-Nginx-vhost und das TLS-Zertifikat sind vorbereitet, aber noch nicht
@@ -2321,6 +2355,13 @@ Report sind ernst zu nehmen.
   Abschnitt 13, das Wiederaufsetzen ist der Normalfall — `selectCandidates()`
   überspringt Erledigtes. Der Engpass ist das Wochenlimit des Kontos, nicht die
   Pipeline: 318 Vision-Aufrufe passen nicht in ein Kontingentfenster.
-- **Der Konzept-Graph wartet auf seine Review.** 161 der 168 Konzepte stehen auf
-  `draft`; die Content-API liefert standardmäßig nur die 7 freigegebenen
-  (Abschnitt 15.3).
+- **Der Konzept-Graph wartet auf seine Review.** Zum Abschluss von AP4 standen
+  145 der 168 Konzepte auf `draft`; die Content-API liefert standardmäßig nur
+  die freigegebenen (Abschnitt 15.3). Der **Lernstand** funktioniert auf
+  `draft`-Konzepten uneingeschränkt (Scope-Delta 3, INTERFACES.md 17) — die
+  Review ist eine Voraussetzung für AP5, nicht für AP4.
+- **Objektive Anker sind derzeit die Ausnahme.** Nur 16 der 168 Konzepte haben
+  ein freigegebenes Chart, also greift für die übrigen der Übergangszustand aus
+  Scope-Delta 2: Weiterschaltung über Ersatzanker, gekennzeichnet und mit
+  niedriger Konfidenz (INTERFACES.md 19). Das löst die Chart-Digitalisierung,
+  nicht der Code.
