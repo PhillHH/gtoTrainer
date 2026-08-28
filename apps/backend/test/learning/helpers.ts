@@ -114,3 +114,23 @@ export async function failing(run: () => Promise<unknown>): Promise<string> {
   }
   throw new Error('Der Vorgang haette scheitern muessen.');
 }
+
+/**
+ * Liest den kompletten abgeleiteten Zustand als Vergleichswert.
+ *
+ * Bewusst mit allen Spalten und in fester Reihenfolge: Der Replay-Test
+ * vergleicht Zeile fuer Zeile, nicht nur Zeilenzahlen. Ein Zeitstempel, der
+ * aus der Systemzeit statt aus dem Ereignis stammt, faellt genau hier auf.
+ */
+export async function derivedState(db: Database): Promise<Record<string, unknown[]>> {
+  const read = async (query: string): Promise<unknown[]> =>
+    (await db.execute<Record<string, unknown>>(sql.raw(query))).rows;
+
+  return {
+    conceptMastery: await read('select * from concept_mastery order by concept_id'),
+    reviewQueue: await read('select * from review_queue order by concept_id'),
+    errorLog: await read('select * from error_log order by id'),
+    skillRating: await read('select * from skill_rating order by topic_area'),
+    skillRatingSnapshot: await read('select * from skill_rating_snapshot order by id'),
+  };
+}

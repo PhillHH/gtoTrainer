@@ -282,3 +282,277 @@ export interface LearnerState {
   readonly createdAt: string;
   readonly updatedAt: string;
 }
+
+/* -------------------------------------------------------------------------
+ * Nutzdaten je Ereignistyp (AP4.T4.2)
+ *
+ * Bewusst je Typ eigene Felder statt eines formlosen JSONB-Objekts: Ein
+ * Drill-Ergebnis trägt andere Angaben als eine Feynman-Erklärung. Was hier
+ * nicht steht, wird beim Eintritt abgewiesen — ein Tippfehler im Feldnamen
+ * soll auffallen, nicht stillschweigend im `payload` verschwinden und beim
+ * Replay als „kein Ergebnis" gelten.
+ * ---------------------------------------------------------------------- */
+
+/** Eine gestellte Frage wurde beantwortet (Theorie-Q&A, Turnier-Zwischenfrage). */
+export interface QuestionAnsweredPayload {
+  readonly correct: boolean;
+  /** Kennung der Frage, soweit der Modus eine vergibt. */
+  readonly questionId?: string;
+  /** Antwort des Lernenden, für die Nachschau. */
+  readonly given?: string;
+  /** Richtige Antwort — bei `objective` die chart-verifizierte. */
+  readonly expected?: string;
+}
+
+/** Der Lernende hat ein Konzept in eigenen Worten erklärt (Feynman). */
+export interface ConceptExplainedPayload {
+  /** Bewertung der Erklärung, 0 bis 1. */
+  readonly quality: number;
+  /** Begründung der Bewertung, für die transparente Anzeige (F02). */
+  readonly rationale?: string;
+}
+
+/** Ein Drill-Durchlauf ist abgeschlossen (AP7). */
+export interface DrillCompletedPayload {
+  /** Richtige Antworten, 0 bis `total`. */
+  readonly correct: number;
+  /** Gestellte Aufgaben, mindestens 1. */
+  readonly total: number;
+  readonly drillId?: string;
+}
+
+/** Eine Hand wurde analysiert (AP8). */
+export interface HandAnalyzedPayload {
+  readonly correct: boolean;
+  /** Kennung der Hand in der Historie. */
+  readonly handRef?: string;
+  /** Kurzbeschreibung des Fehlers, falls einer vorlag. */
+  readonly mistake?: string;
+}
+
+/** Eine fällige Wiederholung wurde durchgeführt (T4.4). */
+export interface ReviewPerformedPayload {
+  readonly correct: boolean;
+}
+
+/**
+ * Nachträgliche Korrektur eines früheren Ereignisses.
+ *
+ * Ereignisse sind unveränderlich (T4.1). Eine Korrektur ist deshalb ein
+ * **neues** Ereignis, das auf das ursprüngliche zeigt und dessen Wirkung
+ * verändert — die Historie bleibt vollständig und ehrlich.
+ *
+ * - `replacementOutcome` fehlt oder ist `null` → die Wirkung des
+ *   ursprünglichen Ereignisses wird **aufgehoben**, als hätte es nie
+ *   stattgefunden.
+ * - `replacementOutcome` ist eine Zahl (0 bis 1) → das ursprüngliche Ergebnis
+ *   wird durch diesen Wert **ersetzt**.
+ */
+export interface ManualCorrectionPayload {
+  /** Warum korrigiert wird — steht später in der Nachschau. */
+  readonly reason: string;
+  readonly replacementOutcome?: number | null;
+}
+
+/** Zuordnung Ereignistyp → Nutzdaten. Der Vertrag für AP5 bis AP9. */
+export interface LearningEventPayloadMap {
+  readonly question_answered: QuestionAnsweredPayload;
+  readonly concept_explained: ConceptExplainedPayload;
+  readonly drill_completed: DrillCompletedPayload;
+  readonly hand_analyzed: HandAnalyzedPayload;
+  readonly review_performed: ReviewPerformedPayload;
+  readonly manual_correction: ManualCorrectionPayload;
+}
+
+export type LearningEventPayload = LearningEventPayloadMap[LearningEventType];
+
+/* -------------------------------------------------------------------------
+ * Eingabe und Antwort von `recordLearningEvent` (AP4.T4.2)
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Was ein Aufrufer übergibt. **Die einzige Schreibform des Lernstands.**
+ *
+ * Generisch über den Ereignistyp, damit der Compiler die passenden Nutzdaten
+ * erzwingt: `RecordLearningEventInput<'drill_completed'>` verlangt
+ * `{ correct, total }` und nimmt kein `{ quality }` an.
+ */
+export interface RecordLearningEventInput<TType extends LearningEventType = LearningEventType> {
+  /** Vom Aufrufer vergeben — trägt die Idempotenz. Ein UUID. */
+  readonly id: string;
+  readonly eventType: TType;
+  readonly source: LearningEventSource;
+  readonly signalClass: LearningSignalClass;
+  readonly conceptId: string;
+  /** ISO-Zeitstempel des Geschehens. Fehlt er, setzt der Service „jetzt". */
+  readonly occurredAt?: string;
+  /** Chart, gegen das geprüft wurde — Beleg eines objektiven Signals. */
+  readonly chartId?: string | null;
+  /** Pflicht bei `manual_correction`, sonst verboten. */
+  readonly correctsEventId?: string | null;
+  readonly payload: LearningEventPayloadMap[TType];
+}
+
+/**
+ * `recorded` = das Ereignis wurde aufgezeichnet und die Ableitungen gezogen.
+ * `duplicate` = die Ereignis-ID gab es schon; der Zustand blieb unverändert.
+ * **Beides ist Erfolg** — ein Wiederholungsversuch nach Netzwerkabbruch darf
+ * den Aufrufer nicht in einen Fehlerpfad zwingen.
+ */
+export const RECORD_EVENT_STATUSES = ['recorded', 'duplicate'] as const;
+export type RecordEventStatus = (typeof RECORD_EVENT_STATUSES)[number];
+
+export interface RecordLearningEventResponse {
+  readonly status: RecordEventStatus;
+  readonly eventId: string;
+  readonly conceptId: string;
+}
+
+/** Feldweise Ablehnung — dasselbe Muster wie Konzept-Review und Einstellungen. */
+export interface LearningEventErrorResponse {
+  readonly error: 'invalid_event';
+  readonly message: string;
+  readonly fields: readonly { field: string; message: string }[];
+}
+
+export function isLearningEventErrorResponse(value: unknown): value is LearningEventErrorResponse {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { error?: unknown }).error === 'invalid_event' &&
+    Array.isArray((value as { fields?: unknown }).fields)
+  );
+}
+
+/* -------------------------------------------------------------------------
+ * Validierung der Nutzdaten
+ * ---------------------------------------------------------------------- */
+
+interface FieldError {
+  readonly field: string;
+  readonly message: string;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Zahl im geschlossenen Intervall, ohne NaN und Unendlich. */
+function isRatio(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function optionalString(payload: Record<string, unknown>, key: string, fields: FieldError[]): void {
+  const value = payload[key];
+  if (value !== undefined && typeof value !== 'string') {
+    fields.push({ field: `payload.${key}`, message: `"${key}" muss eine Zeichenkette sein.` });
+  }
+}
+
+/**
+ * Prüft die Nutzdaten gegen den Vertrag des Ereignistyps.
+ *
+ * Liegt hier und nicht im Backend, weil dieselbe Prüfung dem Frontend zur
+ * Verfügung stehen soll — der Vertrag steht genau einmal im Projekt.
+ * Entschieden wird trotzdem serverseitig (dasselbe Prinzip wie ADR-0029).
+ *
+ * Unbekannte Felder werden **abgelehnt**, nicht ignoriert: Ein `{ korrekt: true }`
+ * statt `{ correct: true }` würde sonst als „kein Ergebnis" durchrutschen und
+ * den Lernstand still verfälschen.
+ */
+export function validateLearningEventPayload(
+  eventType: LearningEventType,
+  payload: unknown,
+): readonly FieldError[] {
+  const fields: FieldError[] = [];
+
+  if (!isPlainObject(payload)) {
+    return [{ field: 'payload', message: 'Die Nutzdaten müssen ein Objekt sein.' }];
+  }
+
+  const allowed: Record<LearningEventType, readonly string[]> = {
+    question_answered: ['correct', 'questionId', 'given', 'expected'],
+    concept_explained: ['quality', 'rationale'],
+    drill_completed: ['correct', 'total', 'drillId'],
+    hand_analyzed: ['correct', 'handRef', 'mistake'],
+    review_performed: ['correct'],
+    manual_correction: ['reason', 'replacementOutcome'],
+  };
+
+  for (const key of Object.keys(payload)) {
+    if (!allowed[eventType].includes(key)) {
+      fields.push({
+        field: `payload.${key}`,
+        message: `Unbekanntes Feld "${key}" für "${eventType}". Erlaubt: ${allowed[eventType].join(', ')}.`,
+      });
+    }
+  }
+
+  switch (eventType) {
+    case 'question_answered':
+    case 'hand_analyzed':
+    case 'review_performed': {
+      if (typeof payload['correct'] !== 'boolean') {
+        fields.push({ field: 'payload.correct', message: '"correct" muss true oder false sein.' });
+      }
+      optionalString(payload, 'questionId', fields);
+      optionalString(payload, 'given', fields);
+      optionalString(payload, 'expected', fields);
+      optionalString(payload, 'handRef', fields);
+      optionalString(payload, 'mistake', fields);
+      break;
+    }
+    case 'concept_explained': {
+      if (!isRatio(payload['quality'])) {
+        fields.push({
+          field: 'payload.quality',
+          message: '"quality" muss eine Zahl zwischen 0 und 1 sein.',
+        });
+      }
+      optionalString(payload, 'rationale', fields);
+      break;
+    }
+    case 'drill_completed': {
+      const total = payload['total'];
+      const correct = payload['correct'];
+      if (!Number.isInteger(total) || (total as number) < 1) {
+        fields.push({
+          field: 'payload.total',
+          message: '"total" muss eine ganze Zahl ab 1 sein.',
+        });
+      }
+      if (!Number.isInteger(correct) || (correct as number) < 0) {
+        fields.push({
+          field: 'payload.correct',
+          message: '"correct" muss eine ganze Zahl ab 0 sein.',
+        });
+      } else if (Number.isInteger(total) && (correct as number) > (total as number)) {
+        fields.push({
+          field: 'payload.correct',
+          message: '"correct" darf "total" nicht überschreiten.',
+        });
+      }
+      optionalString(payload, 'drillId', fields);
+      break;
+    }
+    case 'manual_correction': {
+      const reason = payload['reason'];
+      if (typeof reason !== 'string' || reason.trim() === '') {
+        fields.push({
+          field: 'payload.reason',
+          message: 'Eine Korrektur braucht eine Begründung.',
+        });
+      }
+      const replacement = payload['replacementOutcome'];
+      if (replacement !== undefined && replacement !== null && !isRatio(replacement)) {
+        fields.push({
+          field: 'payload.replacementOutcome',
+          message: '"replacementOutcome" muss null oder eine Zahl zwischen 0 und 1 sein.',
+        });
+      }
+      break;
+    }
+  }
+
+  return fields;
+}

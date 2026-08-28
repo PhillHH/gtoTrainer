@@ -943,6 +943,78 @@ Dazu kommt in `learner_state` die Position im Kapitelfortschritt. Kapitel,
 Konzepte und Themenbereiche sind drei Sichten auf dasselbe Buch — deshalb hängt
 der Lernstand am Konzept-Graphen und legt keine eigene Gliederung an.
 
+### Event-Fluss (neu in AP4.T4.2)
+
+Aus dem Bauprogramm ist ein Weg geworden. Die beiden Pfeile, die in T4.1 noch
+leer waren, tragen jetzt Code:
+
+```
+  AP5 Session   AP7 Drill   AP8 Hand/Turnier/Journal   AP9 Material
+       │            │                 │                     │
+       └────────────┴────────┬────────┴─────────────────────┘
+                             │
+                POST /api/learning/events        (auth + CSRF)
+                             │
+                             ▼
+                 recordLearningEvent(db, event)   src/learning/service.ts
+                             │
+        ┌────────────────────┼──────────────────────────────┐
+        │  1 Validierung     │  Typ · Nutzdaten · Konzept · Korrekturbezug
+        │                    │  → Ablehnung feldweise, nichts geschrieben
+        │                    ▼
+        │  2 Persistenz      insert … on conflict (id) do nothing
+        │                    │  → keine Zeile? dann 'duplicate', Ende
+        │                    ▼
+        │  3 Ableitung       Strom des Konzepts neu lesen und falten
+        │                    │      src/learning/derive.ts  (reine Funktionen)
+        │                    │
+        │        ┌───────────┼───────────┬──────────────┐
+        │        ▼           ▼           ▼              ▼
+        │  concept_mastery review_queue error_log   skill_rating
+        │
+        └── 4 alles in EINER Transaktion ──────────────────────────┘
+
+                 replayLearningState(db)      pnpm learning:replay
+                             │
+        Abgeleitetes verwerfen → denselben Faltcode über den ganzen
+        Strom laufen lassen → identischer Zustand
+```
+
+Die Ereignisse selbst fasst der Replay nie an; auf ihnen liegt der
+Append-only-Trigger aus T4.1.
+
+### Warum die Ableitung neu rechnet statt zu addieren
+
+`recordLearningEvent` liest nach jedem Ereignis **den ganzen Strom des
+betroffenen Konzepts** und faltet ihn neu. Inkrementeller Weg und Replay rufen
+damit denselben Code — die Gleichheit beider Ergebnisse ist eine Eigenschaft der
+Konstruktion, nicht eine Hoffnung, die ein Test bewacht
+([ADR-0040](./DECISIONS.md)). Der Preis ist Rechenaufwand, der bei einem
+Single-User-Trainer nicht ins Gewicht fällt.
+
+### Die Determinismus-Regel
+
+Die Ableitungen in `derive.ts` sind **reine Funktionen**: kein `Date.now()`,
+kein `Math.random()`, kein Datenbankzugriff. Jeder Zeitbezug — etwa die
+Fälligkeit eines Queue-Eintrags — stammt aus `occurredAt` des Ereignisses.
+
+Das ist die Bedingung dafür, dass der Replay überhaupt etwas beweist, und gilt
+bindend für T4.3 bis T4.5. Ein Test liest das Modul und weist verbotene Aufrufe
+nach (`test/learning/determinism.test.ts`).
+
+Praktische Folge: „Was ist heute fällig?" ist eine **Abfrage** (T4.7), keine
+Ableitung.
+
+### Eine Tür, kein Nebeneingang
+
+`POST /api/learning/events` ist die Außenschnittstelle **derselben** Funktion,
+die interne Module aufrufen — keine zweite Implementierung. Die Ableitungen
+liegen in einem internen Modul, das ESLint außerhalb von `src/learning/` nicht
+zu importieren erlaubt (`no-restricted-imports`). Direkt in `concept_mastery`,
+`review_queue`, `error_log` oder `skill_rating` schreibt ab hier niemand mehr;
+die Regel steht verbindlich in INTERFACES.md 18 und wird von AP5, AP7, AP8 und
+AP9 vorausgesetzt.
+
 ## 4. Querschnitts-Entscheidungen
 
 - **Node 20.19.6**, fixiert in `.nvmrc`; `engines.node >= 20.19.0`.

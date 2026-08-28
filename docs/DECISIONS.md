@@ -2825,3 +2825,159 @@ gegeben werden muss).
   `learning_event_correction_check`.
 
 **Keine neuen Dependencies.**
+
+---
+
+## ADR-0040 — Ableitung durch Neuberechnung des Konzeptstroms statt inkrementeller Deltas
+
+- **Datum:** 2026-08-28
+- **Status:** angenommen
+- **Kontext:** AP4.T4.2. `recordLearningEvent` muss nach jedem Ereignis die vier
+  abgeleiteten Tabellen fortschreiben. Zugleich verlangt die
+  Definition-of-Done von AP4, dass ein vollständiger Replay **denselben**
+  Zustand erzeugt wie der inkrementelle Weg. Die Frage war, wie die
+  Fortschreibung aussieht.
+
+### Entscheidung
+
+Ein Ereignis löst keine Delta-Rechnung aus. Stattdessen wird der **gesamte
+Ereignisstrom des betroffenen Konzepts** (und der betroffenen Rating-Achse) neu
+gelesen und die Projektion daraus neu berechnet.
+
+Inkrementeller Pfad und Replay rufen damit **denselben Code** —
+`projectConcept` und `projectTopicArea`. Die geforderte Gleichheit ist keine
+Eigenschaft, die man testet und hofft, sie bleibe erhalten; sie ist eine
+Eigenschaft der Konstruktion.
+
+### Begründung
+
+Der naheliegende Weg — „nimm den bisherigen Score, verrechne das neue Ereignis
+hinein" — hat drei Probleme, und alle drei sind teuer:
+
+1. **Korrekturen lassen sich nicht addieren.** Ein `manual_correction` hebt die
+   Wirkung eines Ereignisses auf, das längst eingerechnet ist. Ein Delta müsste
+   den alten Beitrag herausrechnen — und dafür wissen, wie er zustande kam. Bei
+   einem Mittelwert geht das noch, bei der gewichteten Formel aus T4.3 und der
+   EWMA aus T4.5 nicht mehr zuverlässig.
+2. **Zwei Codepfade driften auseinander.** Delta-Rechnung und Replay wären
+   verschiedene Implementierungen derselben Fachlichkeit. Der Replay-Test würde
+   den Unterschied irgendwann finden — bloß nicht unbedingt in demselben Sprint,
+   in dem er entstanden ist.
+3. **T4.3 bis T4.5 müssten beide Pfade ändern.** Jede neue Formel bräuchte eine
+   Vorwärts- und eine Rückwärtsvariante.
+
+Der Preis ist Rechenaufwand: O(Ereignisse des Konzepts) je Schreibvorgang statt
+O(1). Das ist hier vertretbar und nicht knapp:
+
+- Das Projekt ist **Single-User**. Ein Konzept sammelt über Monate Dutzende bis
+  wenige Hundert Ereignisse, nicht Millionen.
+- Die Abfrage trifft den Index `learning_event_concept_idx (concept_id,
+occurred_at)` aus T4.1.
+- Geschrieben wird nach einer Nutzerhandlung (eine Antwort, ein Drill), nicht in
+  einer Schleife.
+
+Sollte das je zu langsam werden, ist der Ausweg ein Zwischenstand („Projektion
+ab Ereignis N"), keine zweite Formel — die Gleichheit bliebe erhalten.
+
+### Nebenbedingungen, die daraus folgen
+
+- **Alle Zeitstempel der abgeleiteten Zeilen stammen aus den Ereignissen**, nie
+  aus `now()`. Sonst unterschieden sich zwei Läufe in genau den Spalten, die der
+  Replay-Test vergleicht.
+- **`error_log.id` ist die Ereignis-ID.** Ein `gen_random_uuid()` erzeugte beim
+  Replay andere Zeilen — gleich im Inhalt, verschieden im Schlüssel.
+- **Eine Rating-Achse ohne Ereignisse wird nicht angefasst.** Würde sie mit
+  einem Zeitstempel überschrieben, unterschiede sich ein frisch geseedeter
+  Bestand von einem replayten, ohne dass ein Ereignis dahinterstünde.
+- **Sortiert wird nach `(occurred_at, id)`.** Ohne den zweiten Schlüssel hinge
+  das Ergebnis bei zeitgleichen Ereignissen an der Zeilenreihenfolge, die
+  Postgres gerade liefert.
+
+### Alternativen
+
+- **Delta-Rechnung mit Kompensationsereignis:** verworfen, siehe oben.
+- **Ableitung asynchron über die Job-Queue:** verworfen. Dann wäre der Zustand
+  nach `recordLearningEvent` noch nicht gezogen, und die Transaktionsgrenze —
+  entweder beides oder nichts — wäre aufgegeben. Für einen Lernstand, den der
+  Nutzer unmittelbar nach seiner Antwort sehen will, ist das der falsche Handel.
+
+**Keine neuen Dependencies.**
+
+---
+
+## ADR-0041 — Transaktionsgrenze, Idempotenz über den Primärschlüssel, Sperren je Konzept
+
+- **Datum:** 2026-08-28
+- **Status:** angenommen
+- **Kontext:** AP4.T4.2. Drei Fragen der Nebenläufigkeit und Konsistenz, die
+  alle drei am selben Punkt hängen: Was passiert, wenn zwei Aufrufe gleichzeitig
+  kommen oder einer mittendrin abbricht.
+
+### Entscheidung 1 — Persistenz und Ableitung in **einer** Transaktion
+
+Das Ereignis und die vier Projektionen werden gemeinsam geschrieben oder gar
+nicht. Ein halb verarbeitetes Ereignis wäre schlimmer als ein verlorenes: Der
+Zustand wäre dauerhaft vom Strom entkoppelt, und der Replay meldete eine
+Abweichung, deren Ursache Monate zurückläge.
+
+Die **Validierung** läuft bewusst _vor_ der Transaktion. Sie liest nur und soll
+bei einer Ablehnung keine Transaktion offen gehalten haben.
+
+### Entscheidung 2 — Idempotenz über den Primärschlüssel, nicht über eine Vorabprüfung
+
+```sql
+insert into learning_event (...) values (...) on conflict (id) do nothing returning id
+```
+
+Kommt keine Zeile zurück, gab es die ID schon: `status: 'duplicate'`, keine
+zweite Wirkung, **kein Fehler**.
+
+Die naheliegende Variante — „erst nachsehen, ob die ID existiert, dann
+schreiben" — ist ein Wettlauf. Zwei gleichzeitige Aufrufe sehen beide nach,
+beide finden nichts, beide schreiben. Der Primärschlüssel dagegen entscheidet
+im Kern der Datenbank: Der zweite Aufruf blockiert am Index, bis der erste
+committet hat, und sieht dann den Konflikt.
+
+Dass `duplicate` **Erfolg** ist und kein Fehler, ist eine fachliche
+Entscheidung: Ein Drill, der nach einem Netzwerkabbruch erneut sendet, hat
+nichts falsch gemacht. Ein Fehler zwänge jeden Aufrufer in AP5 bis AP9 zu einer
+Sonderbehandlung, die alle gleich schreiben müssten — und einer würde sie
+vergessen.
+
+Deshalb hat `learning_event.id` auch keinen Default (ADR-0037): Wer die ID
+nicht mitbringt, kann nicht idempotent sein.
+
+### Entscheidung 3 — Zeilensperren auf `concept_mastery` und `skill_rating`
+
+Vor der Neuberechnung wird die Mastery-Zeile des Konzepts und die Zeile der
+Rating-Achse mit `select … for update` gesperrt.
+
+Ohne die Sperren könnten zwei Ereignisse auf demselben Konzept beide den
+Ausgangsstand lesen und der zweite den ersten überschreiben — ein klassisches
+Lost Update. Da ohnehin der ganze Strom neu gerechnet wird (ADR-0040), ist
+das Ergebnis danach zwar wieder korrekt, aber erst beim nächsten Ereignis; bis
+dahin stünde ein veralteter Zustand da.
+
+Die Sperrreihenfolge ist fest — erst Konzept, dann Themenbereich —, damit kein
+Deadlock entstehen kann.
+
+### Entscheidung 4 — Korrektur als Ersetzen oder Aufheben
+
+`manual_correction` trägt optional `replacementOutcome`:
+
+- fehlt es oder ist es `null` → die Wirkung des ursprünglichen Ereignisses ist
+  **aufgehoben**;
+- ist es eine Zahl 0–1 → das Ergebnis wird **ersetzt**.
+
+Zwei Formen und nicht eine, weil beide Fälle real sind: „der Drill zählt nicht,
+das Chart war unbrauchbar" und „der Drill zählt, aber mit 8 von 10 statt 3 von
+10". Nur die erste Form anzubieten hieße, den zweiten Fall als Aufhebung plus
+neues Ereignis zu modellieren — dann stünde im Protokoll ein Ereignis, das nie
+stattgefunden hat.
+
+Bewusst abgelehnt wird die **Korrektur einer Korrektur**: Wer eine Korrektur
+richtigstellen will, korrigiert erneut das ursprüngliche Ereignis. Sonst
+entstünden Ketten, deren Auflösung von der Reihenfolge abhinge — und die
+Reihenfolge ist genau das, was beim Replay stabil bleiben muss.
+
+**Keine neuen Dependencies.**

@@ -3,7 +3,7 @@
 Dieses Dokument beschreibt, **wo** sich Komponenten und Arbeitspakete
 gegenseitig berühren. Jeder Task trägt seine Deltas hier nach.
 
-Stand: AP4.T4.1 — Lernstand-Domänenmodell (Abschnitt 17).
+Stand: AP4.T4.2 — Lernstand-Datenmodell (17) und die Event-API (18).
 
 ---
 
@@ -31,6 +31,7 @@ statt ihn hier zu importieren, bricht diese Konvention.
 | Auth-Verträge         | s. 2a        | Login, Session, CSRF                               |
 | `LLMProvider` u. a.   | s. 8         | Vertrag des LLM-Gateways (AP2)                     |
 | Lernstand-Verträge    | s. 17        | Signalklassen, Ereignistypen, Zeilenverträge (AP4) |
+| Ereignis-Vertrag      | s. 18        | `RecordLearningEventInput`, Nutzdaten je Typ (AP4) |
 
 ---
 
@@ -2204,3 +2205,165 @@ werden.
 
 `pnpm db:seed` ruft `seedLearningState` mit auf. Der Neuanfang läuft über
 `pnpm learning:reset` und verlangt `LEARNING_RESET_CONFIRM=yes`.
+
+---
+
+## 18. `recordLearningEvent` — die einzige Schreibstelle des Lernstands (AP4.T4.2)
+
+Der Vertrag für **AP5 bis AP9**. Wer Lernfortschritt erzeugt, ruft diese eine
+Funktion — Theorie-Session (AP5), Drill (AP7), Hand-Analyse, Turnier, Journal
+(AP8), Materialtrigger (AP9).
+
+```ts
+import { recordLearningEvent } from '../learning/service.js';
+
+const result = await recordLearningEvent(db, {
+  id: randomUUID(), // der Aufrufer vergibt sie — sie trägt die Idempotenz
+  eventType: 'drill_completed',
+  source: 'drill',
+  signalClass: 'objective',
+  conceptId,
+  occurredAt: '2026-08-22T12:00:00.000Z', // fehlt er, setzt der Service „jetzt"
+  payload: { correct: 7, total: 10, drillId },
+});
+// result.status === 'recorded' | 'duplicate' — beides ist Erfolg
+```
+
+Als HTTP-Schnittstelle: **`POST /api/learning/events`**, auth-geschützt und
+CSRF-pflichtig nach dem Vertrag aus T1.3. Rumpf = derselbe
+`RecordLearningEventInput`. `201` bei `recorded`, `200` bei `duplicate`, `400`
+mit `{ error: 'invalid_event', fields: [...] }` bei einer Ablehnung. Der
+Endpunkt ruft dieselbe Funktion — **keine zweite Implementierung**.
+
+### Das Umgehungsverbot
+
+> **Ab T4.2 schreibt niemand direkt in `concept_mastery`, `review_queue`,
+> `error_log` oder `skill_rating`.** Jeder Schreibzugriff läuft über
+> `recordLearningEvent`. Diese Regel wird in AP5, AP7, AP8 und AP9
+> vorausgesetzt.
+
+Der Grund ist nicht Ordnungsliebe. Die vier Tabellen sind **Projektionen** des
+Ereignisstroms; ein direkter Schreibzugriff erzeugt einen Zustand, den kein
+Ereignis erklärt. Der nächste Replay macht ihn stillschweigend rückgängig — und
+niemand weiß, warum die Zahlen sich geändert haben.
+
+Technisch unterstützt:
+
+| Maßnahme                                                                          | Wo                                            |
+| --------------------------------------------------------------------------------- | --------------------------------------------- |
+| Die Ableitungen liegen in einem internen Modul und werden nirgends re-exportiert  | `apps/backend/src/learning/derive.ts`         |
+| ESLint weist jeden Import von `derive.ts` außerhalb von `src/learning/` ab        | `no-restricted-imports` in `eslint.config.js` |
+| Die Projektionsfunktionen (`projectConcept`, `projectTopicArea`) sind modulprivat | `apps/backend/src/learning/service.ts`        |
+| `learning_event` nimmt weder UPDATE noch DELETE an                                | Trigger aus T4.1 ([ADR-0039](./DECISIONS.md)) |
+
+Nach außen sichtbar sind nur `recordLearningEvent`, `replayLearningState`,
+`seedLearningState`, `resetLearningState` und `countLearningRows`.
+
+### Ereignistypen und ihre Nutzdaten
+
+Quelle: `packages/shared/src/learning.ts`. **Unbekannte Felder werden
+abgelehnt, nicht ignoriert** — ein `{ korrekt: true }` statt `{ correct: true }`
+würde sonst als „kein Ergebnis" durchrutschen und den Lernstand still
+verfälschen.
+
+| `eventType`         | Nutzdaten                                                | Ergebnis (0–1)    |
+| ------------------- | -------------------------------------------------------- | ----------------- |
+| `question_answered` | `correct: boolean`, `questionId?`, `given?`, `expected?` | `correct ? 1 : 0` |
+| `concept_explained` | `quality: number` (0–1), `rationale?`                    | `quality`         |
+| `drill_completed`   | `correct: int ≥ 0`, `total: int ≥ 1`, `drillId?`         | `correct / total` |
+| `hand_analyzed`     | `correct: boolean`, `handRef?`, `mistake?`               | `correct ? 1 : 0` |
+| `review_performed`  | `correct: boolean`                                       | `correct ? 1 : 0` |
+| `manual_correction` | `reason: string`, `replacementOutcome?: number \| null`  | — (Meta-Ereignis) |
+
+Dazu je Ereignis: `source` (`theory_session`, `drill`, `hand_analysis`,
+`tournament`, `journal`, `manual`) und `signalClass` (`objective`, `ai_judged`,
+`self_reported`) — die geschlossenen Mengen aus Abschnitt 17.
+
+**Die Signalklasse ist Pflicht und gehört ans Ereignis**, nicht in die spätere
+Berechnung: Nur so lässt sich beim Replay rekonstruieren, wie belastbar eine
+Beobachtung war.
+
+### Korrektur-Ereignisse
+
+Ereignisse sind unveränderlich. Eine Korrektur ist ein **neues** Ereignis vom
+Typ `manual_correction`, das über `correctsEventId` auf das ursprüngliche zeigt:
+
+- ohne `replacementOutcome` (oder mit `null`) → die Wirkung des ursprünglichen
+  Ereignisses wird **aufgehoben**, als hätte es nie stattgefunden;
+- mit einer Zahl 0–1 → das Ergebnis wird durch diesen Wert **ersetzt**.
+
+Mehrere Korrekturen auf dasselbe Ereignis sind erlaubt; die **letzte** in der
+Ereignisreihenfolge gilt. Eine Korrektur zählt selbst weder als Signal noch als
+Ergebnis, und sie muss zum selben Konzept gehören wie das korrigierte Ereignis.
+Eine Korrektur einer Korrektur wird abgelehnt.
+
+Anwendungsfall: Ein Drill-Ergebnis war falsch, weil ein Chart falsch
+digitalisiert war (die Chart-Abdeckung aus AP3 ist unvollständig). Der Lernstand
+wird richtiggestellt, die Historie bleibt vollständig.
+
+### Die Determinismus-Regel — bindend für T4.3 bis T4.5
+
+> Eine Ableitung darf **ausschließlich** vom Ereignisstrom abhängen: **kein**
+> `Date.now()`, **kein** `new Date()` ohne Argument, **kein** `Math.random()`,
+> **kein** Datenbank- oder Netzzugriff. Jeder Zeitbezug stammt aus `occurredAt`
+> des Ereignisses.
+
+Ohne diese Regel gibt es kein reproduzierbares Replay — und ohne Replay ist die
+Definition-of-Done von AP4 nicht erreichbar. Die Regel ist als Test abgesichert:
+`test/learning/determinism.test.ts` liest `derive.ts` und weist verbotene
+Aufrufe nach.
+
+Praktische Folge für T4.4: Die Fälligkeit eines Queue-Eintrags wird aus
+`occurredAt` gerechnet, nicht aus „jetzt". Die Frage „was ist heute fällig?"
+gehört in die **Abfrage** (T4.7), nicht in die Ableitung.
+
+Ebenso deterministisch ist die **Reihenfolge**: sortiert wird nach
+`occurred_at`, bei Gleichstand nach `id`. Der zweite Schlüssel ist kein Detail —
+ohne ihn hinge das Ergebnis bei zeitgleichen Ereignissen an der Zeilenfolge, die
+Postgres gerade liefert.
+
+### Die vier Ableitungen
+
+Jede ist eine reine Funktion `(EffectiveEvent[]) → Projektion | null`, und jede
+ist in T4.3 bis T4.5 austauschbar, **ohne die Verdrahtung im Service
+anzufassen**:
+
+| Funktion             | Schreibt in       | Ersetzt in | Fassung in T4.2 (Platzhalter)                                        |
+| -------------------- | ----------------- | ---------- | -------------------------------------------------------------------- |
+| `foldConceptMastery` | `concept_mastery` | T4.3       | Score = Mittel der Ergebnisse, Konfidenz = Anteil objektiver Signale |
+| `foldReviewQueue`    | `review_queue`    | T4.4       | Eintrag ab dem ersten Fehlschlag, fällig einen Tag später            |
+| `foldErrorLog`       | `error_log`       | T4.6       | Eintrag je Ergebnis < 0,5; Schweregrad `high` bei 0, sonst `medium`  |
+| `foldSkillRating`    | `skill_rating`    | T4.5       | Mittel der Ergebnisse des Themenbereichs                             |
+
+Die Zähler je Signalklasse, `repetitions`, `lapses` und der Ursprung des
+Queue-Eintrags werden **schon jetzt** vollständig geführt — T4.3 und T4.4 haben
+damit alles, was sie brauchen, ohne das Schema anzufassen.
+
+`error_log.id` ist **die Ereignis-ID**. Ein Ereignis erzeugt höchstens einen
+Eintrag, und der Replay erzeugt damit dieselben Zeilen statt neuer UUIDs.
+
+### Replay
+
+```ts
+const result = await replayLearningState(db); // { events, concepts, topicAreas }
+```
+
+Rechnet den **gesamten** abgeleiteten Zustand aus dem Ereignisstrom neu, in
+einer Transaktion. Die Ereignisse bleiben unangetastet. Als Kommando:
+`pnpm learning:replay` (RUNBOOK 16.5).
+
+Das Werkzeug für Formel-Korrekturen: Stellt sich in T4.3 bis T4.5 heraus, dass
+eine Gewichtung falsch war, wird sie geändert und der Zustand neu berechnet —
+statt die Historie umzuschreiben.
+
+### Idempotenz
+
+Dieselbe Ereignis-ID ein zweites Mal ändert nichts und liefert
+`status: 'duplicate'` — **kein Fehler**. Ein Drill, der nach einem
+Netzwerkabbruch erneut sendet, darf weder doppelt zählen noch den Aufrufer in
+einen Fehlerpfad zwingen.
+
+Abgesichert ist das **datenbankseitig** über den Primärschlüssel
+(`insert … on conflict (id) do nothing`), nicht über eine Vorabprüfung im Code:
+Zwei gleichzeitige Aufrufe kämen sonst beide durch, weil beide vor dem jeweils
+anderen Schreibvorgang nachsehen. Siehe [ADR-0041](./DECISIONS.md).

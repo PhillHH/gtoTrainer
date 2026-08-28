@@ -12,6 +12,7 @@ import type { AuthConfig } from './config/env.js';
 import type { Database } from './db/client.js';
 import type { JobEventBus } from './jobs/events.js';
 import { registerJobRoutes } from './jobs/routes.js';
+import { registerLearningRoutes } from './learning/routes.js';
 import { registerLlmLogRoutes } from './llm/log-routes.js';
 import { registerLlmSettingsRoutes } from './llm/settings-routes.js';
 import type { LlmProviderRegistry } from './llm/registry.js';
@@ -84,6 +85,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       db: options.db,
       ...(options.bookSourceDir === undefined ? {} : { sourceDir: options.bookSourceDir }),
     });
+
+    // Lernstand (AP4.T4.2): der EINZIGE Schreibweg fuer Lernfortschritt.
+    // Read-Endpunkte fuers Dashboard kommen in T4.7.
+    registerLearningRoutes(app, { db: options.db });
 
     // Content-API (AP3.T3.5): der Lesezugriff, ueber den AP5 bis AP8 gehen.
     // Nur lesend, auth-geschuetzt, und ohne includeUnapproved ausschliesslich

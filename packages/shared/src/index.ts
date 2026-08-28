@@ -235,6 +235,9 @@ export {
   isLearningEventType,
   isLearningSignalClass,
   isReviewQueueOrigin,
+  RECORD_EVENT_STATUSES,
+  isLearningEventErrorResponse,
+  validateLearningEventPayload,
 } from './learning.js';
 export type {
   ConceptMastery,
@@ -250,4 +253,16 @@ export type {
   ReviewQueueOrigin,
   SkillRating,
   SkillRatingSnapshot,
+  ConceptExplainedPayload,
+  DrillCompletedPayload,
+  HandAnalyzedPayload,
+  LearningEventErrorResponse,
+  LearningEventPayload,
+  LearningEventPayloadMap,
+  ManualCorrectionPayload,
+  QuestionAnsweredPayload,
+  RecordEventStatus,
+  RecordLearningEventInput,
+  RecordLearningEventResponse,
+  ReviewPerformedPayload,
 } from './learning.js';

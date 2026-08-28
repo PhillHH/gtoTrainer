@@ -6,6 +6,15 @@ import * as schema from './schema.js';
 
 export type Database = NodePgDatabase<typeof schema>;
 
+/**
+ * Der Handle innerhalb von `db.transaction(...)`.
+ *
+ * Bewusst als eigener Typ: Wer ihn in einer Signatur verlangt, sagt damit
+ * "diese Funktion muss in einer laufenden Transaktion aufgerufen werden" -
+ * der Compiler verhindert dann den Aufruf mit der freien Verbindung.
+ */
+export type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
+
 export interface DbHandle {
   /** Drizzle-Instanz fuer typisierte Queries. */
   readonly db: Database;

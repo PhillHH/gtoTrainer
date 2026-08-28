@@ -32,6 +32,30 @@ export default tseslint.config(
     },
   },
   {
+    // Umgehungsverbot des Lernstands (AP4.T4.2, INTERFACES.md 18).
+    //
+    // Die Ableitungen sind reine Funktionen und gehen NUR ueber
+    // `recordLearningEvent` in die Datenbank. Wer sie direkt importiert,
+    // koennte am Ereignisprotokoll vorbei schreiben - dann waere der Replay
+    // wertlos. Ausgenommen: das Modul selbst und seine Unit-Tests.
+    files: ['apps/backend/**/*.ts'],
+    ignores: ['apps/backend/src/learning/**', 'apps/backend/test/learning/**'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['**/learning/derive.js', '**/learning/derive'],
+              message:
+                'Die Ableitungen des Lernstands sind intern. Schreibzugriff ausschliesslich ueber recordLearningEvent (INTERFACES.md 18).',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     // Konfigurationsdateien und Setup-Skripte laufen in Node und duerfen die
     // Konsole nutzen - dort ist die Ausgabe der Zweck.
     files: ['**/*.config.{js,ts}', '**/vite.config.ts', '**/vitest.config.ts', 'e2e/**/*.ts'],

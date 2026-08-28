@@ -1747,7 +1747,7 @@ darauf hin. `missed` am einzelnen Treffer sagt, welches Kriterium nicht saß —
 meist „keine Stacktiefe in der Unterschrift", weil das Buch sie nicht zu jedem
 Chart nennt.
 
-## 16. Lernstand: Migration, Seed und Neuanfang (AP4.T4.1)
+## 16. Lernstand: Migration, Seed, Ereignisse und Replay (AP4.T4.1/T4.2)
 
 Der Lernstand-Kern besteht aus sieben Tabellen (`learning_event`,
 `concept_mastery`, `review_queue`, `error_log`, `skill_rating`,
@@ -1847,7 +1847,109 @@ docker compose exec -T postgres psql -U gto -d gto -c "
   union all select 'learner_state',   count(*) from learner_state"
 ```
 
-### 16.5 Typische Fehlerbilder
+### 16.5 Lernstand aus den Ereignissen neu berechnen (Replay)
+
+```bash
+pnpm learning:replay
+```
+
+Verwirft den **abgeleiteten** Zustand (Mastery, Queue, Fehlerlog, Ratings) und
+rechnet ihn aus dem Ereignisprotokoll neu. Die Ereignisse selbst bleiben
+unangetastet — auf ihnen liegt der Append-only-Trigger.
+
+Ausgabe:
+
+```
+[learning:replay] 6 Ereignisse ueber 2 Konzepte und 2 Themenbereiche verarbeitet.
+[learning:replay] concept_mastery 2 -> 2, review_queue 1 -> 1, error_log 1 -> 1.
+```
+
+Keine Bestätigung nötig: Der Replay kann nichts verlieren, was sich nicht aus
+den Ereignissen wiederherstellen ließe. Er läuft in einer Transaktion — es gibt
+keinen Moment, in dem jemand einen halb geleerten Lernstand sieht.
+
+**Wann man ihn braucht:**
+
+- nach einer Änderung an einer Ableitungsformel (T4.3 bis T4.5) — der bestehende
+  Lernstand wird mit der neuen Formel neu bewertet, ohne die Historie
+  anzufassen;
+- nach einem manuellen Eingriff in eine der abgeleiteten Tabellen — der Replay
+  stellt den Stand her, den die Ereignisse hergeben;
+- als Gegenprobe, wenn Zahlen im Dashboard nicht plausibel wirken: Ändert der
+  Replay etwas, stimmte der abgeleitete Zustand nicht mit dem Protokoll überein.
+
+Ein zweiter Replay direkt danach ändert nichts mehr.
+
+### 16.6 Ein fehlerhaftes Ereignis korrigieren
+
+Ereignisse werden **nie** geändert oder gelöscht (Abschnitt 16.8). Eine
+Richtigstellung ist ein neues Ereignis vom Typ `manual_correction`, das auf das
+ursprüngliche zeigt.
+
+Typischer Anlass: Ein Drill-Ergebnis war falsch, weil ein Chart falsch
+digitalisiert war.
+
+Erst das betroffene Ereignis finden:
+
+```bash
+docker compose exec -T postgres psql -U gto -d gto -c "
+  select e.id, e.occurred_at, e.event_type, e.payload, c.title
+    from learning_event e join concept c on c.id = e.concept_id
+   where c.title ilike '%Small Blind%'
+   order by e.occurred_at desc limit 10"
+```
+
+Dann die Korrektur über die API senden — nicht per SQL, sonst bleiben die
+Ableitungen stehen:
+
+```bash
+# CSRF-Token holen und anmelden (siehe Abschnitt 15.1), dann:
+curl -sS -X POST https://gto.growento.com/api/learning/events \
+  -H 'content-type: application/json' \
+  -H "x-csrf-token: $CSRF" -b "$COOKIES" \
+  -d '{
+        "id": "'"$(uuidgen)"'",
+        "eventType": "manual_correction",
+        "source": "manual",
+        "signalClass": "self_reported",
+        "conceptId": "<dieselbe Konzept-ID wie im Original>",
+        "correctsEventId": "<ID des fehlerhaften Ereignisses>",
+        "payload": { "reason": "Chart HR 17 war falsch digitalisiert." }
+      }'
+```
+
+Zwei Formen:
+
+| `payload`                                        | Wirkung                                                           |
+| ------------------------------------------------ | ----------------------------------------------------------------- |
+| `{ "reason": "..." }`                            | Das Ereignis wird **aufgehoben** — als hätte es nie stattgefunden |
+| `{ "reason": "...", "replacementOutcome": 0.8 }` | Das Ergebnis wird durch 0,8 **ersetzt**                           |
+
+Die Ableitungen ziehen sofort nach; ein Replay ist nicht nötig. Danach steht das
+ursprüngliche Ereignis unverändert im Protokoll, und das Fehlerlog enthält den
+Eintrag nicht mehr.
+
+**Was dabei abgelehnt wird:** eine Korrektur ohne `correctsEventId`, eine
+Korrektur auf ein Ereignis eines anderen Konzepts, und die Korrektur einer
+Korrektur (dann erneut das ursprüngliche Ereignis korrigieren).
+
+### 16.7 Ereignisse aufzeichnen (für Modi ab AP5)
+
+Jeder Lernfortschritt geht über **einen** Endpunkt:
+
+```
+POST /api/learning/events      auth-geschützt, CSRF-pflichtig
+```
+
+`201` = aufgezeichnet, `200` mit `status: "duplicate"` = die Ereignis-ID gab es
+schon (kein Fehler — ein Wiederholungsversuch nach Netzwerkabbruch), `400` mit
+`{ "error": "invalid_event", "fields": [...] }` = abgelehnt.
+
+Ereignistypen und ihre Nutzdaten stehen in INTERFACES.md 18. Direkt in
+`concept_mastery`, `review_queue`, `error_log` oder `skill_rating` zu schreiben
+ist **verboten** — der nächste Replay macht es stillschweigend rückgängig.
+
+### 16.8 Typische Fehlerbilder
 
 | Meldung                                                                     | Ursache und Abhilfe                                                                                                     |
 | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
